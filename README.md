@@ -7,7 +7,7 @@ Faza 1 pentru monitorizare laser:
 - operator curent luat din `PontajWorkCenter` / baza `Metal`
 - persistenta locala in SQLite pentru evenimente si timpi pe zi
 - Dockerfile pentru Unraid
-- workflow GitHub Actions pentru publicare imagine in GHCR ca `ghcr.io/<owner>/lasertrumaticl3030:latest`
+- workflow GitHub Actions pentru publicare imagine in GHCR ca `ghcr.io/eduard2020204039/lasertrumaticl3030:latest`
 
 ## Ce este inclus acum
 
@@ -70,13 +70,13 @@ Pe Unraid, monteaza `/app/data` ca volum persistent.
 
 Workflow-ul din `.github/workflows/docker-image.yml` publica imaginea:
 
-- `ghcr.io/<owner>/lasertrumaticl3030:latest`
-- `ghcr.io/<owner>/lasertrumaticl3030:sha-...`
+- `ghcr.io/eduard2020204039/lasertrumaticl3030:latest`
+- `ghcr.io/eduard2020204039/lasertrumaticl3030:sha-...`
 
 Ca sa tragi imaginea dupa push pe `main`:
 
 ```bash
-docker pull ghcr.io/<owner>/lasertrumaticl3030:latest
+docker pull ghcr.io/eduard2020204039/lasertrumaticl3030:latest
 ```
 
 ## Tailscale
@@ -88,6 +88,28 @@ Tailscale este util pentru:
 - eventual subnet routing catre reteaua unde este laserul
 
 Tailscale nu citeste singur datele din laser. El doar iti da acces sigur la reteaua unde exista deja PLC-ul, gateway-ul IO sau calculatorul care colecteaza semnalele.
+
+## Cum legam butoanele la IO real
+
+Acum, dashboardul trimite manual `POST /api/events` cind apesi un buton. La IO real facem acelasi lucru, doar ca in loc de click-ul din browser trimite semnalul un dispozitiv hardware.
+
+Exemplu simplu:
+
+- iei trei semnale digitale din masina: `Machine ON`, `Cutting active`, `Table change`
+- le bagi intr-un modul IO sau PLC cu intrari izolate
+- un script mic pe Raspberry Pi, mini-PC sau gateway citeste intrarile
+- la fiecare schimbare de stare face request catre aplicatie:
+
+```json
+POST /api/events
+{
+  "signal_name": "cutting_active",
+  "value": true,
+  "source": "plc-io"
+}
+```
+
+Practic, butoanele manuale sint doar simulatorul pentru semnalele care vor veni mai tirziu din hardware-ul real.
 
 ## API rapid
 

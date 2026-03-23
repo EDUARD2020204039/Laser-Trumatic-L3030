@@ -150,9 +150,14 @@ input {
 }
 
 .operator-card,
+.source-card,
 .metrics-card,
 .timeline-card {
     grid-column: span 4;
+}
+
+.timeline-card {
+    grid-column: span 12;
 }
 
 .card-head {
@@ -251,6 +256,15 @@ input {
     color: #c8d1cd;
 }
 
+.subsection-head {
+    margin: 18px 0 12px;
+}
+
+.subsection-head h3 {
+    margin: 0;
+    font-size: 18px;
+}
+
 .note-input {
     width: 100%;
     padding: 14px 16px;
@@ -322,7 +336,27 @@ input {
     border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
+.cleanup-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+}
+
+.danger-button {
+    border-color: rgba(255, 93, 108, 0.32);
+    background: rgba(255, 93, 108, 0.09);
+}
+
 .operator-status-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 18px;
+    color: #d7dfdc;
+}
+
+.source-status-row {
     display: flex;
     align-items: center;
     gap: 10px;
@@ -351,11 +385,38 @@ input {
 }
 
 .operator-list,
+.source-panel,
 .timeline {
     display: flex;
     flex-direction: column;
     gap: 12px;
     margin-top: 14px;
+}
+
+.source-panel {
+    margin-top: 0;
+}
+
+.source-panel-item {
+    padding: 16px;
+    border-radius: 22px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.source-panel-item strong,
+.source-panel-item p,
+.source-panel-item small {
+    display: block;
+}
+
+.source-panel-item strong,
+.source-panel-item p {
+    margin: 0 0 6px;
+}
+
+.source-panel-item small {
+    color: var(--muted);
 }
 
 .metrics-grid {
@@ -470,6 +531,7 @@ input {
     .status-card,
     .controls-card,
     .operator-card,
+    .source-card,
     .metrics-card,
     .timeline-card {
         grid-column: auto;
@@ -496,7 +558,8 @@ input {
 
     .signal-grid,
     .button-grid,
-    .metrics-grid {
+    .metrics-grid,
+    .cleanup-grid {
         grid-template-columns: 1fr;
     }
 

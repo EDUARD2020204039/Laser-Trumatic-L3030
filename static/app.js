@@ -25,6 +25,8 @@ function bindActions() {
     });
 
     document.getElementById("refresh-operator").addEventListener("click", loadDashboard);
+    document.getElementById("delete-latest-tests").addEventListener("click", () => deleteEvents("manual_latest", 10));
+    document.getElementById("delete-all-tests").addEventListener("click", () => deleteEvents("manual_all"));
 }
 
 async function loadDashboard() {
@@ -73,12 +75,49 @@ async function sendEvent(signalName, value) {
     }
 }
 
+async function deleteEvents(mode, limit = null) {
+    if (state.isSubmitting) {
+        return;
+    }
+
+    const confirmMessage = mode === "manual_all"
+        ? "Stergi toate evenimentele manuale de test?"
+        : `Stergi ultimele ${limit} evenimente manuale de test?`;
+
+    if (!window.confirm(confirmMessage)) {
+        return;
+    }
+
+    state.isSubmitting = true;
+
+    try {
+        const response = await fetch(window.appConfig.eventsUrl, {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ mode, limit })
+        });
+
+        const payload = await response.json();
+        if (!response.ok || !payload.success) {
+            throw new Error(payload.message || "Nu am putut sterge evenimentele.");
+        }
+
+        state.dashboard = payload.dashboard;
+        renderDashboard(payload.dashboard);
+    } catch (error) {
+        window.alert(error.message);
+    } finally {
+        state.isSubmitting = false;
+    }
+}
+
 function renderDashboard(payload) {
     renderHeader(payload);
     renderMachineState(payload.current_state);
     renderSignals(payload.current_signals);
     renderButtons(payload.current_signals);
     renderOperator(payload.operator_snapshot);
+    renderSource(payload.real_data_source);
     renderStats(payload.stats_today);
     renderTimeline(payload.recent_events);
 }
@@ -180,6 +219,27 @@ function renderStats(stats) {
     document.getElementById("utilization-fill").style.width = `${Math.min(stats.utilization_percent, 100)}%`;
 }
 
+function renderSource(realDataSource) {
+    const dot = document.getElementById("source-dot");
+    const text = document.getElementById("source-status-text");
+    const panel = document.getElementById("source-panel");
+
+    dot.className = "dot";
+    if (realDataSource.status === "configured") {
+        dot.classList.add("connected");
+    }
+
+    text.textContent = realDataSource.message;
+    panel.innerHTML = `
+        <div class="source-panel-item">
+            <small>Sursa reala</small>
+            <strong>${realDataSource.name}</strong>
+            <p>${realDataSource.status === "configured" ? "Configurata" : "Neconfigurata"}</p>
+            <small>${realDataSource.endpoint || "Completeaza LASER_REAL_DATA_ENDPOINT cand aflam cum expune laserul datele."}</small>
+        </div>
+    `;
+}
+
 function renderTimeline(events) {
     const timeline = document.getElementById("timeline");
     timeline.innerHTML = "";
@@ -199,7 +259,7 @@ function renderTimeline(events) {
             </div>
             <strong>${event.signal_label}: ${event.value ? "ON" : "OFF"}</strong>
             <p>${event.operator_name || "Fara operator"}</p>
-            <small>${event.note || "Fara observatii"}</small>
+            <small>${event.note || "Fara observatii"}${event.is_manual ? " · test manual" : ""}</small>
         `;
         timeline.appendChild(item);
     });

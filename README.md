@@ -4,6 +4,7 @@ Faza 1 pentru monitorizare laser:
 
 - dashboard web modern
 - stari manuale pentru `machine_on`, `cutting_active`, `table_change`
+- butoane pentru stergerea rapida a testelor manuale
 - operator curent luat din `PontajWorkCenter` / baza `Metal`
 - persistenta locala in SQLite pentru evenimente si timpi pe zi
 - Dockerfile pentru Unraid
@@ -18,7 +19,7 @@ Aplicatia afiseaza:
 - istoricul ultimelor schimbari
 - timp total alimentat, timp de taiere, timp schimb masa si idle pentru ziua curenta
 
-Pentru inceput, controalele sint manuale. Mai tirziu, aceleasi endpoint-uri pot fi chemate de un PLC, Raspberry Pi sau modul IO industrial.
+Pentru inceput, controalele sunt manuale. Mai tarziu, aceleasi endpoint-uri pot fi chemate de un PLC, Raspberry Pi sau modul IO industrial.
 
 ## Pornire locala pe Windows
 
@@ -39,6 +40,8 @@ Aplicatia porneste implicit pe `http://localhost:3030`.
   - pe Windows merge de obicei `ODBC Driver 17 for SQL Server`
   - in containerul Docker se foloseste `ODBC Driver 18 for SQL Server`
 - `LASER_SQLITE_PATH` daca vrei alta locatie pentru baza locala
+- `LASER_REAL_DATA_NAME` numele sursei reale care va trimite date spre dashboard
+- `LASER_REAL_DATA_ENDPOINT` endpointul sau descrierea sursei reale, pentru afisare in UI
 
 ## Docker pentru Unraid
 

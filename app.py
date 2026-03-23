@@ -66,6 +66,7 @@ STATE_DEFINITIONS = {
 
 app = Flask(__name__)
 app.config["JSON_SORT_KEYS"] = False
+MANUAL_SOURCE_PREFIX = "manual"
 
 
 def now_local() -> datetime:
@@ -134,6 +135,21 @@ def get_pontaj_settings() -> dict[str, str | int]:
         "driver": os.getenv("PONTAJ_SQL_DRIVER", DEFAULT_ODBC_DRIVER),
         "workcenter_id": int(os.getenv("PONTAJ_WORKCENTER_ID", "1")),
         "timeout": int(os.getenv("PONTAJ_SQL_TIMEOUT", "5")),
+    }
+
+
+def get_real_data_settings() -> dict[str, str]:
+    endpoint = os.getenv("LASER_REAL_DATA_ENDPOINT", "").strip()
+    name = os.getenv("LASER_REAL_DATA_NAME", "PC laser / bridge")
+    return {
+        "name": name,
+        "endpoint": endpoint,
+        "status": "configured" if endpoint else "pending",
+        "message": (
+            f"Sursa reala este pregatita prin {name}."
+            if endpoint
+            else "Sursa reala nu este inca configurata. Butoanele manuale raman doar pentru test."
+        ),
     }
 
 
@@ -233,6 +249,7 @@ def fetch_recent_events(limit: int = 18) -> list[dict]:
             "operator_id": row["operator_id"],
             "operator_name": row["operator_name"],
             "created_at": row["created_at"],
+            "is_manual": str(row["source"]).startswith(MANUAL_SOURCE_PREFIX),
         }
         for row in rows
     ]
@@ -369,6 +386,38 @@ def insert_event(signal_name: str, value: bool, source: str, note: str | None, o
         connection.commit()
 
 
+def delete_events(mode: str, limit: int | None = None) -> int:
+    with get_sqlite_connection() as connection:
+        if mode == "manual_latest":
+            rows = connection.execute(
+                """
+                SELECT id
+                FROM signal_events
+                WHERE source LIKE ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (f"{MANUAL_SOURCE_PREFIX}%", limit or 10),
+            ).fetchall()
+            ids = [row["id"] for row in rows]
+            if not ids:
+                return 0
+            placeholders = ",".join("?" for _ in ids)
+            connection.execute(f"DELETE FROM signal_events WHERE id IN ({placeholders})", ids)
+            connection.commit()
+            return len(ids)
+
+        if mode == "manual_all":
+            cursor = connection.execute(
+                "DELETE FROM signal_events WHERE source LIKE ?",
+                (f"{MANUAL_SOURCE_PREFIX}%",),
+            )
+            connection.commit()
+            return cursor.rowcount if cursor.rowcount != -1 else 0
+
+    raise ValueError(f"Unsupported delete mode: {mode}")
+
+
 def build_event_sequence(signal_name: str, target_value: bool, current_signals: dict[str, dict]) -> list[dict]:
     events: list[dict] = []
 
@@ -449,6 +498,7 @@ def build_dashboard_payload() -> dict:
         "current_signals": current_signals,
         "stats_today": stats_today,
         "operator_snapshot": operator_snapshot,
+        "real_data_source": get_real_data_settings(),
         "recent_events": fetch_recent_events(),
         "signal_definitions": SIGNAL_DEFINITIONS,
         "updated_at": now_local().isoformat(timespec="seconds"),
@@ -510,6 +560,27 @@ def create_event():
         {
             "success": True,
             "message": "Signal event saved.",
+            "dashboard": build_dashboard_payload(),
+        }
+    )
+
+
+@app.route("/api/events", methods=["DELETE"])
+def delete_event_history():
+    data = request.get_json(silent=True) or {}
+    mode = (data.get("mode") or "manual_latest").strip()
+    limit = data.get("limit")
+
+    try:
+        deleted_count = delete_events(mode=mode, limit=int(limit) if limit is not None else None)
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 400
+
+    return jsonify(
+        {
+            "success": True,
+            "message": f"Deleted {deleted_count} event(s).",
+            "deleted_count": deleted_count,
             "dashboard": build_dashboard_payload(),
         }
     )

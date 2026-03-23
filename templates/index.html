@@ -57,8 +57,20 @@
                     <button class="action-button teal" data-signal="table_change" id="button-table_change">Table change</button>
                 </div>
 
+                <div class="subsection-head">
+                    <div>
+                        <p class="section-label">Curatare teste</p>
+                        <h3>Pastreaza doar datele care conteaza</h3>
+                    </div>
+                </div>
+
+                <div class="cleanup-grid">
+                    <button class="ghost-button danger-button" id="delete-latest-tests">Sterge ultimele 10 teste</button>
+                    <button class="ghost-button danger-button" id="delete-all-tests">Sterge toate testele</button>
+                </div>
+
                 <p class="hint">
-                    Cind pui IO real, butoanele pot fi inlocuite cu request-uri automate din PLC, Raspberry Pi sau gateway industrial.
+                    Cand pui IO real, butoanele pot ramane pentru fallback, iar semnalele reale vor veni automat din laser.
                 </p>
             </section>
 
@@ -81,6 +93,24 @@
                 </div>
 
                 <div class="operator-list" id="operator-list"></div>
+            </section>
+
+            <section class="card source-card">
+                <div class="card-head">
+                    <div>
+                        <p class="section-label">Sursa date</p>
+                        <h2>Real vs manual</h2>
+                    </div>
+                </div>
+
+                <div class="source-status-row">
+                    <span class="dot" id="source-dot"></span>
+                    <span id="source-status-text">Se verifica sursa reala...</span>
+                </div>
+
+                <div class="source-panel" id="source-panel">
+                    <p class="empty-state">Nu exista inca informatie despre sursa reala.</p>
+                </div>
             </section>
 
             <section class="card metrics-card">

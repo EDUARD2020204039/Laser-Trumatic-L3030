@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ app_title }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+    <div class="page-shell">
+        <header class="hero">
+            <div class="hero-copy">
+                <p class="eyebrow">Faza 1 / dashboard operational</p>
+                <h1>{{ app_title }}</h1>
+                <p class="hero-text">
+                    Pornim simplu: stari de baza, operator din PontajWorkCenter si un tablou clar pentru ziua de lucru.
+                </p>
+            </div>
+            <div class="hero-panel">
+                <div class="hero-panel-inner">
+                    <p class="panel-label">WorkCenter monitorizat</p>
+                    <p class="panel-value">ID {{ workcenter_id }}</p>
+                    <p class="panel-foot" id="updated-at">Se incarca...</p>
+                </div>
+            </div>
+        </header>
+
+        <main class="layout">
+            <section class="card status-card">
+                <div class="card-head">
+                    <div>
+                        <p class="section-label">Status curent</p>
+                        <h2 id="machine-state-label">Se incarca...</h2>
+                    </div>
+                    <span class="state-badge" id="machine-state-badge">--</span>
+                </div>
+                <p class="state-description" id="machine-state-description">Astept date.</p>
+
+                <div class="signal-grid" id="signal-grid"></div>
+            </section>
+
+            <section class="card controls-card">
+                <div class="card-head">
+                    <div>
+                        <p class="section-label">Control manual</p>
+                        <h2>Testare rapida pentru faza 1</h2>
+                    </div>
+                    <span class="control-chip">manual mode</span>
+                </div>
+
+                <label class="note-label" for="event-note">Observatie optionala</label>
+                <input id="event-note" class="note-input" type="text" maxlength="180" placeholder="Ex: pornire schimb dimineata">
+
+                <div class="button-grid">
+                    <button class="action-button steel" data-signal="machine_on" id="button-machine_on">Machine ON</button>
+                    <button class="action-button ember" data-signal="cutting_active" id="button-cutting_active">Cutting active</button>
+                    <button class="action-button teal" data-signal="table_change" id="button-table_change">Table change</button>
+                </div>
+
+                <p class="hint">
+                    Cind pui IO real, butoanele pot fi inlocuite cu request-uri automate din PLC, Raspberry Pi sau gateway industrial.
+                </p>
+            </section>
+
+            <section class="card operator-card">
+                <div class="card-head">
+                    <div>
+                        <p class="section-label">Operator</p>
+                        <h2>Preluat din PontajWorkCenter</h2>
+                    </div>
+                    <button class="ghost-button" id="refresh-operator">Refresh</button>
+                </div>
+
+                <div class="operator-status-row">
+                    <span class="dot" id="operator-dot"></span>
+                    <span id="operator-status-text">Se verifica conexiunea...</span>
+                </div>
+
+                <div class="operator-primary" id="operator-primary">
+                    <p class="empty-state">Nu exista operator activ pentru acest workcenter.</p>
+                </div>
+
+                <div class="operator-list" id="operator-list"></div>
+            </section>
+
+            <section class="card metrics-card">
+                <div class="card-head">
+                    <div>
+                        <p class="section-label">Ziua de azi</p>
+                        <h2>Timpuri calculate automat</h2>
+                    </div>
+                </div>
+
+                <div class="metrics-grid">
+                    <div class="metric">
+                        <p>Machine ON</p>
+                        <strong id="metric-machine-on">00:00:00</strong>
+                    </div>
+                    <div class="metric">
+                        <p>Cutting</p>
+                        <strong id="metric-cutting">00:00:00</strong>
+                    </div>
+                    <div class="metric">
+                        <p>Table change</p>
+                        <strong id="metric-table-change">00:00:00</strong>
+                    </div>
+                    <div class="metric">
+                        <p>Idle</p>
+                        <strong id="metric-idle">00:00:00</strong>
+                    </div>
+                </div>
+
+                <div class="utilization-panel">
+                    <p>Utilizare taiere</p>
+                    <div class="utilization-bar">
+                        <span id="utilization-fill"></span>
+                    </div>
+                    <strong id="utilization-value">0%</strong>
+                </div>
+            </section>
+
+            <section class="card timeline-card">
+                <div class="card-head">
+                    <div>
+                        <p class="section-label">Evenimente</p>
+                        <h2>Ultimele schimbari</h2>
+                    </div>
+                </div>
+
+                <div class="timeline" id="timeline">
+                    <p class="empty-state">Nu exista inca evenimente.</p>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script>
+        window.appConfig = {
+            dashboardUrl: "{{ url_for('dashboard') }}",
+            eventsUrl: "{{ url_for('create_event') }}",
+            operatorUrl: "{{ url_for('operator_status') }}"
+        };
+    </script>
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

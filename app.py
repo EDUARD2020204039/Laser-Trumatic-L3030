@@ -45,6 +45,45 @@ MACHINE_DEFINITIONS = {
     },
 }
 
+REAL_DATA_FEEDS = {
+    "laser1": {
+        "script_name": "laserFeed.py",
+        "display_name": "laserFeed OCR bridge",
+        "endpoint": "http://laserbvision-1:8081",
+        "transport": "Redis + MQTT",
+        "details": [
+            "Camera OCR: laserbvision-1:8081",
+            "Redis keys observate: LaserStatus, LaserState",
+            "MQTT topic observat: Laser/3020/Status",
+            "Scriptul urmareste downtime si numele programului activ",
+        ],
+    },
+    "laser2": {
+        "script_name": "laserFeed.py",
+        "display_name": "laserFeed OCR bridge",
+        "endpoint": "http://laserbvision-1:8081",
+        "transport": "Redis + MQTT",
+        "details": [
+            "Foloseste acelasi feed incarcat pentru Laser1",
+            "Camera OCR: laserbvision-1:8081",
+            "Redis keys observate: LaserStatus, LaserState",
+            "MQTT topic observat: Laser/3020/Status",
+        ],
+    },
+    "abkant": {
+        "script_name": "AbkantFeed.py",
+        "display_name": "Abkant OCR bridge",
+        "endpoint": "http://100.126.29.52:8081",
+        "transport": "MQTT + PostgreSQL",
+        "details": [
+            "Camera OCR: 100.126.29.52:8081",
+            "MQTT topics observate: Abkant/StareProgramIdentificat, Abkant/ProgramActiv",
+            "Tabela observata: raportare_abkant",
+            "Scriptul urmareste programul activ si numarul de bucati",
+        ],
+    },
+}
+
 SIGNAL_DEFINITIONS = {
     "machine_on": {
         "label": "Machine ON",
@@ -320,16 +359,24 @@ def update_machine_workcenter(machine_key: str, workcenter_id: int | None) -> di
 
 
 def get_real_data_settings(machine_profile: dict) -> dict[str, str]:
-    endpoint = os.getenv("LASER_REAL_DATA_ENDPOINT", "").strip()
-    name = os.getenv("LASER_REAL_DATA_NAME", "PC laser / bridge")
+    feed = REAL_DATA_FEEDS[machine_profile["key"]]
+    script_name = feed["script_name"]
+    script_exists = bool(script_name and (BASE_DIR / script_name).exists())
+
+    endpoint = os.getenv("LASER_REAL_DATA_ENDPOINT", "").strip() or feed["endpoint"]
+    name = os.getenv("LASER_REAL_DATA_NAME", "").strip() or feed["display_name"]
+    status = "configured" if script_exists else "pending"
     return {
         "name": name,
         "endpoint": endpoint,
-        "status": "configured" if endpoint else "pending",
+        "status": status,
+        "transport": feed["transport"],
+        "script_name": script_name,
+        "details": feed["details"],
         "message": (
-            f"Sursa reala este pregatita pentru {machine_profile['label']} prin {name}."
-            if endpoint
-            else "Sursa reala nu este inca configurata. Butoanele manuale raman doar pentru test."
+            f"Sursa reala pentru {machine_profile['label']} a fost identificata din fisierul {script_name}."
+            if script_exists
+            else "Sursa reala nu este inca pregatita complet. Butoanele manuale raman pentru test."
         ),
     }
 

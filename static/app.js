@@ -375,12 +375,17 @@ function renderSource(realDataSource) {
     }
 
     text.textContent = realDataSource.message;
+    const details = Array.isArray(realDataSource.details)
+        ? realDataSource.details.map((detail) => `<li>${detail}</li>`).join("")
+        : "";
     panel.innerHTML = `
         <div class="source-panel-item">
             <small>Sursa reala</small>
             <strong>${realDataSource.name}</strong>
-            <p>${realDataSource.status === "configured" ? "Configurata" : "Neconfigurata"}</p>
-            <small>${realDataSource.endpoint || "Aici vom lega codul cu date live cand il trimiti."}</small>
+            <p>${realDataSource.status === "configured" ? "Identificata in proiect" : "In asteptare"}</p>
+            <small>${realDataSource.transport || "Transport necunoscut"}</small>
+            <small>${realDataSource.endpoint || "Nu exista inca endpoint clar pentru acest utilaj."}</small>
+            ${details ? `<ul class="source-detail-list">${details}</ul>` : ""}
         </div>
     `;
 }

@@ -7,153 +7,242 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
 </head>
 <body>
-    <div class="page-shell">
-        <header class="hero">
-            <div class="hero-copy">
-                <p class="eyebrow">Faza 1 / dashboard operational</p>
-                <h1>{{ app_title }}</h1>
-                <p class="hero-text">
-                    Pornim simplu: stari de baza, operator din PontajWorkCenter si un tablou clar pentru ziua de lucru.
+    <div class="app-shell">
+        <header class="topbar">
+            <div class="brand-block">
+                <p class="eyebrow">HABA / monitor productie</p>
+                <h1 id="dashboard-title">{{ dashboard_title }}</h1>
+                <p class="lead" id="dashboard-subtitle">
+                    Selecteaza utilajul dorit, configureaza rapid workcenterul si urmareste operatorul activ,
+                    starile si randamentul estimat pentru ziua curenta.
                 </p>
             </div>
-            <div class="hero-panel">
-                <div class="hero-panel-inner">
-                    <p class="panel-label">WorkCenter monitorizat</p>
-                    <p class="panel-value">ID {{ workcenter_id }}</p>
-                    <p class="panel-foot" id="updated-at">Se incarca...</p>
+
+            <div class="status-strip">
+                <div class="status-strip-item">
+                    <span class="strip-label">Utilaj activ</span>
+                    <strong id="active-machine-label">{{ machines[0].label if machines else "Laser1" }}</strong>
+                </div>
+                <div class="status-strip-item">
+                    <span class="strip-label">WorkCenter</span>
+                    <strong id="active-workcenter-label">WC --</strong>
+                </div>
+                <div class="status-strip-item">
+                    <span class="strip-label">Ultima actualizare</span>
+                    <strong id="updated-at">Se incarca...</strong>
                 </div>
             </div>
         </header>
 
-        <main class="layout">
-            <section class="card status-card">
-                <div class="card-head">
-                    <div>
-                        <p class="section-label">Status curent</p>
-                        <h2 id="machine-state-label">Se incarca...</h2>
-                    </div>
-                    <span class="state-badge" id="machine-state-badge">--</span>
-                </div>
-                <p class="state-description" id="machine-state-description">Astept date.</p>
-
-                <div class="signal-grid" id="signal-grid"></div>
-            </section>
-
-            <section class="card controls-card">
-                <div class="card-head">
-                    <div>
-                        <p class="section-label">Control manual</p>
-                        <h2>Testare rapida pentru faza 1</h2>
-                    </div>
-                    <span class="control-chip">manual mode</span>
-                </div>
-
-                <label class="note-label" for="event-note">Observatie optionala</label>
-                <input id="event-note" class="note-input" type="text" maxlength="180" placeholder="Ex: pornire schimb dimineata">
-
-                <div class="button-grid">
-                    <button class="action-button steel" data-signal="machine_on" id="button-machine_on">Machine ON</button>
-                    <button class="action-button ember" data-signal="cutting_active" id="button-cutting_active">Cutting active</button>
-                    <button class="action-button teal" data-signal="table_change" id="button-table_change">Table change</button>
-                </div>
-
-                <div class="subsection-head">
-                    <div>
-                        <p class="section-label">Curatare teste</p>
-                        <h3>Pastreaza doar datele care conteaza</h3>
-                    </div>
-                </div>
-
-                <div class="cleanup-grid">
-                    <button class="ghost-button danger-button" id="delete-latest-tests">Sterge ultimele 10 teste</button>
-                    <button class="ghost-button danger-button" id="delete-all-tests">Sterge toate testele</button>
-                </div>
-
-                <p class="hint">
-                    Cand pui IO real, butoanele pot ramane pentru fallback, iar semnalele reale vor veni automat din laser.
+        <section class="selector-panel panel">
+            <div class="selector-copy">
+                <p class="section-label">Selectie utilaj</p>
+                <h2>3 butoane principale pentru fluxul din atelier</h2>
+                <p class="section-text">
+                    Dashboard-ul ramane acelasi, dar datele, operatorul si istoricul se incarca separat pentru
+                    utilajul selectat.
                 </p>
-            </section>
+            </div>
 
-            <section class="card operator-card">
-                <div class="card-head">
-                    <div>
-                        <p class="section-label">Operator</p>
-                        <h2>Preluat din PontajWorkCenter</h2>
-                    </div>
-                    <button class="ghost-button" id="refresh-operator">Refresh</button>
+            <div class="machine-selector" id="machine-selector">
+                {% for machine in machines %}
+                <button
+                    class="machine-tab {% if machine.key == default_machine_key %}is-selected{% endif %}"
+                    data-machine-key="{{ machine.key }}"
+                    type="button"
+                >
+                    <small>{{ machine.label }}</small>
+                    <strong>{% if machine.workcenter_id %}WC {{ machine.workcenter_id }}{% else %}Fara WC{% endif %}</strong>
+                    <span>{{ machine.description }}</span>
+                </button>
+                {% endfor %}
+            </div>
+        </section>
+
+        <main class="dashboard-grid">
+            <section class="command-stage">
+                <div class="stage-top">
+                    <article class="panel state-panel">
+                        <div class="panel-head">
+                            <div>
+                                <p class="section-label">Status curent</p>
+                                <h2 id="machine-context-title">Se incarca...</h2>
+                            </div>
+                            <span class="state-badge" id="machine-state-badge">--</span>
+                        </div>
+
+                        <p class="state-copy" id="machine-state-description">Astept date.</p>
+
+                        <div class="state-meta">
+                            <div class="state-meta-item">
+                                <span>Stare</span>
+                                <strong id="machine-state-label">Se incarca...</strong>
+                            </div>
+                            <div class="state-meta-item">
+                                <span>Fereastra azi</span>
+                                <strong id="metric-window">00:00:00</strong>
+                            </div>
+                        </div>
+                    </article>
+
+                    <article class="panel performance-panel">
+                        <p class="section-label">Randament estimat</p>
+                        <div class="performance-value-row">
+                            <strong id="metric-randament">0%</strong>
+                            <span id="metric-availability">Disponibilitate 0%</span>
+                        </div>
+                        <div class="utilization-bar">
+                            <span id="utilization-fill"></span>
+                        </div>
+                        <p class="performance-note">
+                            Acum randamentul este estimat din timpii de lucru. Cand imi dai codul pentru date live,
+                            putem pune formula reala de performanta.
+                        </p>
+                    </article>
                 </div>
 
-                <div class="operator-status-row">
-                    <span class="dot" id="operator-dot"></span>
-                    <span id="operator-status-text">Se verifica conexiunea...</span>
-                </div>
-
-                <div class="operator-primary" id="operator-primary">
-                    <p class="empty-state">Nu exista operator activ pentru acest workcenter.</p>
-                </div>
-
-                <div class="operator-list" id="operator-list"></div>
-            </section>
-
-            <section class="card source-card">
-                <div class="card-head">
-                    <div>
-                        <p class="section-label">Sursa date</p>
-                        <h2>Real vs manual</h2>
-                    </div>
-                </div>
-
-                <div class="source-status-row">
-                    <span class="dot" id="source-dot"></span>
-                    <span id="source-status-text">Se verifica sursa reala...</span>
-                </div>
-
-                <div class="source-panel" id="source-panel">
-                    <p class="empty-state">Nu exista inca informatie despre sursa reala.</p>
-                </div>
-            </section>
-
-            <section class="card metrics-card">
-                <div class="card-head">
-                    <div>
-                        <p class="section-label">Ziua de azi</p>
-                        <h2>Timpuri calculate automat</h2>
-                    </div>
-                </div>
-
-                <div class="metrics-grid">
-                    <div class="metric">
+                <section class="summary-band">
+                    <article class="summary-metric">
                         <p>Machine ON</p>
                         <strong id="metric-machine-on">00:00:00</strong>
-                    </div>
-                    <div class="metric">
+                    </article>
+                    <article class="summary-metric">
                         <p>Cutting</p>
                         <strong id="metric-cutting">00:00:00</strong>
-                    </div>
-                    <div class="metric">
+                    </article>
+                    <article class="summary-metric">
                         <p>Table change</p>
                         <strong id="metric-table-change">00:00:00</strong>
-                    </div>
-                    <div class="metric">
+                    </article>
+                    <article class="summary-metric">
                         <p>Idle</p>
                         <strong id="metric-idle">00:00:00</strong>
-                    </div>
-                </div>
+                    </article>
+                </section>
 
-                <div class="utilization-panel">
-                    <p>Utilizare taiere</p>
-                    <div class="utilization-bar">
-                        <span id="utilization-fill"></span>
+                <section class="panel signals-panel">
+                    <div class="panel-head">
+                        <div>
+                            <p class="section-label">Semnale monitorizate</p>
+                            <h2>Privire rapida pe starea utilajului</h2>
+                        </div>
                     </div>
-                    <strong id="utilization-value">0%</strong>
-                </div>
+
+                    <div class="signal-grid" id="signal-grid"></div>
+                </section>
+
+                <section class="panel controls-panel">
+                    <div class="panel-head">
+                        <div>
+                            <p class="section-label">Control manual</p>
+                            <h2>Simulator pentru integrarea IO reala</h2>
+                        </div>
+                        <span class="panel-chip">manual mode</span>
+                    </div>
+
+                    <label class="field-label" for="event-note">Observatie optionala</label>
+                    <input
+                        id="event-note"
+                        class="field-input"
+                        type="text"
+                        maxlength="180"
+                        placeholder="Ex: pornire schimb dimineata"
+                    >
+
+                    <div class="button-grid">
+                        <button class="action-button steel" data-signal="machine_on" id="button-machine_on" type="button">
+                            Machine ON
+                        </button>
+                        <button class="action-button ember" data-signal="cutting_active" id="button-cutting_active" type="button">
+                            Cutting active
+                        </button>
+                        <button class="action-button teal" data-signal="table_change" id="button-table_change" type="button">
+                            Table change
+                        </button>
+                    </div>
+
+                    <div class="cleanup-row">
+                        <button class="ghost-button danger-button" id="delete-latest-tests" type="button">
+                            Sterge ultimele 10 teste
+                        </button>
+                        <button class="ghost-button danger-button" id="delete-all-tests" type="button">
+                            Sterge toate testele
+                        </button>
+                    </div>
+                </section>
             </section>
 
-            <section class="card timeline-card">
-                <div class="card-head">
+            <aside class="side-stack">
+                <section class="panel config-panel">
+                    <div class="panel-head">
+                        <div>
+                            <p class="section-label">Configurare</p>
+                            <h2>WorkCenter activ</h2>
+                        </div>
+                    </div>
+
+                    <label class="field-label" for="workcenter-id-input">WorkCenter ID</label>
+                    <div class="workcenter-form">
+                        <input
+                            id="workcenter-id-input"
+                            class="field-input"
+                            type="number"
+                            min="1"
+                            inputmode="numeric"
+                            placeholder="Ex: 7"
+                        >
+                        <button class="primary-button" id="save-workcenter" type="button">Actualizeaza</button>
+                    </div>
+                    <p class="feedback-text" id="workcenter-feedback">
+                        Cand schimbi ID-ul, operatorul activ se reincarca imediat pentru utilajul selectat.
+                    </p>
+                </section>
+
+                <section class="panel operator-panel">
+                    <div class="panel-head">
+                        <div>
+                            <p class="section-label">Operator activ</p>
+                            <h2>Din PontajWorkCenter</h2>
+                        </div>
+                        <button class="ghost-button" id="refresh-operator" type="button">Refresh</button>
+                    </div>
+
+                    <div class="status-row">
+                        <span class="dot" id="operator-dot"></span>
+                        <span id="operator-status-text">Se verifica conexiunea...</span>
+                    </div>
+
+                    <div id="operator-primary">
+                        <p class="empty-state">Nu exista operator activ pentru acest workcenter.</p>
+                    </div>
+
+                    <div class="operator-list" id="operator-list"></div>
+                </section>
+
+                <section class="panel source-panel">
+                    <div class="panel-head">
+                        <div>
+                            <p class="section-label">Sursa date</p>
+                            <h2>Real vs manual</h2>
+                        </div>
+                    </div>
+
+                    <div class="status-row">
+                        <span class="dot" id="source-dot"></span>
+                        <span id="source-status-text">Se verifica sursa reala...</span>
+                    </div>
+
+                    <div id="source-panel">
+                        <p class="empty-state">Nu exista inca informatie despre sursa reala.</p>
+                    </div>
+                </section>
+            </aside>
+
+            <section class="panel timeline-panel">
+                <div class="panel-head">
                     <div>
-                        <p class="section-label">Evenimente</p>
-                        <h2>Ultimele schimbari</h2>
+                        <p class="section-label">Istoric</p>
+                        <h2>Ultimele evenimente pe utilajul selectat</h2>
                     </div>
                 </div>
 
@@ -168,7 +257,9 @@
         window.appConfig = {
             dashboardUrl: "{{ url_for('dashboard') }}",
             eventsUrl: "{{ url_for('create_event') }}",
-            operatorUrl: "{{ url_for('operator_status') }}"
+            operatorUrl: "{{ url_for('operator_status') }}",
+            machinesUrl: "{{ url_for('machines_index') }}",
+            defaultMachineKey: "{{ default_machine_key }}"
         };
     </script>
     <script src="{{ url_for('static', filename='app.js') }}"></script>

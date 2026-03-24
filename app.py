@@ -22,6 +22,28 @@ SQLITE_PATH = Path(os.getenv("LASER_SQLITE_PATH", DATA_DIR / "laser_monitor.db")
 DEFAULT_ODBC_DRIVER = (
     "ODBC Driver 17 for SQL Server" if os.name == "nt" else "ODBC Driver 18 for SQL Server"
 )
+APP_TITLE = "HABA Production Monitor"
+DASHBOARD_TITLE = "Laser TruMatic L3030"
+DEFAULT_MACHINE_KEY = "laser1"
+MANUAL_SOURCE_PREFIX = "manual"
+
+MACHINE_DEFINITIONS = {
+    "laser1": {
+        "label": "Laser1",
+        "description": "Post principal de taiere si monitorizare laser.",
+        "accent": "ember",
+    },
+    "laser2": {
+        "label": "Laser2",
+        "description": "Al doilea post laser, pregatit pentru flux separat.",
+        "accent": "steel",
+    },
+    "abkant": {
+        "label": "Abkant",
+        "description": "Zona de indoire si lucru pe utilajul abkant.",
+        "accent": "teal",
+    },
+}
 
 SIGNAL_DEFINITIONS = {
     "machine_on": {
@@ -31,7 +53,7 @@ SIGNAL_DEFINITIONS = {
     },
     "cutting_active": {
         "label": "Cutting active",
-        "description": "Laserul taie efectiv.",
+        "description": "Utilajul lucreaza activ in productie.",
         "accent": "ember",
     },
     "table_change": {
@@ -49,16 +71,16 @@ STATE_DEFINITIONS = {
     },
     "ready": {
         "label": "Pregatit",
-        "description": "Masina este pornita, dar nu taie.",
+        "description": "Masina este pornita, dar nu lucreaza activ.",
         "tone": "steel",
     },
     "cutting": {
-        "label": "Taie",
+        "label": "In productie",
         "description": "Productie activa in curs.",
         "tone": "ember",
     },
     "table_change": {
-        "label": "Schimb masa",
+        "label": "Schimb de masa",
         "description": "Operatorul pregateste urmatorul ciclu.",
         "tone": "teal",
     },
@@ -66,7 +88,6 @@ STATE_DEFINITIONS = {
 
 app = Flask(__name__)
 app.config["JSON_SORT_KEYS"] = False
-MANUAL_SOURCE_PREFIX = "manual"
 
 
 def now_local() -> datetime:
@@ -91,10 +112,28 @@ def to_bool(value) -> bool:
     raise ValueError("Value must be boolean-compatible.")
 
 
+def parse_optional_int(value) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        return int(stripped)
+    return int(value)
+
+
 def ensure_signal_name(signal_name: str) -> str:
     if signal_name not in SIGNAL_DEFINITIONS:
         raise ValueError(f"Unsupported signal: {signal_name}")
     return signal_name
+
+
+def ensure_machine_key(machine_key: str | None) -> str:
+    candidate = (machine_key or DEFAULT_MACHINE_KEY).strip().lower()
+    if candidate not in MACHINE_DEFINITIONS:
+        raise ValueError(f"Unsupported machine: {candidate}")
+    return candidate
 
 
 def get_sqlite_connection() -> sqlite3.Connection:
@@ -104,12 +143,61 @@ def get_sqlite_connection() -> sqlite3.Connection:
     return connection
 
 
+def get_pontaj_connection_settings() -> dict[str, str | int]:
+    return {
+        "server": os.getenv("PONTAJ_SQL_SERVER", "192.168.2.6"),
+        "database": os.getenv("PONTAJ_SQL_DATABASE", "Metal"),
+        "username": os.getenv("PONTAJ_SQL_USERNAME", "bogdan"),
+        "password": os.getenv("PONTAJ_SQL_PASSWORD", "HELPAN123$"),
+        "driver": os.getenv("PONTAJ_SQL_DRIVER", DEFAULT_ODBC_DRIVER),
+        "timeout": int(os.getenv("PONTAJ_SQL_TIMEOUT", "5")),
+    }
+
+
+def get_default_machine_profiles() -> list[dict]:
+    legacy_default = parse_optional_int(os.getenv("PONTAJ_WORKCENTER_ID", "1"))
+    return [
+        {
+            "machine_key": "laser1",
+            "label": MACHINE_DEFINITIONS["laser1"]["label"],
+            "workcenter_id": parse_optional_int(os.getenv("PONTAJ_LASER1_WORKCENTER_ID", legacy_default)),
+            "sort_order": 1,
+        },
+        {
+            "machine_key": "laser2",
+            "label": MACHINE_DEFINITIONS["laser2"]["label"],
+            "workcenter_id": parse_optional_int(os.getenv("PONTAJ_LASER2_WORKCENTER_ID")),
+            "sort_order": 2,
+        },
+        {
+            "machine_key": "abkant",
+            "label": MACHINE_DEFINITIONS["abkant"]["label"],
+            "workcenter_id": parse_optional_int(os.getenv("PONTAJ_ABKANT_WORKCENTER_ID")),
+            "sort_order": 3,
+        },
+    ]
+
+
+def serialize_machine_profile(row: sqlite3.Row, selected_machine_key: str | None = None) -> dict:
+    definition = MACHINE_DEFINITIONS[row["machine_key"]]
+    return {
+        "key": row["machine_key"],
+        "label": row["label"] or definition["label"],
+        "description": definition["description"],
+        "accent": definition["accent"],
+        "workcenter_id": row["workcenter_id"],
+        "updated_at": row["updated_at"],
+        "is_selected": row["machine_key"] == selected_machine_key,
+    }
+
+
 def init_db() -> None:
     with get_sqlite_connection() as connection:
         connection.executescript(
             """
             CREATE TABLE IF NOT EXISTS signal_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                machine_key TEXT NOT NULL DEFAULT 'laser1',
                 signal_name TEXT NOT NULL,
                 value INTEGER NOT NULL,
                 source TEXT NOT NULL DEFAULT 'manual',
@@ -119,26 +207,119 @@ def init_db() -> None:
                 created_at TEXT NOT NULL
             );
 
-            CREATE INDEX IF NOT EXISTS idx_signal_events_signal_time
-            ON signal_events (signal_name, created_at DESC, id DESC);
+            CREATE TABLE IF NOT EXISTS machine_profiles (
+                machine_key TEXT PRIMARY KEY,
+                label TEXT NOT NULL,
+                workcenter_id INTEGER,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            );
             """
         )
+
+        signal_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(signal_events)").fetchall()
+        }
+        if "machine_key" not in signal_columns:
+            connection.execute(
+                "ALTER TABLE signal_events ADD COLUMN machine_key TEXT NOT NULL DEFAULT 'laser1'"
+            )
+
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_signal_events_machine_signal_time
+            ON signal_events (machine_key, signal_name, created_at DESC, id DESC)
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_signal_events_machine_time
+            ON signal_events (machine_key, created_at DESC, id DESC)
+            """
+        )
+
+        updated_at = now_local().isoformat(timespec="seconds")
+        for profile in get_default_machine_profiles():
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO machine_profiles (
+                    machine_key, label, workcenter_id, sort_order, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    profile["machine_key"],
+                    profile["label"],
+                    profile["workcenter_id"],
+                    profile["sort_order"],
+                    updated_at,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE machine_profiles
+                SET label = ?, sort_order = ?
+                WHERE machine_key = ?
+                """,
+                (
+                    profile["label"],
+                    profile["sort_order"],
+                    profile["machine_key"],
+                ),
+            )
+
         connection.commit()
 
 
-def get_pontaj_settings() -> dict[str, str | int]:
-    return {
-        "server": os.getenv("PONTAJ_SQL_SERVER", "192.168.2.6"),
-        "database": os.getenv("PONTAJ_SQL_DATABASE", "Metal"),
-        "username": os.getenv("PONTAJ_SQL_USERNAME", "bogdan"),
-        "password": os.getenv("PONTAJ_SQL_PASSWORD", "HELPAN123$"),
-        "driver": os.getenv("PONTAJ_SQL_DRIVER", DEFAULT_ODBC_DRIVER),
-        "workcenter_id": int(os.getenv("PONTAJ_WORKCENTER_ID", "1")),
-        "timeout": int(os.getenv("PONTAJ_SQL_TIMEOUT", "5")),
-    }
+def get_machine_profiles() -> list[dict]:
+    with get_sqlite_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT machine_key, label, workcenter_id, sort_order, updated_at
+            FROM machine_profiles
+            ORDER BY sort_order ASC, machine_key ASC
+            """
+        ).fetchall()
+    return [serialize_machine_profile(row) for row in rows]
 
 
-def get_real_data_settings() -> dict[str, str]:
+def get_machine_profile(machine_key: str) -> dict:
+    machine_key = ensure_machine_key(machine_key)
+    with get_sqlite_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT machine_key, label, workcenter_id, sort_order, updated_at
+            FROM machine_profiles
+            WHERE machine_key = ?
+            """,
+            (machine_key,),
+        ).fetchone()
+    if row is None:
+        raise ValueError(f"Machine profile not found: {machine_key}")
+    return serialize_machine_profile(row)
+
+
+def update_machine_workcenter(machine_key: str, workcenter_id: int | None) -> dict:
+    machine_key = ensure_machine_key(machine_key)
+    if workcenter_id is not None and workcenter_id < 1:
+        raise ValueError("WorkCenter ID must be a positive integer.")
+
+    with get_sqlite_connection() as connection:
+        connection.execute(
+            """
+            UPDATE machine_profiles
+            SET workcenter_id = ?, updated_at = ?
+            WHERE machine_key = ?
+            """,
+            (workcenter_id, now_local().isoformat(timespec="seconds"), machine_key),
+        )
+        connection.commit()
+
+    return get_machine_profile(machine_key)
+
+
+def get_real_data_settings(machine_profile: dict) -> dict[str, str]:
     endpoint = os.getenv("LASER_REAL_DATA_ENDPOINT", "").strip()
     name = os.getenv("LASER_REAL_DATA_NAME", "PC laser / bridge")
     return {
@@ -146,7 +327,7 @@ def get_real_data_settings() -> dict[str, str]:
         "endpoint": endpoint,
         "status": "configured" if endpoint else "pending",
         "message": (
-            f"Sursa reala este pregatita prin {name}."
+            f"Sursa reala este pregatita pentru {machine_profile['label']} prin {name}."
             if endpoint
             else "Sursa reala nu este inca configurata. Butoanele manuale raman doar pentru test."
         ),
@@ -157,7 +338,7 @@ def get_pontaj_connection():
     if pyodbc is None:
         raise RuntimeError("pyodbc is not installed in this environment.")
 
-    settings = get_pontaj_settings()
+    settings = get_pontaj_connection_settings()
     connection_string = (
         f"DRIVER={{{settings['driver']}}};"
         f"SERVER={settings['server']};"
@@ -170,15 +351,21 @@ def get_pontaj_connection():
     return pyodbc.connect(connection_string, timeout=settings["timeout"])
 
 
-def fetch_current_operator() -> dict:
-    settings = get_pontaj_settings()
+def fetch_current_operator(workcenter_id: int | None) -> dict:
     payload = {
-        "status": "offline",
-        "message": "Pontaj is not configured.",
-        "workcenter_id": settings["workcenter_id"],
+        "status": "pending" if workcenter_id is None else "offline",
+        "message": (
+            "Seteaza un WorkCenter ID pentru a vedea operatorul activ."
+            if workcenter_id is None
+            else "Pontaj is not configured."
+        ),
+        "workcenter_id": workcenter_id,
         "operators": [],
         "primary_operator": None,
     }
+
+    if workcenter_id is None:
+        return payload
 
     try:
         with get_pontaj_connection() as connection:
@@ -196,7 +383,7 @@ def fetch_current_operator() -> dict:
                 WHERE P.WorkCenterID = ? AND P.OraCheckOut IS NULL
                 ORDER BY P.Data DESC, P.OraCheckIn DESC
                 """,
-                (settings["workcenter_id"],),
+                (workcenter_id,),
             )
             rows = cursor.fetchall()
             cursor.close()
@@ -207,14 +394,16 @@ def fetch_current_operator() -> dict:
 
     operators = []
     for row in rows:
-        full_name = f"{row[1]} {row[2]}".strip()
+        first_name = (row[1] or "").strip()
+        last_name = (row[2] or "").strip()
+        full_name = f"{first_name} {last_name}".strip()
         check_in = None
         if row[3] is not None and row[4] is not None:
             check_in = f"{row[3]} {row[4]}"
         operators.append(
             {
                 "employee_id": str(row[0]),
-                "full_name": full_name,
+                "full_name": full_name or f"Angajat {row[0]}",
                 "check_in": check_in,
             }
         )
@@ -223,24 +412,28 @@ def fetch_current_operator() -> dict:
     payload["message"] = "Pontaj online."
     payload["operators"] = operators
     payload["primary_operator"] = operators[0] if operators else None
+    if not operators:
+        payload["message"] = "Nu exista operator activ pe acest workcenter."
     return payload
 
 
-def fetch_recent_events(limit: int = 18) -> list[dict]:
+def fetch_recent_events(machine_key: str, limit: int = 18) -> list[dict]:
     with get_sqlite_connection() as connection:
         rows = connection.execute(
             """
-            SELECT id, signal_name, value, source, note, operator_id, operator_name, created_at
+            SELECT id, machine_key, signal_name, value, source, note, operator_id, operator_name, created_at
             FROM signal_events
+            WHERE machine_key = ?
             ORDER BY created_at DESC, id DESC
             LIMIT ?
             """,
-            (limit,),
+            (machine_key, limit),
         ).fetchall()
 
     return [
         {
             "id": row["id"],
+            "machine_key": row["machine_key"],
             "signal_name": row["signal_name"],
             "signal_label": SIGNAL_DEFINITIONS[row["signal_name"]]["label"],
             "value": bool(row["value"]),
@@ -255,7 +448,7 @@ def fetch_recent_events(limit: int = 18) -> list[dict]:
     ]
 
 
-def fetch_current_signals() -> dict[str, dict]:
+def fetch_current_signals(machine_key: str) -> dict[str, dict]:
     current_signals: dict[str, dict] = {}
     with get_sqlite_connection() as connection:
         for signal_name, meta in SIGNAL_DEFINITIONS.items():
@@ -263,11 +456,11 @@ def fetch_current_signals() -> dict[str, dict]:
                 """
                 SELECT value, created_at, operator_name
                 FROM signal_events
-                WHERE signal_name = ?
+                WHERE machine_key = ? AND signal_name = ?
                 ORDER BY created_at DESC, id DESC
                 LIMIT 1
                 """,
-                (signal_name,),
+                (machine_key, signal_name),
             ).fetchone()
             current_signals[signal_name] = {
                 "active": bool(row["value"]) if row else False,
@@ -290,27 +483,33 @@ def derive_machine_state(current_signals: dict[str, dict]) -> dict:
     return {"key": "ready", **STATE_DEFINITIONS["ready"]}
 
 
-def calculate_active_seconds(signal_name: str, start_dt: datetime, end_dt: datetime) -> int:
+def calculate_active_seconds(
+    machine_key: str,
+    signal_name: str,
+    start_dt: datetime,
+    end_dt: datetime,
+) -> int:
     with get_sqlite_connection() as connection:
         previous_row = connection.execute(
             """
             SELECT value, created_at
             FROM signal_events
-            WHERE signal_name = ? AND created_at < ?
+            WHERE machine_key = ? AND signal_name = ? AND created_at < ?
             ORDER BY created_at DESC, id DESC
             LIMIT 1
             """,
-            (signal_name, start_dt.isoformat(timespec="seconds")),
+            (machine_key, signal_name, start_dt.isoformat(timespec="seconds")),
         ).fetchone()
 
         rows = connection.execute(
             """
             SELECT value, created_at
             FROM signal_events
-            WHERE signal_name = ? AND created_at >= ? AND created_at <= ?
+            WHERE machine_key = ? AND signal_name = ? AND created_at >= ? AND created_at <= ?
             ORDER BY created_at ASC, id ASC
             """,
             (
+                machine_key,
                 signal_name,
                 start_dt.isoformat(timespec="seconds"),
                 end_dt.isoformat(timespec="seconds"),
@@ -340,14 +539,16 @@ def format_seconds(total_seconds: int) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
-def build_today_stats() -> dict:
+def build_today_stats(machine_key: str) -> dict:
     now = now_local()
     start_of_day = datetime.combine(date.today(), time.min)
-    machine_on_seconds = calculate_active_seconds("machine_on", start_of_day, now)
-    cutting_seconds = calculate_active_seconds("cutting_active", start_of_day, now)
-    table_change_seconds = calculate_active_seconds("table_change", start_of_day, now)
+    elapsed_seconds = max(int((now - start_of_day).total_seconds()), 1)
+    machine_on_seconds = calculate_active_seconds(machine_key, "machine_on", start_of_day, now)
+    cutting_seconds = calculate_active_seconds(machine_key, "cutting_active", start_of_day, now)
+    table_change_seconds = calculate_active_seconds(machine_key, "table_change", start_of_day, now)
     idle_seconds = max(machine_on_seconds - cutting_seconds - table_change_seconds, 0)
     utilization = round((cutting_seconds / machine_on_seconds) * 100, 1) if machine_on_seconds else 0.0
+    availability = round((machine_on_seconds / elapsed_seconds) * 100, 1) if elapsed_seconds else 0.0
 
     return {
         "machine_on_seconds": machine_on_seconds,
@@ -359,21 +560,32 @@ def build_today_stats() -> dict:
         "idle_seconds": idle_seconds,
         "idle_label": format_seconds(idle_seconds),
         "utilization_percent": utilization,
+        "randament_percent": utilization,
+        "availability_percent": availability,
+        "production_window_label": format_seconds(elapsed_seconds),
         "updated_at": now.isoformat(timespec="seconds"),
     }
 
 
-def insert_event(signal_name: str, value: bool, source: str, note: str | None, operator_snapshot: dict) -> None:
+def insert_event(
+    machine_key: str,
+    signal_name: str,
+    value: bool,
+    source: str,
+    note: str | None,
+    operator_snapshot: dict,
+) -> None:
     operator = operator_snapshot.get("primary_operator") or {}
     with get_sqlite_connection() as connection:
         connection.execute(
             """
             INSERT INTO signal_events (
-                signal_name, value, source, note, operator_id, operator_name, created_at
+                machine_key, signal_name, value, source, note, operator_id, operator_name, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                machine_key,
                 signal_name,
                 1 if value else 0,
                 source,
@@ -386,18 +598,18 @@ def insert_event(signal_name: str, value: bool, source: str, note: str | None, o
         connection.commit()
 
 
-def delete_events(mode: str, limit: int | None = None) -> int:
+def delete_events(machine_key: str, mode: str, limit: int | None = None) -> int:
     with get_sqlite_connection() as connection:
         if mode == "manual_latest":
             rows = connection.execute(
                 """
                 SELECT id
                 FROM signal_events
-                WHERE source LIKE ?
+                WHERE machine_key = ? AND source LIKE ?
                 ORDER BY created_at DESC, id DESC
                 LIMIT ?
                 """,
-                (f"{MANUAL_SOURCE_PREFIX}%", limit or 10),
+                (machine_key, f"{MANUAL_SOURCE_PREFIX}%", limit or 10),
             ).fetchall()
             ids = [row["id"] for row in rows]
             if not ids:
@@ -409,8 +621,8 @@ def delete_events(mode: str, limit: int | None = None) -> int:
 
         if mode == "manual_all":
             cursor = connection.execute(
-                "DELETE FROM signal_events WHERE source LIKE ?",
-                (f"{MANUAL_SOURCE_PREFIX}%",),
+                "DELETE FROM signal_events WHERE machine_key = ? AND source LIKE ?",
+                (machine_key, f"{MANUAL_SOURCE_PREFIX}%",),
             )
             connection.commit()
             return cursor.rowcount if cursor.rowcount != -1 else 0
@@ -485,21 +697,34 @@ def build_event_sequence(signal_name: str, target_value: bool, current_signals: 
     return events
 
 
-def build_dashboard_payload() -> dict:
-    current_signals = fetch_current_signals()
-    operator_snapshot = fetch_current_operator()
+def build_dashboard_payload(machine_key: str = DEFAULT_MACHINE_KEY) -> dict:
+    machine_key = ensure_machine_key(machine_key)
+    machine_profile = get_machine_profile(machine_key)
+    current_signals = fetch_current_signals(machine_key)
+    operator_snapshot = fetch_current_operator(machine_profile["workcenter_id"])
     current_state = derive_machine_state(current_signals)
-    stats_today = build_today_stats()
+    stats_today = build_today_stats(machine_key)
+    machines = [
+        {
+            **profile,
+            "is_selected": profile["key"] == machine_key,
+        }
+        for profile in get_machine_profiles()
+    ]
 
     return {
-        "app_title": "Laser TruMatic L3030",
-        "workcenter_id": get_pontaj_settings()["workcenter_id"],
+        "app_title": APP_TITLE,
+        "dashboard_title": DASHBOARD_TITLE,
+        "selected_machine_key": machine_key,
+        "machine": machine_profile,
+        "machines": machines,
+        "workcenter_id": machine_profile["workcenter_id"],
         "current_state": current_state,
         "current_signals": current_signals,
         "stats_today": stats_today,
         "operator_snapshot": operator_snapshot,
-        "real_data_source": get_real_data_settings(),
-        "recent_events": fetch_recent_events(),
+        "real_data_source": get_real_data_settings(machine_profile),
+        "recent_events": fetch_recent_events(machine_key),
         "signal_definitions": SIGNAL_DEFINITIONS,
         "updated_at": now_local().isoformat(timespec="seconds"),
     }
@@ -509,8 +734,10 @@ def build_dashboard_payload() -> dict:
 def index():
     return render_template(
         "index.html",
-        app_title="Laser TruMatic L3030",
-        workcenter_id=get_pontaj_settings()["workcenter_id"],
+        app_title=APP_TITLE,
+        dashboard_title=DASHBOARD_TITLE,
+        machines=get_machine_profiles(),
+        default_machine_key=DEFAULT_MACHINE_KEY,
     )
 
 
@@ -519,14 +746,56 @@ def health():
     return jsonify({"status": "ok", "timestamp": now_local().isoformat(timespec="seconds")})
 
 
+@app.route("/api/machines")
+def machines_index():
+    return jsonify({"machines": get_machine_profiles()})
+
+
+@app.route("/api/machines/<machine_key>", methods=["PATCH"])
+def update_machine_profile(machine_key: str):
+    data = request.get_json(silent=True) or {}
+
+    try:
+        workcenter_id = parse_optional_int(data.get("workcenter_id"))
+        machine = update_machine_workcenter(machine_key, workcenter_id)
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 400
+
+    return jsonify(
+        {
+            "success": True,
+            "message": "WorkCenter actualizat.",
+            "machine": machine,
+            "dashboard": build_dashboard_payload(machine["key"]),
+        }
+    )
+
+
 @app.route("/api/operator")
 def operator_status():
-    return jsonify(fetch_current_operator())
+    raw_workcenter_id = request.args.get("workcenter_id")
+    machine_key = request.args.get("machine")
+
+    try:
+        if machine_key:
+            profile = get_machine_profile(machine_key)
+            workcenter_id = profile["workcenter_id"]
+        else:
+            workcenter_id = parse_optional_int(raw_workcenter_id)
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 400
+
+    return jsonify(fetch_current_operator(workcenter_id))
 
 
 @app.route("/api/dashboard")
 def dashboard():
-    return jsonify(build_dashboard_payload())
+    machine_key = request.args.get("machine", DEFAULT_MACHINE_KEY)
+    try:
+        payload = build_dashboard_payload(machine_key)
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 400
+    return jsonify(payload)
 
 
 @app.route("/api/events", methods=["POST"])
@@ -534,6 +803,7 @@ def create_event():
     data = request.get_json(silent=True) or {}
 
     try:
+        machine_key = ensure_machine_key(data.get("machine_key", data.get("machine")))
         signal_name = ensure_signal_name(data.get("signal_name", data.get("signal", "")))
         target_value = to_bool(data.get("value"))
     except ValueError as exc:
@@ -542,13 +812,14 @@ def create_event():
     note = (data.get("note") or "").strip() or None
     source = (data.get("source") or "manual").strip() or "manual"
 
-    current_signals = fetch_current_signals()
+    current_signals = fetch_current_signals(machine_key)
     event_sequence = build_event_sequence(signal_name, target_value, current_signals)
-    operator_snapshot = fetch_current_operator()
+    operator_snapshot = fetch_current_operator(get_machine_profile(machine_key)["workcenter_id"])
 
     for index, event in enumerate(event_sequence):
         event_note = note if index == len(event_sequence) - 1 else event["note"]
         insert_event(
+            machine_key=machine_key,
             signal_name=event["signal_name"],
             value=event["value"],
             source=source,
@@ -560,7 +831,7 @@ def create_event():
         {
             "success": True,
             "message": "Signal event saved.",
-            "dashboard": build_dashboard_payload(),
+            "dashboard": build_dashboard_payload(machine_key),
         }
     )
 
@@ -569,10 +840,15 @@ def create_event():
 def delete_event_history():
     data = request.get_json(silent=True) or {}
     mode = (data.get("mode") or "manual_latest").strip()
-    limit = data.get("limit")
 
     try:
-        deleted_count = delete_events(mode=mode, limit=int(limit) if limit is not None else None)
+        machine_key = ensure_machine_key(data.get("machine_key", data.get("machine")))
+        limit = data.get("limit")
+        deleted_count = delete_events(
+            machine_key=machine_key,
+            mode=mode,
+            limit=int(limit) if limit is not None else None,
+        )
     except ValueError as exc:
         return jsonify({"success": False, "message": str(exc)}), 400
 
@@ -581,7 +857,7 @@ def delete_event_history():
             "success": True,
             "message": f"Deleted {deleted_count} event(s).",
             "deleted_count": deleted_count,
-            "dashboard": build_dashboard_payload(),
+            "dashboard": build_dashboard_payload(machine_key),
         }
     )
 

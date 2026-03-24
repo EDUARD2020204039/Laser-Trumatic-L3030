@@ -2,10 +2,11 @@
 
 Faza 1 pentru monitorizare laser:
 
-- dashboard web modern
+- dashboard web modern, cu selectie dedicata pe `Laser1`, `Laser2`, `Abkant`
 - stari manuale pentru `machine_on`, `cutting_active`, `table_change`
 - butoane pentru stergerea rapida a testelor manuale
 - operator curent luat din `PontajWorkCenter` / baza `Metal`
+- `workcenter_id` configurabil direct din UI pentru fiecare utilaj
 - persistenta locala in SQLite pentru evenimente si timpi pe zi
 - Dockerfile pentru Unraid
 - workflow GitHub Actions pentru publicare imagine in GHCR ca `ghcr.io/eduard2020204039/lasertrumaticl3030:latest`
@@ -14,10 +15,11 @@ Faza 1 pentru monitorizare laser:
 
 Aplicatia afiseaza:
 
-- statusul curent al masinii
-- operatorul activ pe `WorkCenterID=1` implicit
-- istoricul ultimelor schimbari
-- timp total alimentat, timp de taiere, timp schimb masa si idle pentru ziua curenta
+- selector principal pentru `Laser1`, `Laser2`, `Abkant`
+- statusul curent al utilajului selectat
+- operatorul activ pentru `workcenter_id` configurat pe utilajul selectat
+- istoricul ultimelor schimbari pe utilajul selectat
+- timp total alimentat, timp de taiere, timp schimb masa, idle si randament estimat pentru ziua curenta
 
 Pentru inceput, controalele sunt manuale. Mai tarziu, aceleasi endpoint-uri pot fi chemate de un PLC, Raspberry Pi sau modul IO industrial.
 
@@ -35,7 +37,10 @@ Aplicatia porneste implicit pe `http://localhost:3030`.
 
 ## Variabile importante
 
-- `PONTAJ_WORKCENTER_ID=1` pentru workcenterul Laser din baza voastra
+- `PONTAJ_LASER1_WORKCENTER_ID=1` pentru workcenterul implicit al lui `Laser1`
+- `PONTAJ_LASER2_WORKCENTER_ID=` pentru al doilea laser
+- `PONTAJ_ABKANT_WORKCENTER_ID=` pentru utilajul `Abkant`
+- `PONTAJ_WORKCENTER_ID=1` ramine fallback pentru instalari mai vechi
 - `PONTAJ_SQL_DRIVER`
   - pe Windows merge de obicei `ODBC Driver 17 for SQL Server`
   - in containerul Docker se foloseste `ODBC Driver 18 for SQL Server`
@@ -57,7 +62,9 @@ Run:
 docker run -d \
   --name lasertrumaticl3030 \
   -p 3030:3030 \
-  -e PONTAJ_WORKCENTER_ID=1 \
+  -e PONTAJ_LASER1_WORKCENTER_ID=1 \
+  -e PONTAJ_LASER2_WORKCENTER_ID=2 \
+  -e PONTAJ_ABKANT_WORKCENTER_ID=3 \
   -e PONTAJ_SQL_SERVER=192.168.2.6 \
   -e PONTAJ_SQL_DATABASE=Metal \
   -e PONTAJ_SQL_USERNAME=bogdan \

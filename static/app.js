@@ -1,21 +1,43 @@
 const signalLabels = {
     machine_on: { on: "Opreste masina", off: "Porneste masina" },
-    cutting_active: { on: "Opreste taierea", off: "Porneste taierea" },
+    cutting_active: { on: "Opreste productia", off: "Porneste productia" },
     table_change: { on: "Opreste schimbul", off: "Porneste schimbul" }
 };
 
 const state = {
     dashboard: null,
-    isSubmitting: false
+    isSubmitting: false,
+    selectedMachineKey: window.appConfig.defaultMachineKey || "laser1",
+    workcenterFeedback: null
 };
 
 document.addEventListener("DOMContentLoaded", () => {
+    const savedMachineKey = window.localStorage.getItem("selectedMachineKey");
+    if (savedMachineKey) {
+        state.selectedMachineKey = savedMachineKey;
+    }
+
     bindActions();
-    loadDashboard();
-    window.setInterval(loadDashboard, 15000);
+    loadDashboard(state.selectedMachineKey);
+    window.setInterval(() => loadDashboard(state.selectedMachineKey), 15000);
 });
 
 function bindActions() {
+    document.getElementById("machine-selector").addEventListener("click", async (event) => {
+        const button = event.target.closest("[data-machine-key]");
+        if (!button) {
+            return;
+        }
+
+        const nextMachineKey = button.dataset.machineKey;
+        if (!nextMachineKey || nextMachineKey === state.selectedMachineKey) {
+            return;
+        }
+
+        state.workcenterFeedback = null;
+        await loadDashboard(nextMachineKey);
+    });
+
     document.querySelectorAll("[data-signal]").forEach((button) => {
         button.addEventListener("click", async () => {
             const signalName = button.dataset.signal;
@@ -24,19 +46,37 @@ function bindActions() {
         });
     });
 
-    document.getElementById("refresh-operator").addEventListener("click", loadDashboard);
+    document.getElementById("refresh-operator").addEventListener("click", () => loadDashboard(state.selectedMachineKey));
     document.getElementById("delete-latest-tests").addEventListener("click", () => deleteEvents("manual_latest", 10));
     document.getElementById("delete-all-tests").addEventListener("click", () => deleteEvents("manual_all"));
+    document.getElementById("save-workcenter").addEventListener("click", updateWorkcenter);
+    document.getElementById("workcenter-id-input").addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+            event.preventDefault();
+            updateWorkcenter();
+        }
+    });
 }
 
-async function loadDashboard() {
+async function loadDashboard(machineKey = state.selectedMachineKey) {
+    const targetMachineKey = machineKey || state.selectedMachineKey;
+
     try {
-        const response = await fetch(window.appConfig.dashboardUrl);
+        const response = await fetch(
+            `${window.appConfig.dashboardUrl}?machine=${encodeURIComponent(targetMachineKey)}`
+        );
         const payload = await response.json();
+        if (!response.ok) {
+            throw new Error(payload.message || "Nu am putut incarca dashboard-ul.");
+        }
+
         state.dashboard = payload;
+        state.selectedMachineKey = payload.selected_machine_key;
+        window.localStorage.setItem("selectedMachineKey", payload.selected_machine_key);
         renderDashboard(payload);
     } catch (error) {
         console.error(error);
+        setWorkcenterFeedback(error.message, "error");
     }
 }
 
@@ -46,6 +86,7 @@ async function sendEvent(signalName, value) {
     }
 
     state.isSubmitting = true;
+    syncBusyState();
     const noteInput = document.getElementById("event-note");
 
     try {
@@ -53,6 +94,7 @@ async function sendEvent(signalName, value) {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
+                machine_key: state.selectedMachineKey,
                 signal_name: signalName,
                 value,
                 note: noteInput.value.trim(),
@@ -72,6 +114,7 @@ async function sendEvent(signalName, value) {
         window.alert(error.message);
     } finally {
         state.isSubmitting = false;
+        syncBusyState();
     }
 }
 
@@ -80,21 +123,27 @@ async function deleteEvents(mode, limit = null) {
         return;
     }
 
+    const machineLabel = state.dashboard?.machine?.label || state.selectedMachineKey;
     const confirmMessage = mode === "manual_all"
-        ? "Stergi toate evenimentele manuale de test?"
-        : `Stergi ultimele ${limit} evenimente manuale de test?`;
+        ? `Stergi toate evenimentele manuale de test pentru ${machineLabel}?`
+        : `Stergi ultimele ${limit} evenimente manuale de test pentru ${machineLabel}?`;
 
     if (!window.confirm(confirmMessage)) {
         return;
     }
 
     state.isSubmitting = true;
+    syncBusyState();
 
     try {
         const response = await fetch(window.appConfig.eventsUrl, {
             method: "DELETE",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ mode, limit })
+            body: JSON.stringify({
+                machine_key: state.selectedMachineKey,
+                mode,
+                limit
+            })
         });
 
         const payload = await response.json();
@@ -108,14 +157,60 @@ async function deleteEvents(mode, limit = null) {
         window.alert(error.message);
     } finally {
         state.isSubmitting = false;
+        syncBusyState();
+    }
+}
+
+async function updateWorkcenter() {
+    if (state.isSubmitting) {
+        return;
+    }
+
+    const input = document.getElementById("workcenter-id-input");
+    const rawValue = input.value.trim();
+
+    state.isSubmitting = true;
+    syncBusyState();
+
+    try {
+        const response = await fetch(
+            `${window.appConfig.machinesUrl}/${encodeURIComponent(state.selectedMachineKey)}`,
+            {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    workcenter_id: rawValue
+                })
+            }
+        );
+
+        const payload = await response.json();
+        if (!response.ok || !payload.success) {
+            throw new Error(payload.message || "Nu am putut actualiza workcenterul.");
+        }
+
+        state.workcenterFeedback = {
+            machineKey: state.selectedMachineKey,
+            tone: "success",
+            message: `WorkCenter salvat pentru ${payload.machine.label}.`
+        };
+        state.dashboard = payload.dashboard;
+        renderDashboard(payload.dashboard);
+    } catch (error) {
+        setWorkcenterFeedback(error.message, "error");
+    } finally {
+        state.isSubmitting = false;
+        syncBusyState();
     }
 }
 
 function renderDashboard(payload) {
     renderHeader(payload);
-    renderMachineState(payload.current_state);
+    renderMachineSelector(payload.machines);
+    renderMachineState(payload.machine, payload.current_state);
     renderSignals(payload.current_signals);
     renderButtons(payload.current_signals);
+    renderWorkcenter(payload.machine);
     renderOperator(payload.operator_snapshot);
     renderSource(payload.real_data_source);
     renderStats(payload.stats_today);
@@ -123,15 +218,42 @@ function renderDashboard(payload) {
 }
 
 function renderHeader(payload) {
-    const updatedAt = payload.updated_at ? formatDateTime(payload.updated_at) : "necunoscut";
-    document.getElementById("updated-at").textContent = `Ultima actualizare: ${updatedAt}`;
+    document.getElementById("dashboard-title").textContent = `${payload.dashboard_title} / ${payload.machine.label}`;
+    document.getElementById("dashboard-subtitle").textContent = payload.machine.description;
+    document.getElementById("active-machine-label").textContent = payload.machine.label;
+    document.getElementById("active-workcenter-label").textContent = payload.machine.workcenter_id
+        ? `WC ${payload.machine.workcenter_id}`
+        : "WC neconfigurat";
+    document.getElementById("updated-at").textContent = payload.updated_at
+        ? formatDateTime(payload.updated_at)
+        : "necunoscut";
 }
 
-function renderMachineState(machineState) {
+function renderMachineSelector(machines) {
+    const selector = document.getElementById("machine-selector");
+    selector.innerHTML = machines
+        .map((machine) => `
+            <button
+                class="machine-tab ${machine.is_selected ? "is-selected" : ""}"
+                data-machine-key="${machine.key}"
+                type="button"
+            >
+                <small>${machine.label}</small>
+                <strong>${machine.workcenter_id ? `WC ${machine.workcenter_id}` : "Fara WC"}</strong>
+                <span>${machine.description}</span>
+            </button>
+        `)
+        .join("");
+}
+
+function renderMachineState(machine, machineState) {
+    document.getElementById("machine-context-title").textContent = machine.label;
     document.getElementById("machine-state-label").textContent = machineState.label;
-    document.getElementById("machine-state-badge").textContent = machineState.key;
-    document.getElementById("machine-state-badge").className = `state-badge tone-${machineState.tone}`;
     document.getElementById("machine-state-description").textContent = machineState.description;
+
+    const badge = document.getElementById("machine-state-badge");
+    badge.textContent = machineState.key.replace("_", " ").toUpperCase();
+    badge.className = `state-badge tone-${machineState.tone}`;
 }
 
 function renderSignals(signals) {
@@ -140,15 +262,14 @@ function renderSignals(signals) {
 
     Object.entries(signals).forEach(([signalName, signal]) => {
         const tile = document.createElement("article");
-        tile.className = "signal-tile";
+        tile.className = `signal-tile accent-${signal.accent}`;
         tile.innerHTML = `
-            <div class="signal-topline">
-                <span class="signal-indicator accent-${signal.accent}"></span>
-                <small>${signal.active ? "Activ" : "Inactiv"}</small>
+            <div class="signal-heading">
+                <strong>${signal.label}</strong>
+                <span>${signal.active ? "Activ" : "Inactiv"}</span>
             </div>
-            <h3>${signal.label}</h3>
-            <small>${signal.description}</small>
-            <strong>${signal.changed_at ? formatDateTime(signal.changed_at) : "Fara evenimente"}</strong>
+            <p>${signal.description}</p>
+            <small>${signal.changed_at ? formatDateTime(signal.changed_at) : "Fara evenimente"}</small>
         `;
         signalGrid.appendChild(tile);
     });
@@ -157,9 +278,29 @@ function renderSignals(signals) {
 function renderButtons(signals) {
     Object.entries(signals).forEach(([signalName, signal]) => {
         const button = document.getElementById(`button-${signalName}`);
+        if (!button) {
+            return;
+        }
+
         button.classList.toggle("is-active", signal.active);
         button.textContent = signalLabels[signalName][signal.active ? "on" : "off"];
     });
+}
+
+function renderWorkcenter(machine) {
+    const input = document.getElementById("workcenter-id-input");
+    if (document.activeElement !== input) {
+        input.value = machine.workcenter_id ?? "";
+    }
+
+    const feedback = state.workcenterFeedback?.machineKey === machine.key
+        ? state.workcenterFeedback
+        : {
+            tone: "muted",
+            message: "Cand schimbi ID-ul, operatorul activ se reincarca imediat pentru utilajul selectat."
+        };
+
+    setFeedbackText(feedback.message, feedback.tone);
 }
 
 function renderOperator(operatorSnapshot) {
@@ -173,13 +314,15 @@ function renderOperator(operatorSnapshot) {
 
     if (operatorSnapshot.status === "connected") {
         dot.classList.add("connected");
-    }
-
-    if (operatorSnapshot.status === "error") {
+    } else if (operatorSnapshot.status === "error") {
         dot.classList.add("error");
+    } else {
+        dot.classList.add("pending");
     }
 
-    text.textContent = `${operatorSnapshot.message} WorkCenter ID ${operatorSnapshot.workcenter_id}.`;
+    text.textContent = operatorSnapshot.workcenter_id
+        ? `${operatorSnapshot.message} WorkCenter ID ${operatorSnapshot.workcenter_id}.`
+        : operatorSnapshot.message;
 
     if (operatorSnapshot.primary_operator) {
         const operator = operatorSnapshot.primary_operator;
@@ -192,11 +335,9 @@ function renderOperator(operatorSnapshot) {
             </div>
         `;
     } else {
-        primaryContainer.innerHTML = `<p class="empty-state">Nu exista operator activ pe workcenterul monitorizat.</p>`;
-    }
-
-    if (!operatorSnapshot.operators.length) {
-        return;
+        primaryContainer.innerHTML = `
+            <p class="empty-state">Nu exista operator activ pentru workcenterul configurat.</p>
+        `;
     }
 
     operatorSnapshot.operators.slice(1).forEach((operator) => {
@@ -211,12 +352,14 @@ function renderOperator(operatorSnapshot) {
 }
 
 function renderStats(stats) {
+    document.getElementById("metric-randament").textContent = `${stats.randament_percent}%`;
+    document.getElementById("metric-availability").textContent = `Disponibilitate ${stats.availability_percent}%`;
+    document.getElementById("metric-window").textContent = stats.production_window_label;
     document.getElementById("metric-machine-on").textContent = stats.machine_on_label;
     document.getElementById("metric-cutting").textContent = stats.cutting_label;
     document.getElementById("metric-table-change").textContent = stats.table_change_label;
     document.getElementById("metric-idle").textContent = stats.idle_label;
-    document.getElementById("utilization-value").textContent = `${stats.utilization_percent}%`;
-    document.getElementById("utilization-fill").style.width = `${Math.min(stats.utilization_percent, 100)}%`;
+    document.getElementById("utilization-fill").style.width = `${Math.min(stats.randament_percent, 100)}%`;
 }
 
 function renderSource(realDataSource) {
@@ -227,6 +370,8 @@ function renderSource(realDataSource) {
     dot.className = "dot";
     if (realDataSource.status === "configured") {
         dot.classList.add("connected");
+    } else {
+        dot.classList.add("pending");
     }
 
     text.textContent = realDataSource.message;
@@ -235,7 +380,7 @@ function renderSource(realDataSource) {
             <small>Sursa reala</small>
             <strong>${realDataSource.name}</strong>
             <p>${realDataSource.status === "configured" ? "Configurata" : "Neconfigurata"}</p>
-            <small>${realDataSource.endpoint || "Completeaza LASER_REAL_DATA_ENDPOINT cand aflam cum expune laserul datele."}</small>
+            <small>${realDataSource.endpoint || "Aici vom lega codul cu date live cand il trimiti."}</small>
         </div>
     `;
 }
@@ -245,23 +390,44 @@ function renderTimeline(events) {
     timeline.innerHTML = "";
 
     if (!events.length) {
-        timeline.innerHTML = `<p class="empty-state">Nu exista inca evenimente.</p>`;
+        timeline.innerHTML = `<p class="empty-state">Nu exista inca evenimente pentru utilajul selectat.</p>`;
         return;
     }
 
-    events.forEach((event) => {
+    events.forEach((eventItem) => {
         const item = document.createElement("article");
         item.className = "timeline-item";
         item.innerHTML = `
             <div class="timeline-meta">
-                <small>${formatDateTime(event.created_at)}</small>
-                <small>${event.source}</small>
+                <small>${formatDateTime(eventItem.created_at)}</small>
+                <small>${eventItem.source}</small>
             </div>
-            <strong>${event.signal_label}: ${event.value ? "ON" : "OFF"}</strong>
-            <p>${event.operator_name || "Fara operator"}</p>
-            <small>${event.note || "Fara observatii"}${event.is_manual ? " · test manual" : ""}</small>
+            <strong>${eventItem.signal_label}: ${eventItem.value ? "ON" : "OFF"}</strong>
+            <p>${eventItem.operator_name || "Fara operator activ"}</p>
+            <small>${eventItem.note || "Fara observatii"}${eventItem.is_manual ? " | test manual" : ""}</small>
         `;
         timeline.appendChild(item);
+    });
+}
+
+function setWorkcenterFeedback(message, tone = "muted") {
+    state.workcenterFeedback = {
+        machineKey: state.selectedMachineKey,
+        tone,
+        message
+    };
+    setFeedbackText(message, tone);
+}
+
+function setFeedbackText(message, tone = "muted") {
+    const feedback = document.getElementById("workcenter-feedback");
+    feedback.textContent = message;
+    feedback.className = `feedback-text ${tone ? `is-${tone}` : ""}`.trim();
+}
+
+function syncBusyState() {
+    document.querySelectorAll("button").forEach((button) => {
+        button.disabled = state.isSubmitting;
     });
 }
 

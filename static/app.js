@@ -12,6 +12,8 @@ const state = {
 };
 
 document.addEventListener("DOMContentLoaded", () => {
+    initThemeToggle();
+
     const savedMachineKey = window.localStorage.getItem("selectedMachineKey");
     if (savedMachineKey) {
         state.selectedMachineKey = savedMachineKey;
@@ -21,6 +23,38 @@ document.addEventListener("DOMContentLoaded", () => {
     loadDashboard(state.selectedMachineKey);
     window.setInterval(() => loadDashboard(state.selectedMachineKey), 15000);
 });
+
+function initThemeToggle() {
+    const toggle = document.getElementById("themeToggle");
+    const body = document.body;
+    const currentTheme = window.localStorage.getItem("theme");
+
+    if (!toggle) {
+        return;
+    }
+
+    if (currentTheme === "dark") {
+        body.classList.add("dark-mode");
+        body.classList.remove("light-mode");
+        toggle.checked = false;
+    } else {
+        body.classList.add("light-mode");
+        body.classList.remove("dark-mode");
+        toggle.checked = true;
+    }
+
+    toggle.addEventListener("change", () => {
+        if (toggle.checked) {
+            body.classList.add("light-mode");
+            body.classList.remove("dark-mode");
+            window.localStorage.setItem("theme", "light");
+        } else {
+            body.classList.add("dark-mode");
+            body.classList.remove("light-mode");
+            window.localStorage.setItem("theme", "dark");
+        }
+    });
+}
 
 function bindActions() {
     document.getElementById("machine-selector").addEventListener("click", async (event) => {

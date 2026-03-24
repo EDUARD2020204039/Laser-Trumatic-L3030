@@ -381,6 +381,26 @@ def get_real_data_settings(machine_profile: dict) -> dict[str, str]:
     }
 
 
+def build_script_catalog() -> list[dict]:
+    catalog = []
+    for machine_key, machine_meta in MACHINE_DEFINITIONS.items():
+        feed = REAL_DATA_FEEDS[machine_key]
+        script_name = feed["script_name"]
+        catalog.append(
+            {
+                "key": machine_key,
+                "label": machine_meta["label"],
+                "description": machine_meta["description"],
+                "script_name": script_name or "Nespecificat",
+                "script_exists": bool(script_name and (BASE_DIR / script_name).exists()),
+                "endpoint": feed["endpoint"] or "Fara endpoint clar",
+                "transport": feed["transport"],
+                "details": feed["details"],
+            }
+        )
+    return catalog
+
+
 def get_pontaj_connection():
     if pyodbc is None:
         raise RuntimeError("pyodbc is not installed in this environment.")
@@ -785,6 +805,7 @@ def index():
         dashboard_title=DASHBOARD_TITLE,
         machines=get_machine_profiles(),
         default_machine_key=DEFAULT_MACHINE_KEY,
+        script_catalog=build_script_catalog(),
     )
 
 

@@ -51,13 +51,26 @@ REAL_DATA_FEEDS = {
         "display_name": "laserFeed OCR bridge",
         "endpoint": "http://laserbvision-1:8081",
         "transport": "Redis + MQTT",
+        "left_panel": [
+            {"label": "OCR program", "value": "da"},
+            {"label": "OCR repetitie", "value": "da"},
+            {"label": "Camera feed", "value": "UP / DOWN"},
+            {"label": "Semnal live", "value": "partial"},
+        ],
         "screen_rows": [
-            {"label": "Program monitorizat", "value": "OCR din captura ecran"},
-            {"label": "Program activ", "value": "LaserState / nume program OCR"},
-            {"label": "Stare feed", "value": "LaserStatus"},
-            {"label": "Comunicare", "value": "Redis + MQTT"},
-            {"label": "MQTT topic", "value": "Laser/3020/Status"},
-            {"label": "Camera", "value": "http://laserbvision-1:8081"},
+            {"label": "Selected program", "value": "OCR nume program din ecran"},
+            {"label": "Active program", "value": "LaserState / nume program OCR"},
+            {"label": "Program status", "value": "OK / ERR din script"},
+            {"label": "Machine ON", "value": "LaserStatus = UP"},
+            {"label": "Cutting", "value": "nu este extras direct inca"},
+            {"label": "Table change", "value": "nu este extras direct inca"},
+            {"label": "Idle", "value": "derivat doar dupa ce avem Cutting"},
+        ],
+        "derivation_rules": [
+            {"label": "Machine ON", "value": "DA cand Redis key LaserStatus este UP"},
+            {"label": "Cutting", "value": "Nu exista in script un OCR direct pe zona Running / Laser ON / Wati"},
+            {"label": "Table change", "value": "Nu exista in script o zona OCR sau semnal IO dedicat schimbului de masa"},
+            {"label": "Idle", "value": "Poate fi calculat doar dupa ce definim clar Cutting si Table change"},
         ],
         "details": [
             "Camera OCR: laserbvision-1:8081",
@@ -71,13 +84,26 @@ REAL_DATA_FEEDS = {
         "display_name": "laserFeed OCR bridge",
         "endpoint": "http://laserbvision-1:8081",
         "transport": "Redis + MQTT",
+        "left_panel": [
+            {"label": "OCR program", "value": "da"},
+            {"label": "OCR repetitie", "value": "da"},
+            {"label": "Camera feed", "value": "UP / DOWN"},
+            {"label": "Semnal live", "value": "partial"},
+        ],
         "screen_rows": [
-            {"label": "Program monitorizat", "value": "OCR din captura ecran"},
-            {"label": "Program activ", "value": "LaserState / nume program OCR"},
-            {"label": "Stare feed", "value": "LaserStatus"},
-            {"label": "Comunicare", "value": "Redis + MQTT"},
-            {"label": "MQTT topic", "value": "Laser/3020/Status"},
-            {"label": "Camera", "value": "http://laserbvision-1:8081"},
+            {"label": "Selected program", "value": "OCR nume program din ecran"},
+            {"label": "Active program", "value": "LaserState / nume program OCR"},
+            {"label": "Program status", "value": "OK / ERR din script"},
+            {"label": "Machine ON", "value": "LaserStatus = UP"},
+            {"label": "Cutting", "value": "nu este extras direct inca"},
+            {"label": "Table change", "value": "nu este extras direct inca"},
+            {"label": "Idle", "value": "derivat doar dupa ce avem Cutting"},
+        ],
+        "derivation_rules": [
+            {"label": "Machine ON", "value": "DA cand Redis key LaserStatus este UP"},
+            {"label": "Cutting", "value": "Foloseste momentan acelasi feed ca Laser1, deci nu avem OCR separat"},
+            {"label": "Table change", "value": "Necesita feed separat sau semnal suplimentar pentru Laser2"},
+            {"label": "Idle", "value": "Poate fi calculat doar dupa ce clarificam Cutting si Table change"},
         ],
         "details": [
             "Foloseste acelasi feed incarcat pentru Laser1",
@@ -91,13 +117,26 @@ REAL_DATA_FEEDS = {
         "display_name": "Abkant OCR bridge",
         "endpoint": "http://100.126.29.52:8081",
         "transport": "MQTT + PostgreSQL",
+        "left_panel": [
+            {"label": "OCR program", "value": "da"},
+            {"label": "OCR nr buc", "value": "da"},
+            {"label": "Camera feed", "value": "UP / DOWN"},
+            {"label": "Semnal live", "value": "partial"},
+        ],
         "screen_rows": [
-            {"label": "Program activ", "value": "Abkant/ProgramActiv"},
-            {"label": "Identificare", "value": "Abkant/StareProgramIdentificat"},
-            {"label": "Persistenta", "value": "raportare_abkant"},
-            {"label": "Comunicare", "value": "MQTT + PostgreSQL"},
-            {"label": "OCR", "value": "Program si numar de bucati"},
-            {"label": "Camera", "value": "http://100.126.29.52:8081"},
+            {"label": "Active program", "value": "Abkant/ProgramActiv"},
+            {"label": "Program valid", "value": "Abkant/StareProgramIdentificat"},
+            {"label": "Nr bucati", "value": "OCR numar_bucati / nr_bucati"},
+            {"label": "Machine ON", "value": "camera accesibila + rpiabkantworking"},
+            {"label": "Cutting", "value": "nu se aplica; se poate interpreta ca lucru activ"},
+            {"label": "Table change", "value": "nu se aplica direct la abkant"},
+            {"label": "Idle", "value": "program neschimbat / fara progres bucati"},
+        ],
+        "derivation_rules": [
+            {"label": "Machine ON", "value": "DA cand captura merge si parametrul rpiabkantworking ramane TRUE"},
+            {"label": "Cutting", "value": "Pentru abkant nu avem taiere; putem urmari lucru activ prin program + numar bucati"},
+            {"label": "Table change", "value": "Nu exista echivalent direct in scriptul de abkant"},
+            {"label": "Idle", "value": "Poate fi derivat cand masina este ON dar programul / numarul de bucati nu avanseaza"},
         ],
         "details": [
             "Camera OCR: 100.126.29.52:8081",
@@ -219,23 +258,24 @@ def get_pontaj_connection_settings() -> dict[str, str | int]:
 
 def get_default_machine_profiles() -> list[dict]:
     legacy_default = parse_optional_int(os.getenv("PONTAJ_WORKCENTER_ID", "1"))
+    laser_default = parse_optional_int(os.getenv("PONTAJ_LASER1_WORKCENTER_ID", legacy_default))
     return [
         {
             "machine_key": "laser1",
             "label": MACHINE_DEFINITIONS["laser1"]["label"],
-            "workcenter_id": parse_optional_int(os.getenv("PONTAJ_LASER1_WORKCENTER_ID", legacy_default)),
+            "workcenter_id": laser_default,
             "sort_order": 1,
         },
         {
             "machine_key": "laser2",
             "label": MACHINE_DEFINITIONS["laser2"]["label"],
-            "workcenter_id": parse_optional_int(os.getenv("PONTAJ_LASER2_WORKCENTER_ID")),
+            "workcenter_id": parse_optional_int(os.getenv("PONTAJ_LASER2_WORKCENTER_ID", laser_default)),
             "sort_order": 2,
         },
         {
             "machine_key": "abkant",
             "label": MACHINE_DEFINITIONS["abkant"]["label"],
-            "workcenter_id": parse_optional_int(os.getenv("PONTAJ_ABKANT_WORKCENTER_ID")),
+            "workcenter_id": parse_optional_int(os.getenv("PONTAJ_ABKANT_WORKCENTER_ID", "2")),
             "sort_order": 3,
         },
     ]
@@ -322,12 +362,13 @@ def init_db() -> None:
             connection.execute(
                 """
                 UPDATE machine_profiles
-                SET label = ?, sort_order = ?
+                SET label = ?, sort_order = ?, workcenter_id = COALESCE(workcenter_id, ?)
                 WHERE machine_key = ?
                 """,
                 (
                     profile["label"],
                     profile["sort_order"],
+                    profile["workcenter_id"],
                     profile["machine_key"],
                 ),
             )
@@ -419,7 +460,9 @@ def build_script_catalog() -> list[dict]:
                 "script_exists": bool(script_name and (BASE_DIR / script_name).exists()),
                 "endpoint": feed["endpoint"] or "Fara endpoint clar",
                 "transport": feed["transport"],
+                "left_panel": feed["left_panel"],
                 "screen_rows": feed["screen_rows"],
+                "derivation_rules": feed["derivation_rules"],
                 "details": feed["details"],
             }
         )

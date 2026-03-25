@@ -168,14 +168,14 @@ REAL_DATA_FEEDS = {
             {"label": "Program valid", "value": "Abkant/StareProgramIdentificat"},
             {"label": "Nr bucati", "value": "OCR numar_bucati / nr_bucati"},
             {"label": "Machine ON", "value": "camera accesibila + rpiabkantworking"},
-            {"label": "Cutting", "value": "nu se aplica; se poate interpreta ca lucru activ"},
-            {"label": "Table change", "value": "nu se aplica direct la abkant"},
+            {"label": "Bending", "value": "program activ + progres piese sub total"},
+            {"label": "Bend change", "value": "program terminat; asteptam urmatorul program"},
             {"label": "Idle", "value": "program neschimbat / fara progres bucati"},
         ],
         "derivation_rules": [
             {"label": "Machine ON", "value": "DA cand captura merge si parametrul rpiabkantworking ramane TRUE"},
-            {"label": "Cutting", "value": "Pentru abkant nu avem taiere; putem urmari lucru activ prin program + numar bucati"},
-            {"label": "Table change", "value": "Nu exista echivalent direct in scriptul de abkant"},
+            {"label": "Bending", "value": "DA cand exista program activ si numarul de piese produse nu a ajuns la total"},
+            {"label": "Bend change", "value": "DA cand programul activ si-a terminat toate piesele si asteapta urmatorul program"},
             {"label": "Idle", "value": "Poate fi derivat cand masina este ON dar programul / numarul de bucati nu avanseaza"},
         ],
         "details": [
@@ -192,17 +192,50 @@ SIGNAL_DEFINITIONS = {
         "label": "Machine ON",
         "description": "Masina este alimentata si pregatita.",
         "accent": "steel",
+        "button_on_label": "Opreste masina",
+        "button_off_label": "Porneste masina",
+        "metric_label": "Machine ON",
+        "report_label": "Masina pornita",
     },
     "cutting_active": {
         "label": "Cutting active",
         "description": "Utilajul lucreaza activ in productie.",
         "accent": "ember",
+        "button_on_label": "Opreste productia",
+        "button_off_label": "Porneste productia",
+        "metric_label": "Cutting",
+        "report_label": "Taiere",
     },
     "table_change": {
         "label": "Table change",
         "description": "Se schimba masa sau se pregateste urmatorul ciclu.",
         "accent": "teal",
+        "button_on_label": "Opreste schimbul",
+        "button_off_label": "Porneste schimbul",
+        "metric_label": "Table change",
+        "report_label": "Schimb masa",
     },
+}
+
+MACHINE_SIGNAL_OVERRIDES = {
+    "abkant": {
+        "cutting_active": {
+            "label": "Bending active",
+            "description": "Abkantul indoaie activ piesele programului curent.",
+            "button_on_label": "Opreste indoirea",
+            "button_off_label": "Porneste indoirea",
+            "metric_label": "Bending",
+            "report_label": "Indoire",
+        },
+        "table_change": {
+            "label": "Bend change",
+            "description": "Programul curent este terminat si se asteapta urmatorul program.",
+            "button_on_label": "Opreste schimbarea",
+            "button_off_label": "Porneste schimbarea",
+            "metric_label": "Bend change",
+            "report_label": "Bend change",
+        },
+    }
 }
 
 STATE_DEFINITIONS = {
@@ -226,6 +259,23 @@ STATE_DEFINITIONS = {
         "description": "Operatorul pregateste urmatorul ciclu.",
         "tone": "teal",
     },
+}
+
+MACHINE_STATE_OVERRIDES = {
+    "abkant": {
+        "ready": {
+            "label": "Pregatit",
+            "description": "Abkantul este pornit, dar nu indoaie activ.",
+        },
+        "cutting": {
+            "label": "In indoire",
+            "description": "Programul curent este in curs de indoire.",
+        },
+        "table_change": {
+            "label": "Bend change",
+            "description": "Programul curent este terminat si se pregateste urmatoarea indoire.",
+        },
+    }
 }
 
 LASER_OCR_ZONES = {
@@ -281,6 +331,18 @@ def ensure_machine_key(machine_key: str | None) -> str:
     if candidate not in MACHINE_DEFINITIONS:
         raise ValueError(f"Unsupported machine: {candidate}")
     return candidate
+
+
+def resolve_signal_definition(machine_key: str, signal_name: str) -> dict:
+    meta = dict(SIGNAL_DEFINITIONS[signal_name])
+    meta.update(MACHINE_SIGNAL_OVERRIDES.get(machine_key, {}).get(signal_name, {}))
+    return meta
+
+
+def resolve_state_definition(machine_key: str, state_key: str) -> dict:
+    meta = dict(STATE_DEFINITIONS[state_key])
+    meta.update(MACHINE_STATE_OVERRIDES.get(machine_key, {}).get(state_key, {}))
+    return meta
 
 
 def get_machine_env_value(machine_key: str, suffix: str, legacy_names: tuple[str, ...] = ()) -> str:
@@ -555,27 +617,70 @@ def fetch_abkant_postgres_snapshot() -> dict | None:
     machine_on = bool(parameter_row[0]) if parameter_row is not None else False
     active_program = (latest_row[1] or "").strip() if latest_row else ""
     pieces_text = (latest_row[2] or "").strip() if latest_row and latest_row[2] is not None else ""
-    produced_pieces = str(latest_row[3]) if latest_row and latest_row[3] is not None else ""
+    produced_pieces_raw = latest_row[3] if latest_row and latest_row[3] is not None else None
     collected_at = latest_row[0].isoformat(sep=" ", timespec="seconds") if latest_row and latest_row[0] else None
+
+    produced_pieces = None
+    if produced_pieces_raw is not None:
+        try:
+            produced_pieces = parse_optional_int(produced_pieces_raw)
+        except (TypeError, ValueError):
+            produced_pieces = None
+
+    pieces_done_from_text = None
+    total_pieces = None
+    if "/" in pieces_text:
+        first_part, second_part = pieces_text.split("/", 1)
+        try:
+            pieces_done_from_text = parse_optional_int(first_part)
+        except (TypeError, ValueError):
+            pieces_done_from_text = None
+        try:
+            total_pieces = parse_optional_int(second_part)
+        except (TypeError, ValueError):
+            total_pieces = None
+
+    if produced_pieces is None:
+        produced_pieces = pieces_done_from_text or 0
+
+    pieces_label = pieces_text or (
+        f"{produced_pieces}/{total_pieces}" if total_pieces is not None else str(produced_pieces)
+    )
+    bend_change = bool(machine_on and active_program and total_pieces and produced_pieces >= total_pieces)
+    bending_active = bool(machine_on and active_program and not bend_change)
+    idle = bool(machine_on and not bending_active and not bend_change)
+
+    if bend_change:
+        program_status = "Bend change"
+    elif bending_active:
+        program_status = "Bending active"
+    elif machine_on:
+        program_status = "Pregatit"
+    else:
+        program_status = "Oprit"
 
     return {
         "available": True,
         "connected": True,
         "source": "postgres-fallback",
         "endpoint": get_abkant_pg_connection_settings()["host"],
-        "selected_program": pieces_text or "n/a",
+        "machine_mode": "abkant",
+        "selected_program": active_program or "Necitit",
         "active_program": active_program or "Necitit",
-        "material": "n/a",
-        "program_status": "Pornit" if machine_on else "Oprit",
+        "material": pieces_label or "n/a",
+        "program_status": program_status,
+        "pieces_label": pieces_label or "n/a",
+        "produced_pieces": produced_pieces,
+        "total_pieces": total_pieces,
         "derived_signals": {
             "machine_on": machine_on,
-            "cutting_active": False,
-            "table_change": False,
-            "idle": machine_on,
+            "cutting_active": bending_active,
+            "table_change": bend_change,
+            "idle": idle,
         },
         "message": (
             f"Abkant citit din PostgreSQL. Ultima colectare: {collected_at or 'necunoscuta'}. "
-            f"Piese: {pieces_text or produced_pieces or 'n/a'}."
+            f"Program: {active_program or 'necunoscut'}. Piese: {pieces_label or 'n/a'}."
         ),
     }
 
@@ -637,10 +742,14 @@ def analyze_abkant_live_snapshot(machine_key: str) -> dict | None:
         "connected": reachable,
         "source": "feed-script",
         "endpoint": endpoint,
+        "machine_mode": "abkant",
         "selected_program": "n/a",
         "active_program": "Abkant/ProgramActiv",
         "material": "n/a",
         "program_status": "Program identificat din script",
+        "pieces_label": "n/a",
+        "produced_pieces": 0,
+        "total_pieces": None,
         "derived_signals": {
             "machine_on": False,
             "cutting_active": False,
@@ -1070,10 +1179,13 @@ def fetch_recent_events(machine_key: str, limit: int = 18) -> list[dict]:
 
 def format_saved_cycle_row(row: sqlite3.Row) -> dict:
     duration_seconds = row["cycle_duration_seconds"]
+    machine_key = row["machine_key"]
+    cutting_meta = resolve_signal_definition(machine_key, "cutting_active")
+    table_change_meta = resolve_signal_definition(machine_key, "table_change")
     return {
         "id": row["id"],
-        "machine_key": row["machine_key"],
-        "machine_label": MACHINE_DEFINITIONS.get(row["machine_key"], {}).get("label", row["machine_key"]),
+        "machine_key": machine_key,
+        "machine_label": MACHINE_DEFINITIONS.get(machine_key, {}).get("label", machine_key),
         "workcenter_id": row["workcenter_id"],
         "operator_id": row["operator_id"],
         "operator_name": row["operator_name"] or "Operator necunoscut",
@@ -1088,6 +1200,8 @@ def format_saved_cycle_row(row: sqlite3.Row) -> dict:
         "table_change_duration_label": format_seconds(row["table_change_duration_seconds"] or 0),
         "cycle_duration_seconds": duration_seconds,
         "cycle_duration_label": format_seconds(duration_seconds or 0),
+        "activity_label": cutting_meta.get("report_label", cutting_meta["label"]),
+        "change_label": table_change_meta.get("report_label", table_change_meta["label"]),
         "source": row["source"],
         "created_at": row["created_at"],
     }
@@ -1224,7 +1338,7 @@ def summarize_saved_cycles(records: list[dict]) -> list[dict]:
     return output
 
 
-def build_efficiency_report(label: str, records: list[dict]) -> dict:
+def build_efficiency_report(label: str, records: list[dict], machine_key: str | None = None) -> dict:
     total_cutting_seconds = sum(int(record.get("cycle_duration_seconds") or 0) for record in records)
     total_table_change_seconds = sum(int(record.get("table_change_duration_seconds") or 0) for record in records)
     productive_seconds = total_cutting_seconds + total_table_change_seconds
@@ -1233,6 +1347,13 @@ def build_efficiency_report(label: str, records: list[dict]) -> dict:
         if productive_seconds > 0
         else 0.0
     )
+    resolved_machine_key = machine_key
+    if resolved_machine_key is None and records:
+        first_machine_key = records[0].get("machine_key")
+        if all(record.get("machine_key") == first_machine_key for record in records):
+            resolved_machine_key = first_machine_key
+    cutting_meta = resolve_signal_definition(resolved_machine_key or DEFAULT_MACHINE_KEY, "cutting_active")
+    table_change_meta = resolve_signal_definition(resolved_machine_key or DEFAULT_MACHINE_KEY, "table_change")
 
     return {
         "label": label,
@@ -1240,8 +1361,10 @@ def build_efficiency_report(label: str, records: list[dict]) -> dict:
         "efficiency_percent": efficiency_percent,
         "cutting_seconds": total_cutting_seconds,
         "cutting_label": format_seconds(total_cutting_seconds),
+        "cutting_display_label": cutting_meta.get("report_label", cutting_meta["label"]),
         "table_change_seconds": total_table_change_seconds,
         "table_change_label": format_seconds(total_table_change_seconds),
+        "table_change_display_label": table_change_meta.get("report_label", table_change_meta["label"]),
         "productive_window_seconds": productive_seconds,
         "productive_window_label": format_seconds(productive_seconds),
     }
@@ -1255,9 +1378,9 @@ def build_saved_cycles_reports(machine_key: str | None = None) -> list[dict]:
     month_start = datetime.combine(date.today().replace(day=1), time.min)
 
     return [
-        build_efficiency_report("Zilnic", fetch_saved_cycles_between(today_start, now, machine_key=machine_key)),
-        build_efficiency_report("Saptamanal", fetch_saved_cycles_between(week_start, now, machine_key=machine_key)),
-        build_efficiency_report("Lunar", fetch_saved_cycles_between(month_start, now, machine_key=machine_key)),
+        build_efficiency_report("Zilnic", fetch_saved_cycles_between(today_start, now, machine_key=machine_key), machine_key=machine_key),
+        build_efficiency_report("Saptamanal", fetch_saved_cycles_between(week_start, now, machine_key=machine_key), machine_key=machine_key),
+        build_efficiency_report("Lunar", fetch_saved_cycles_between(month_start, now, machine_key=machine_key), machine_key=machine_key),
     ]
 
 
@@ -1490,7 +1613,8 @@ def finalize_pending_cycle(machine_key: str, current_snapshot: dict) -> None:
 def fetch_current_signals(machine_key: str) -> dict[str, dict]:
     current_signals: dict[str, dict] = {}
     with get_sqlite_connection() as connection:
-        for signal_name, meta in SIGNAL_DEFINITIONS.items():
+        for signal_name in SIGNAL_DEFINITIONS:
+            meta = resolve_signal_definition(machine_key, signal_name)
             row = connection.execute(
                 """
                 SELECT value, created_at, operator_name
@@ -1508,18 +1632,22 @@ def fetch_current_signals(machine_key: str) -> dict[str, dict]:
                 "label": meta["label"],
                 "description": meta["description"],
                 "accent": meta["accent"],
+                "button_on_label": meta.get("button_on_label"),
+                "button_off_label": meta.get("button_off_label"),
+                "metric_label": meta.get("metric_label", meta["label"]),
+                "report_label": meta.get("report_label", meta["label"]),
             }
     return current_signals
 
 
-def derive_machine_state(current_signals: dict[str, dict]) -> dict:
+def derive_machine_state(machine_key: str, current_signals: dict[str, dict]) -> dict:
     if not current_signals["machine_on"]["active"]:
-        return {"key": "off", **STATE_DEFINITIONS["off"]}
+        return {"key": "off", **resolve_state_definition(machine_key, "off")}
     if current_signals["cutting_active"]["active"]:
-        return {"key": "cutting", **STATE_DEFINITIONS["cutting"]}
+        return {"key": "cutting", **resolve_state_definition(machine_key, "cutting")}
     if current_signals["table_change"]["active"]:
-        return {"key": "table_change", **STATE_DEFINITIONS["table_change"]}
-    return {"key": "ready", **STATE_DEFINITIONS["ready"]}
+        return {"key": "table_change", **resolve_state_definition(machine_key, "table_change")}
+    return {"key": "ready", **resolve_state_definition(machine_key, "ready")}
 
 
 def calculate_active_seconds(
@@ -1588,20 +1716,29 @@ def build_today_stats(machine_key: str) -> dict:
     idle_seconds = max(machine_on_seconds - cutting_seconds - table_change_seconds, 0)
     utilization = round((cutting_seconds / machine_on_seconds) * 100, 1) if machine_on_seconds else 0.0
     availability = round((cutting_seconds / machine_on_seconds) * 100, 1) if machine_on_seconds else 0.0
+    cutting_meta = resolve_signal_definition(machine_key, "cutting_active")
+    table_change_meta = resolve_signal_definition(machine_key, "table_change")
+    availability_prefix = (
+        "Disponibilitate indoire/masina_pornita"
+        if machine_key == "abkant"
+        else "Disponibilitate taiere/masina_pornita"
+    )
 
     return {
         "machine_on_seconds": machine_on_seconds,
         "machine_on_label": format_seconds(machine_on_seconds),
         "cutting_seconds": cutting_seconds,
         "cutting_label": format_seconds(cutting_seconds),
+        "cutting_metric_label": cutting_meta.get("metric_label", cutting_meta["label"]),
         "table_change_seconds": table_change_seconds,
         "table_change_label": format_seconds(table_change_seconds),
+        "table_change_metric_label": table_change_meta.get("metric_label", table_change_meta["label"]),
         "idle_seconds": idle_seconds,
         "idle_label": format_seconds(idle_seconds),
         "utilization_percent": utilization,
         "randament_percent": utilization,
         "availability_percent": availability,
-        "availability_label": f"Disponibilitate taiere/masina_pornita {availability}%",
+        "availability_label": f"{availability_prefix} {availability}%",
         "production_window_label": format_seconds(elapsed_seconds),
         "updated_at": now.isoformat(timespec="seconds"),
     }
@@ -1793,7 +1930,7 @@ def build_dashboard_payload(machine_key: str = DEFAULT_MACHINE_KEY) -> dict:
         live_extraction = sync_machine_events_from_live_snapshot(machine_key)
     current_signals = fetch_current_signals(machine_key)
     operator_snapshot = fetch_current_operator(machine_profile["workcenter_id"])
-    current_state = derive_machine_state(current_signals)
+    current_state = derive_machine_state(machine_key, current_signals)
     stats_today = build_today_stats(machine_key)
     machines = [
         {

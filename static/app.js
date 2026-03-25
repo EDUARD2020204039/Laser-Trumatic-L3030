@@ -22,6 +22,16 @@ const savedPeriodReportLabelMap = {
     month: "Lunar"
 };
 
+function getSignalButtonLabel(signalName, signal) {
+    if (signal?.active && signal?.button_on_label) {
+        return signal.button_on_label;
+    }
+    if (!signal?.active && signal?.button_off_label) {
+        return signal.button_off_label;
+    }
+    return signalLabels[signalName][signal.active ? "on" : "off"];
+}
+
 function formatSavedPeriodDate(value, options = { dateStyle: "medium" }) {
     return new Intl.DateTimeFormat("ro-RO", options).format(value);
 }
@@ -524,7 +534,7 @@ function renderMachineState(machine, machineState) {
     document.getElementById("machine-state-description").textContent = machineState.description;
 
     const badge = document.getElementById("machine-state-badge");
-    badge.textContent = machineState.key.replace("_", " ").toUpperCase();
+    badge.textContent = (machineState.badge_label || machineState.label || machineState.key).toUpperCase();
     badge.className = `state-badge tone-${machineState.tone}`;
 }
 
@@ -555,7 +565,7 @@ function renderButtons(signals) {
         }
 
         button.classList.toggle("is-active", signal.active);
-        button.textContent = signalLabels[signalName][signal.active ? "on" : "off"];
+        button.textContent = getSignalButtonLabel(signalName, signal);
     });
 }
 
@@ -624,6 +634,10 @@ function renderOperator(operatorSnapshot) {
 }
 
 function renderStats(stats) {
+    document.getElementById("metric-label-machine-on").textContent = "Machine ON";
+    document.getElementById("metric-label-cutting").textContent = stats.cutting_metric_label || "Cutting";
+    document.getElementById("metric-label-table-change").textContent = stats.table_change_metric_label || "Table change";
+    document.getElementById("metric-label-idle").textContent = "Idle";
     document.getElementById("metric-randament").textContent = `${stats.randament_percent}%`;
     document.getElementById("metric-availability").textContent =
         stats.availability_label || `Disponibilitate taiere/masina_pornita ${stats.availability_percent}%`;
@@ -687,7 +701,11 @@ function tickLiveStats() {
         production_window_label: formatSeconds(productionWindowSeconds),
         randament_percent: randamentPercent,
         availability_percent: availabilityPercent,
-        availability_label: `Disponibilitate taiere/masina_pornita ${availabilityPercent}%`
+        availability_label: state.dashboard?.stats_today?.availability_label
+            ? state.dashboard.stats_today.availability_label.replace(/\d+(\.\d+)?%$/, `${availabilityPercent}%`)
+            : `Disponibilitate taiere/masina_pornita ${availabilityPercent}%`,
+        cutting_metric_label: state.dashboard?.stats_today?.cutting_metric_label || "Cutting",
+        table_change_metric_label: state.dashboard?.stats_today?.table_change_metric_label || "Table change"
     });
  }
 
@@ -735,6 +753,57 @@ function renderLiveExtraction(snapshot) {
     }
 
     const signals = snapshot.derived_signals || {};
+    const currentMachineKey = state.dashboard?.machine?.key || state.selectedMachineKey;
+
+    if (currentMachineKey === "abkant") {
+        container.innerHTML = `
+            <div class="live-screen">
+                <div class="live-screen-row">
+                    <div class="live-cell">
+                        <span>Program curent</span>
+                        <strong>${snapshot.active_program || "Necitit"}</strong>
+                    </div>
+                    <div class="live-cell">
+                        <span>Piese de indoit</span>
+                        <strong>${snapshot.total_pieces ?? "Necunoscut"}</strong>
+                    </div>
+                </div>
+                <div class="live-screen-row">
+                    <div class="live-cell">
+                        <span>Piese indoite</span>
+                        <strong>${snapshot.produced_pieces ?? 0}</strong>
+                    </div>
+                    <div class="live-cell">
+                        <span>Progres</span>
+                        <strong>${snapshot.pieces_label || "n/a"}</strong>
+                    </div>
+                </div>
+                <div class="live-screen-row">
+                    <div class="live-cell">
+                        <span>Machine ON</span>
+                        <strong>${signals.machine_on ? "DA" : "NU"}</strong>
+                    </div>
+                    <div class="live-cell">
+                        <span>Bending</span>
+                        <strong>${signals.cutting_active ? "DA" : "NU"}</strong>
+                    </div>
+                </div>
+                <div class="live-screen-row">
+                    <div class="live-cell">
+                        <span>Bend change</span>
+                        <strong>${signals.table_change ? "DA" : "NU"}</strong>
+                    </div>
+                    <div class="live-cell">
+                        <span>Status program</span>
+                        <strong>${snapshot.program_status || "Necitit"}</strong>
+                    </div>
+                </div>
+            </div>
+            <p class="feedback-text">${snapshot.message || ""}</p>
+        `;
+        return;
+    }
+
     container.innerHTML = `
         <div class="live-screen">
             <div class="live-screen-row">
@@ -890,8 +959,8 @@ function renderSavedReports(reports, period, periodMeta) {
                 <p>${periodMeta.reportCardText}</p>
                 <div class="saved-report-metrics">
                     <span>${item.records_count} cicluri</span>
-                    <span>Taiere ${item.cutting_label}</span>
-                    <span>Schimb masa ${item.table_change_label}</span>
+                    <span>${item.cutting_display_label || "Taiere"} ${item.cutting_label}</span>
+                    <span>${item.table_change_display_label || "Schimb masa"} ${item.table_change_label}</span>
                 </div>
             </article>
         `)
@@ -923,8 +992,8 @@ function renderSavedMachineReports(reportsByMachine, period, periodMeta) {
                             <span>${period.label}</span>
                             <strong>${period.efficiency_percent}%</strong>
                             <small>${period.records_count} cicluri</small>
-                            <small>Taiere ${period.cutting_label}</small>
-                            <small>Schimb masa ${period.table_change_label}</small>
+                            <small>${period.cutting_display_label || "Taiere"} ${period.cutting_label}</small>
+                            <small>${period.table_change_display_label || "Schimb masa"} ${period.table_change_label}</small>
                         </div>
                     `).join("")}
                 </div>
@@ -963,19 +1032,19 @@ function renderSavedRecords(records, periodMeta) {
                         <strong>${record.material}</strong>
                     </div>
                     <div>
-                        <span>Inceput taiere</span>
+                        <span>Inceput ${record.activity_label?.toLowerCase() || "taiere"}</span>
                         <strong>${record.cutting_started_at ? formatDateTime(record.cutting_started_at) : "Necunoscut"}</strong>
                     </div>
                     <div>
-                        <span>Schimb masa</span>
+                        <span>${record.change_label || "Schimb masa"}</span>
                         <strong>${formatDateTime(record.table_change_started_at)}</strong>
                     </div>
                     <div>
-                        <span>Final schimb masa</span>
+                        <span>Final ${record.change_label?.toLowerCase() || "schimb masa"}</span>
                         <strong>${record.table_change_ended_at ? formatDateTime(record.table_change_ended_at) : "In lucru"}</strong>
                     </div>
                     <div>
-                        <span>Durata schimb masa</span>
+                        <span>Durata ${record.change_label?.toLowerCase() || "schimb masa"}</span>
                         <strong>${record.table_change_duration_label || "00:00:00"}</strong>
                     </div>
                 </div>

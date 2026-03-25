@@ -50,6 +50,7 @@ Aplicatia porneste implicit pe `http://localhost:3030`.
 - `LASER1_REAL_DATA_ENDPOINT`, `LASER2_REAL_DATA_ENDPOINT`, `ABKANT_REAL_DATA_ENDPOINT` pentru endpoint separat pe fiecare utilaj
 - `LASER1_CAMERA_FEED_URL`, `LASER2_CAMERA_FEED_URL`, `ABKANT_CAMERA_FEED_URL` pentru feedul video pe care vrei sa-l vezi in dashboard
 - `LASER1_HMI_FEED_URL`, `LASER2_HMI_FEED_URL`, `ABKANT_HMI_FEED_URL` pentru pagina HMI embed-uita in dashboard
+- `ABKANT_PG_HOST`, `ABKANT_PG_DATABASE`, `ABKANT_PG_USER`, `ABKANT_PG_PASSWORD` pentru fallback-ul Abkant din PostgreSQL cind linkul video pica
 - daca rulezi aplicatia in Docker pe un server public, endpointurile de tip Tailscale sau hostname intern trebuie sa fie accesibile si din container; altfel utilajul ramine `OFF`
 - `BACKGROUND_SYNC_ENABLED=1` porneste pollerul din fundal care urmareste utilajele chiar daca nu ai pagina deschisa
 - `BACKGROUND_SYNC_INTERVAL_SECONDS=10` controleaza la cite secunde se face sincronizarea live si salvarea automata in SQLite

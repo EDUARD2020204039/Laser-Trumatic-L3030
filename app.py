@@ -18,6 +18,11 @@ try:
 except ImportError:  # pragma: no cover - optional during early local setup
     pyodbc = None
 
+try:  # pragma: no cover - optional Postgres fallback for Abkant
+    import psycopg2
+except ImportError:  # pragma: no cover
+    psycopg2 = None
+
 try:  # pragma: no cover - optional OCR stack
     import cv2
 except ImportError:  # pragma: no cover
@@ -397,7 +402,8 @@ def read_ocr_block(image, zone: tuple[int, int, int, int], psm: int = 6) -> str:
 
 
 def normalize_program_token(token: str) -> str:
-    cleaned = re.sub(r"[^A-Za-z0-9_]", "", token or "").upper()
+    cleaned = re.sub(r"[^A-Za-z0-9_ ]", "", token or "").upper().replace(" ", "_")
+    cleaned = re.sub(r"_+", "_", cleaned).strip("_")
     if re.match(r"^P\d{5,}_", cleaned):
         cleaned = f"S{cleaned}"
     underscore_count = cleaned.count("_")
@@ -408,13 +414,18 @@ def normalize_program_token(token: str) -> str:
     return cleaned
 
 
-def extract_section_token(text: str, start_label: str, end_label: str | None = None) -> str:
+def build_flexible_label_pattern(label: str) -> str:
+    parts = [re.escape(part) for part in label.split()]
+    return r"\W*".join(parts)
+
+
+def extract_section_text(text: str, start_label: str, end_label: str | None = None) -> str:
     if not text:
         return ""
 
-    pattern = re.escape(start_label)
+    pattern = build_flexible_label_pattern(start_label)
     if end_label:
-        pattern += rf"(.*?){re.escape(end_label)}"
+        pattern += rf"(.*?){build_flexible_label_pattern(end_label)}"
     else:
         pattern += r"(.*)"
 
@@ -422,12 +433,33 @@ def extract_section_token(text: str, start_label: str, end_label: str | None = N
     if not match:
         return ""
 
-    section = match.group(1)
-    token_match = re.search(r"[A-Z]{0,3}\d{5,}_[A-Z0-9]{2}_[A-Z0-9]{2}_?[A-Z0-9]", section, re.IGNORECASE)
-    if not token_match:
+    return clean_ocr_text(match.group(1))
+
+
+def extract_program_value(section: str) -> str:
+    if not section:
         return ""
 
-    return normalize_program_token(token_match.group(0))
+    patterns = (
+        r"(?:SP)?\d{4,}[A-Z0-9_ ]{2,}",
+        r"[A-Z]{2,}(?:_[A-Z0-9 ]+)+",
+    )
+    for pattern in patterns:
+        matches = re.findall(pattern, section, re.IGNORECASE)
+        for match in matches:
+            token = normalize_program_token(match)
+            if token and not token.startswith("N_") and "DIR" not in token:
+                if "SP" in section.upper() and token[0].isdigit():
+                    token = f"SP{token}"
+                return token
+    return ""
+
+
+def extract_section_token(text: str, start_label: str, end_label: str | None = None) -> str:
+    section = extract_section_text(text, start_label, end_label)
+    if not section:
+        return ""
+    return extract_program_value(section)
 
 
 def extract_program_status(text: str) -> str:
@@ -454,6 +486,90 @@ def extract_material(text: str) -> str:
         if match:
             return clean_ocr_text(match.group(0))
     return ""
+
+
+def get_abkant_pg_connection_settings() -> dict[str, str | int]:
+    return {
+        "host": os.getenv("ABKANT_PG_HOST", "192.168.2.130"),
+        "database": os.getenv("ABKANT_PG_DATABASE", "oee_helpan"),
+        "user": os.getenv("ABKANT_PG_USER", "postgres"),
+        "password": os.getenv("ABKANT_PG_PASSWORD", "postgres"),
+        "timeout": int(os.getenv("ABKANT_PG_TIMEOUT", "5")),
+    }
+
+
+def get_abkant_pg_connection():
+    if psycopg2 is None:
+        raise RuntimeError("psycopg2 is not installed in this environment.")
+
+    settings = get_abkant_pg_connection_settings()
+    return psycopg2.connect(
+        host=settings["host"],
+        database=settings["database"],
+        user=settings["user"],
+        password=settings["password"],
+        connect_timeout=settings["timeout"],
+    )
+
+
+def fetch_abkant_postgres_snapshot() -> dict | None:
+    try:
+        with get_abkant_pg_connection() as connection:
+            cursor = connection.cursor()
+            cursor.execute(
+                """
+                SELECT status
+                FROM parameters
+                WHERE lower(parametru) = 'rpiabkantworking'
+                LIMIT 1
+                """
+            )
+            parameter_row = cursor.fetchone()
+
+            cursor.execute(
+                """
+                SELECT datacolectare, programidentificat, numar_bucati, nr_bucati
+                FROM raportare_abkant
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            )
+            latest_row = cursor.fetchone()
+            cursor.close()
+    except Exception as exc:
+        return {
+            "available": False,
+            "connected": False,
+            "source": "postgres-fallback",
+            "message": f"Fallback Abkant PostgreSQL indisponibil: {exc}",
+        }
+
+    machine_on = bool(parameter_row[0]) if parameter_row is not None else False
+    active_program = (latest_row[1] or "").strip() if latest_row else ""
+    pieces_text = (latest_row[2] or "").strip() if latest_row and latest_row[2] is not None else ""
+    produced_pieces = str(latest_row[3]) if latest_row and latest_row[3] is not None else ""
+    collected_at = latest_row[0].isoformat(sep=" ", timespec="seconds") if latest_row and latest_row[0] else None
+
+    return {
+        "available": True,
+        "connected": True,
+        "source": "postgres-fallback",
+        "endpoint": get_abkant_pg_connection_settings()["host"],
+        "selected_program": pieces_text or "n/a",
+        "active_program": active_program or "Necitit",
+        "material": "n/a",
+        "program_status": "Pornit" if machine_on else "Oprit",
+        "derived_signals": {
+            "machine_on": machine_on,
+            "cutting_active": False,
+            "table_change": False,
+            "idle": machine_on,
+        },
+        "message": (
+            f"Abkant citit din PostgreSQL. Ultima colectare: {collected_at or 'necunoscuta'}. "
+            f"Piese: {pieces_text or produced_pieces or 'n/a'}."
+        ),
+    }
 
 
 def analyze_laser_live_snapshot(machine_key: str) -> dict | None:
@@ -502,6 +618,10 @@ def analyze_laser_live_snapshot(machine_key: str) -> dict | None:
 
 
 def analyze_abkant_live_snapshot(machine_key: str) -> dict | None:
+    postgres_snapshot = fetch_abkant_postgres_snapshot()
+    if postgres_snapshot and postgres_snapshot.get("available"):
+        return postgres_snapshot
+
     endpoint = resolve_real_data_endpoint(machine_key)
     reachable = bool(endpoint)
     return {

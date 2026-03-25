@@ -627,6 +627,13 @@ body.dark-mode .timeline-item {
     margin: 0 0 24px;
 }
 
+.saved-machine-report-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+    margin: 0 0 24px;
+}
+
 .saved-filter-row {
     display: flex;
     flex-wrap: wrap;
@@ -660,6 +667,7 @@ body.dark-mode .saved-filter-btn.is-selected {
 
 .saved-summary-card,
 .saved-report-card,
+.saved-machine-report-card,
 .saved-record-card {
     padding: 16px 0 16px 16px;
     border: 1px solid rgba(128, 0, 0, 0.1);
@@ -668,6 +676,7 @@ body.dark-mode .saved-filter-btn.is-selected {
 
 body.dark-mode .saved-summary-card,
 body.dark-mode .saved-report-card,
+body.dark-mode .saved-machine-report-card,
 body.dark-mode .saved-record-card {
     border-color: #555;
     border-left-color: #80dfff;
@@ -675,6 +684,7 @@ body.dark-mode .saved-record-card {
 
 .saved-summary-card strong,
 .saved-report-card strong,
+.saved-machine-report-card strong,
 .saved-record-card strong {
     display: block;
     margin-bottom: 6px;
@@ -683,8 +693,28 @@ body.dark-mode .saved-record-card {
 
 .saved-summary-card p,
 .saved-report-card p,
+.saved-machine-report-card p,
 .saved-record-card p {
     margin: 0 0 8px;
+}
+
+.saved-machine-period-list {
+    display: grid;
+    gap: 10px;
+}
+
+.saved-machine-period-item {
+    border-top: 1px solid rgba(128, 0, 0, 0.1);
+    padding-top: 10px;
+}
+
+body.dark-mode .saved-machine-period-item {
+    border-top-color: #555;
+}
+
+.saved-machine-period-item span,
+.saved-machine-period-item small {
+    display: block;
 }
 
 .saved-report-metrics {
@@ -821,6 +851,7 @@ body.dark-mode .saved-record-grid span {
     .feed-grid,
     .saved-summary-grid,
     .saved-report-grid,
+    .saved-machine-report-grid,
     .saved-record-grid {
         grid-template-columns: 1fr;
     }

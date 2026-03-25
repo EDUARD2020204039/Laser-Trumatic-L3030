@@ -514,13 +514,13 @@ def analyze_abkant_live_snapshot(machine_key: str) -> dict | None:
         "material": "n/a",
         "program_status": "Program identificat din script",
         "derived_signals": {
-            "machine_on": reachable,
+            "machine_on": False,
             "cutting_active": False,
             "table_change": False,
             "idle": False,
         },
         "message": (
-            "Abkant foloseste momentan feedul din script, nu OCR live direct in dashboard."
+            "Abkant foloseste momentan feedul din script, dar nu avem inca semnal live sigur pentru Machine ON."
             if reachable
             else "Feedul abkant nu este accesibil din dashboard."
         ),
@@ -1133,6 +1133,19 @@ def build_saved_cycles_reports(machine_key: str | None = None) -> list[dict]:
     ]
 
 
+def build_saved_cycles_reports_by_machine() -> list[dict]:
+    reports = []
+    for machine_key, machine_meta in MACHINE_DEFINITIONS.items():
+        reports.append(
+            {
+                "machine_key": machine_key,
+                "machine_label": machine_meta["label"],
+                "periods": build_saved_cycles_reports(machine_key),
+            }
+        )
+    return reports
+
+
 def resolve_saved_period(period: str | None) -> str:
     candidate = (period or "all").strip().lower()
     if candidate not in {"all", "day", "week", "month"}:
@@ -1168,6 +1181,7 @@ def build_saved_cycles_payload(machine_key: str | None = None, period: str = "al
         "records": records,
         "summary": summarize_saved_cycles(records),
         "reports": build_saved_cycles_reports(machine_key),
+        "reports_by_machine": build_saved_cycles_reports_by_machine(),
         "records_count": len(records),
         "updated_at": now_local().isoformat(timespec="seconds"),
     }

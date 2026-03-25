@@ -358,6 +358,7 @@ function renderSavedView(payload) {
     renderSavedSummary(payload.summary || []);
     renderSavedFilters(payload.period || state.savedPeriod);
     renderSavedReports(payload.reports || []);
+    renderSavedMachineReports(payload.reports_by_machine || []);
     renderSavedRecords(payload.records || []);
 }
 
@@ -785,6 +786,34 @@ function renderSavedReports(reports) {
                     <span>${item.records_count} cicluri</span>
                     <span>Taiere ${item.cutting_label}</span>
                     <span>Schimb masa ${item.table_change_label}</span>
+                </div>
+            </article>
+        `)
+        .join("");
+}
+
+function renderSavedMachineReports(reportsByMachine) {
+    const container = document.getElementById("saved-machine-reports");
+    if (!reportsByMachine.length) {
+        container.innerHTML = `<p class="empty-state">Raportul separat pe utilaj se va afisa aici dupa primele cicluri salvate.</p>`;
+        return;
+    }
+
+    container.innerHTML = reportsByMachine
+        .map((machineReport) => `
+            <article class="saved-machine-report-card">
+                <small>${machineReport.machine_label}</small>
+                <strong>Randament pe perioade</strong>
+                <div class="saved-machine-period-list">
+                    ${machineReport.periods.map((period) => `
+                        <div class="saved-machine-period-item">
+                            <span>${period.label}</span>
+                            <strong>${period.efficiency_percent}%</strong>
+                            <small>${period.records_count} cicluri</small>
+                            <small>Taiere ${period.cutting_label}</small>
+                            <small>Schimb masa ${period.table_change_label}</small>
+                        </div>
+                    `).join("")}
                 </div>
             </article>
         `)

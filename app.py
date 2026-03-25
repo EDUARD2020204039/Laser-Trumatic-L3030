@@ -269,28 +269,53 @@ def ensure_machine_key(machine_key: str | None) -> str:
     return candidate
 
 
+def get_machine_env_value(machine_key: str, suffix: str, legacy_names: tuple[str, ...] = ()) -> str:
+    env_names = [f"{machine_key.upper()}_{suffix}", *legacy_names]
+    for env_name in env_names:
+        value = os.getenv(env_name, "").strip()
+        if value:
+            return value
+    return ""
+
+
+def resolve_real_data_endpoint(machine_key: str) -> str:
+    legacy_names = ("LASER_REAL_DATA_ENDPOINT",) if machine_key in {"laser1", "laser2"} else ()
+    return get_machine_env_value(machine_key, "REAL_DATA_ENDPOINT", legacy_names) or REAL_DATA_FEEDS[machine_key]["endpoint"]
+
+
+def resolve_real_data_name(machine_key: str) -> str:
+    legacy_names = ("LASER_REAL_DATA_NAME",) if machine_key in {"laser1", "laser2"} else ()
+    return get_machine_env_value(machine_key, "REAL_DATA_NAME", legacy_names) or REAL_DATA_FEEDS[machine_key]["display_name"]
+
+
 def clean_ocr_text(value: str) -> str:
     sanitized = re.sub(r"\s+", " ", (value or "").replace("\x0c", " ")).strip()
     return sanitized.replace(" / ", "/").replace(" _ ", "_")
 
 
 def fetch_mjpeg_frame(url: str, timeout: float = 2.0):
-    if not OCR_AVAILABLE or not url:
-        return None
+    if not OCR_AVAILABLE:
+        return None, "OCR stack lipseste in container sau pe host."
+    if not url:
+        return None, "Endpointul live nu este configurat."
 
     buffer_bytes = bytes()
     try:
-        stream = urllib.request.urlopen(url, timeout=timeout)
-        while True:
-            buffer_bytes += stream.read(1024)
-            start = buffer_bytes.find(b"\xff\xd8")
-            end = buffer_bytes.find(b"\xff\xd9")
-            if start != -1 and end != -1:
-                jpg = buffer_bytes[start : end + 2]
-                image = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
-                return image
-    except Exception:
-        return None
+        with urllib.request.urlopen(url, timeout=timeout) as stream:
+            while True:
+                buffer_bytes += stream.read(1024)
+                start = buffer_bytes.find(b"\xff\xd8")
+                end = buffer_bytes.find(b"\xff\xd9")
+                if start != -1 and end != -1:
+                    jpg = buffer_bytes[start : end + 2]
+                    image = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
+                    if image is None:
+                        return None, "Fluxul MJPEG a raspuns, dar cadrul nu a putut fi decodat."
+                    return image, None
+    except Exception as exc:
+        return None, f"{exc.__class__.__name__}: {exc}"
+
+    return None, "Fluxul MJPEG nu a livrat niciun cadru valid."
 
 
 def read_ocr_zone(image, zone: tuple[int, int, int, int], whitelist: str, psm: int = 7) -> str:
@@ -314,12 +339,14 @@ def read_ocr_zone(image, zone: tuple[int, int, int, int], whitelist: str, psm: i
 
 def analyze_laser_live_snapshot(machine_key: str) -> dict | None:
     feed = REAL_DATA_FEEDS.get(machine_key, {})
-    image = fetch_mjpeg_frame(feed.get("endpoint", ""))
+    endpoint = resolve_real_data_endpoint(machine_key)
+    image, error_message = fetch_mjpeg_frame(endpoint)
     if image is None:
         return {
             "available": False,
             "connected": False,
-            "message": "Nu pot citi captura live de la camera laser.",
+            "endpoint": endpoint,
+            "message": f"Nu pot citi captura live de la {endpoint}. Motiv: {error_message}",
         }
 
     selected_program = read_ocr_zone(
@@ -354,6 +381,7 @@ def analyze_laser_live_snapshot(machine_key: str) -> dict | None:
         "available": True,
         "connected": True,
         "source": "live-ocr",
+        "endpoint": endpoint,
         "selected_program": selected_program or "Necitit",
         "active_program": active_program or "Necitit",
         "material": material or "Necitit",
@@ -369,12 +397,13 @@ def analyze_laser_live_snapshot(machine_key: str) -> dict | None:
 
 
 def analyze_abkant_live_snapshot(machine_key: str) -> dict | None:
-    feed = REAL_DATA_FEEDS.get(machine_key, {})
-    reachable = bool(feed.get("endpoint"))
+    endpoint = resolve_real_data_endpoint(machine_key)
+    reachable = bool(endpoint)
     return {
         "available": reachable,
         "connected": reachable,
         "source": "feed-script",
+        "endpoint": endpoint,
         "selected_program": "n/a",
         "active_program": "Abkant/ProgramActiv",
         "material": "n/a",
@@ -591,8 +620,8 @@ def get_real_data_settings(machine_profile: dict) -> dict[str, str]:
     script_name = feed["script_name"]
     script_exists = bool(script_name and (BASE_DIR / script_name).exists())
 
-    endpoint = os.getenv("LASER_REAL_DATA_ENDPOINT", "").strip() or feed["endpoint"]
-    name = os.getenv("LASER_REAL_DATA_NAME", "").strip() or feed["display_name"]
+    endpoint = resolve_real_data_endpoint(machine_profile["key"])
+    name = resolve_real_data_name(machine_profile["key"])
     status = "configured" if script_exists else "pending"
     return {
         "name": name,
@@ -621,7 +650,7 @@ def build_script_catalog() -> list[dict]:
                 "description": machine_meta["description"],
                 "script_name": script_name or "Nespecificat",
                 "script_exists": bool(script_name and (BASE_DIR / script_name).exists()),
-                "endpoint": feed["endpoint"] or "Fara endpoint clar",
+                "endpoint": resolve_real_data_endpoint(machine_key) or "Fara endpoint clar",
                 "transport": feed["transport"],
                 "left_panel": feed["left_panel"],
                 "screen_rows": feed["screen_rows"],

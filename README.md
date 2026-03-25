@@ -47,6 +47,8 @@ Aplicatia porneste implicit pe `http://localhost:3030`.
 - `LASER_SQLITE_PATH` daca vrei alta locatie pentru baza locala
 - `LASER_REAL_DATA_NAME` numele sursei reale care va trimite date spre dashboard
 - `LASER_REAL_DATA_ENDPOINT` endpointul sau descrierea sursei reale, pentru afisare in UI
+- `LASER1_REAL_DATA_ENDPOINT`, `LASER2_REAL_DATA_ENDPOINT`, `ABKANT_REAL_DATA_ENDPOINT` pentru endpoint separat pe fiecare utilaj
+- daca rulezi aplicatia in Docker pe un server public, endpointurile de tip Tailscale sau hostname intern trebuie sa fie accesibile si din container; altfel utilajul ramine `OFF`
 
 ## Docker pentru Unraid
 
@@ -62,6 +64,9 @@ Run:
 docker run -d \
   --name lasertrumaticl3030 \
   -p 3030:3030 \
+  -e LASER1_REAL_DATA_ENDPOINT='http://100.94.113.74:8081' \
+  -e LASER2_REAL_DATA_ENDPOINT='http://100.94.113.74:8081' \
+  -e ABKANT_REAL_DATA_ENDPOINT='http://100.126.29.52:8081' \
   -e PONTAJ_LASER1_WORKCENTER_ID=1 \
   -e PONTAJ_LASER2_WORKCENTER_ID=2 \
   -e PONTAJ_ABKANT_WORKCENTER_ID=3 \
@@ -88,6 +93,8 @@ Ca sa tragi imaginea dupa push pe `main`:
 ```bash
 docker pull ghcr.io/eduard2020204039/lasertrumaticl3030:latest
 ```
+
+Publicarea imaginii nu face singura si redeploy. Dupa `docker pull`, containerul trebuie recreat sau repornit cu noua imagine.
 
 ## Tailscale
 

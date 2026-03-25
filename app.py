@@ -1920,15 +1920,33 @@ def build_event_sequence(signal_name: str, target_value: bool, current_signals: 
     return events
 
 
+def snapshot_differs_from_current_signals(
+    snapshot: dict | None,
+    current_signals: dict[str, dict],
+) -> bool:
+    if not snapshot or not snapshot.get("available"):
+        return False
+
+    derived_signals = snapshot.get("derived_signals") or {}
+    for signal_name in ("machine_on", "cutting_active", "table_change"):
+        if bool(derived_signals.get(signal_name, False)) != bool(current_signals.get(signal_name, {}).get("active")):
+            return True
+    return False
+
+
 def build_dashboard_payload(machine_key: str = DEFAULT_MACHINE_KEY) -> dict:
     machine_key = ensure_machine_key(machine_key)
     machine_profile = get_machine_profile(machine_key)
     if BACKGROUND_SYNC_ENABLED:
         runtime = get_machine_runtime(machine_key)
         live_extraction = runtime.get("last_snapshot")
+        current_signals = fetch_current_signals(machine_key)
+        if live_extraction is None or snapshot_differs_from_current_signals(live_extraction, current_signals):
+            live_extraction = sync_machine_events_from_live_snapshot(machine_key)
+            current_signals = fetch_current_signals(machine_key)
     else:
         live_extraction = sync_machine_events_from_live_snapshot(machine_key)
-    current_signals = fetch_current_signals(machine_key)
+        current_signals = fetch_current_signals(machine_key)
     operator_snapshot = fetch_current_operator(machine_profile["workcenter_id"])
     current_state = derive_machine_state(machine_key, current_signals)
     stats_today = build_today_stats(machine_key)

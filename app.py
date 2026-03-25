@@ -6,12 +6,13 @@ import re
 import sqlite3
 import threading
 import time as time_module
+import urllib.parse
 import urllib.request
 from datetime import date, datetime, time, timedelta
 from difflib import SequenceMatcher
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request
 from dotenv import load_dotenv
 
 try:
@@ -376,6 +377,15 @@ def resolve_machine_camera_feed_mode(machine_key: str) -> str:
     return mode
 
 
+def resolve_machine_camera_feed_credentials(machine_key: str) -> tuple[str, str, str]:
+    username = get_machine_env_value(machine_key, "CAMERA_FEED_USERNAME")
+    password = get_machine_env_value(machine_key, "CAMERA_FEED_PASSWORD")
+    auth_type = (get_machine_env_value(machine_key, "CAMERA_FEED_AUTH") or "basic").strip().lower()
+    if auth_type not in {"basic", "digest"}:
+        auth_type = "basic"
+    return username, password, auth_type
+
+
 def resolve_machine_hmi_feed_url(machine_key: str) -> str:
     return get_machine_env_value(machine_key, "HMI_FEED_URL") or DEFAULT_MACHINE_HMI_URLS.get(machine_key, "")
 
@@ -384,14 +394,17 @@ def build_machine_feeds(machine_key: str) -> list[dict]:
     machine_key = ensure_machine_key(machine_key)
     camera_url = resolve_machine_camera_feed_url(machine_key)
     camera_mode = resolve_machine_camera_feed_mode(machine_key)
+    camera_username, camera_password, _ = resolve_machine_camera_feed_credentials(machine_key)
     hmi_url = resolve_machine_hmi_feed_url(machine_key)
+    if camera_mode == "image" and camera_url and camera_username and camera_password:
+        camera_url = f"/api/camera-feed/{machine_key}"
     feeds = [
         {
             "key": "camera",
             "label": "Camera utilaj",
             "mode": camera_mode,
             "url": camera_url,
-            "description": "Feedul video folosit si pentru OCR / supraveghere.",
+            "description": "Camera IP dedicata supravegherii utilajului.",
         },
         {
             "key": "hmi",
@@ -432,6 +445,39 @@ def fetch_mjpeg_frame(url: str, timeout: float = 2.0):
         return None, f"{exc.__class__.__name__}: {exc}"
 
     return None, "Fluxul MJPEG nu a livrat niciun cadru valid."
+
+
+def fetch_camera_feed_content(machine_key: str, timeout: float = 8.0) -> tuple[bytes | None, str, str | None]:
+    camera_url = resolve_machine_camera_feed_url(machine_key)
+    if not camera_url:
+        return None, "Camera feed URL nu este configurat.", None
+
+    request_obj = urllib.request.Request(camera_url, headers={"User-Agent": "HABA-Production-Monitor/1.0"})
+    camera_username, camera_password, auth_type = resolve_machine_camera_feed_credentials(machine_key)
+
+    try:
+        if camera_username and camera_password:
+            password_manager = urllib.request.HTTPPasswordMgrWithDefaultRealm()
+            password_manager.add_password(None, camera_url, camera_username, camera_password)
+
+            parsed_url = urllib.parse.urlsplit(camera_url)
+            if parsed_url.scheme and parsed_url.netloc:
+                base_url = f"{parsed_url.scheme}://{parsed_url.netloc}/"
+                password_manager.add_password(None, base_url, camera_username, camera_password)
+
+            auth_handler = (
+                urllib.request.HTTPDigestAuthHandler(password_manager)
+                if auth_type == "digest"
+                else urllib.request.HTTPBasicAuthHandler(password_manager)
+            )
+            opener = urllib.request.build_opener(auth_handler)
+            with opener.open(request_obj, timeout=timeout) as response:
+                return response.read(), "", response.headers.get("Content-Type")
+
+        with urllib.request.urlopen(request_obj, timeout=timeout) as response:
+            return response.read(), "", response.headers.get("Content-Type")
+    except Exception as exc:
+        return None, f"{exc.__class__.__name__}: {exc}", None
 
 
 def read_ocr_zone(image, zone: tuple[int, int, int, int], whitelist: str, psm: int = 7) -> str:
@@ -2178,6 +2224,22 @@ def saved_records():
         return jsonify(build_saved_cycles_payload(machine_key, period=period))
     except ValueError as exc:
         return jsonify({"success": False, "message": str(exc)}), 400
+
+
+@app.route("/api/camera-feed/<machine_key>")
+def camera_feed(machine_key: str):
+    try:
+        machine_key = ensure_machine_key(machine_key)
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 400
+
+    content, error_message, content_type = fetch_camera_feed_content(machine_key)
+    if content is None:
+        return jsonify({"success": False, "message": error_message or "Nu am putut citi camera."}), 502
+
+    response = Response(content, mimetype=(content_type or "image/jpeg"))
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    return response
 
 
 @app.route("/api/events", methods=["POST"])

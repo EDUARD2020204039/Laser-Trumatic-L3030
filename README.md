@@ -50,6 +50,9 @@ Aplicatia porneste implicit pe `http://localhost:3030`.
 - `LASER1_REAL_DATA_ENDPOINT`, `LASER2_REAL_DATA_ENDPOINT`, `ABKANT_REAL_DATA_ENDPOINT` pentru endpoint separat pe fiecare utilaj
 - `LASER1_CAMERA_FEED_URL`, `LASER2_CAMERA_FEED_URL`, `ABKANT_CAMERA_FEED_URL` pentru feedul video pe care vrei sa-l vezi in dashboard
 - `LASER1_CAMERA_FEED_MODE`, `LASER2_CAMERA_FEED_MODE`, `ABKANT_CAMERA_FEED_MODE` cu `image` sau `page`, daca feedul camerei trebuie afisat ca imagine sau ca pagina embed-uita
+- `LASER1_CAMERA_FEED_USERNAME`, `LASER2_CAMERA_FEED_USERNAME`, `ABKANT_CAMERA_FEED_USERNAME` daca feedul camerei cere autentificare
+- `LASER1_CAMERA_FEED_PASSWORD`, `LASER2_CAMERA_FEED_PASSWORD`, `ABKANT_CAMERA_FEED_PASSWORD` pentru parola camerei
+- `LASER1_CAMERA_FEED_AUTH`, `LASER2_CAMERA_FEED_AUTH`, `ABKANT_CAMERA_FEED_AUTH` cu `basic` sau `digest`, daca feedul camerei cere autentificare HTTP
 - `LASER1_HMI_FEED_URL`, `LASER2_HMI_FEED_URL`, `ABKANT_HMI_FEED_URL` pentru pagina HMI embed-uita in dashboard
 - `ABKANT_PG_HOST`, `ABKANT_PG_DATABASE`, `ABKANT_PG_USER`, `ABKANT_PG_PASSWORD` pentru fallback-ul Abkant din PostgreSQL cind linkul video pica
 - daca rulezi aplicatia in Docker pe un server public, endpointurile de tip Tailscale sau hostname intern trebuie sa fie accesibile si din container; altfel utilajul ramine `OFF`
@@ -81,6 +84,15 @@ docker run -d \
   -e LASER1_CAMERA_FEED_MODE='image' \
   -e LASER2_CAMERA_FEED_MODE='image' \
   -e ABKANT_CAMERA_FEED_MODE='image' \
+  -e LASER1_CAMERA_FEED_USERNAME='' \
+  -e LASER2_CAMERA_FEED_USERNAME='' \
+  -e ABKANT_CAMERA_FEED_USERNAME='' \
+  -e LASER1_CAMERA_FEED_PASSWORD='' \
+  -e LASER2_CAMERA_FEED_PASSWORD='' \
+  -e ABKANT_CAMERA_FEED_PASSWORD='' \
+  -e LASER1_CAMERA_FEED_AUTH='basic' \
+  -e LASER2_CAMERA_FEED_AUTH='basic' \
+  -e ABKANT_CAMERA_FEED_AUTH='basic' \
   -e LASER1_HMI_FEED_URL='https://laser.helpan.ro/' \
   -e LASER2_HMI_FEED_URL='https://laser.helpan.ro/' \
   -e ABKANT_HMI_FEED_URL='https://abkant.helpan.ro/' \

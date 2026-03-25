@@ -1579,7 +1579,7 @@ def build_today_stats(machine_key: str) -> dict:
     table_change_seconds = calculate_active_seconds(machine_key, "table_change", start_of_day, now)
     idle_seconds = max(machine_on_seconds - cutting_seconds - table_change_seconds, 0)
     utilization = round((cutting_seconds / machine_on_seconds) * 100, 1) if machine_on_seconds else 0.0
-    availability = round((machine_on_seconds / elapsed_seconds) * 100, 1) if elapsed_seconds else 0.0
+    availability = round((cutting_seconds / machine_on_seconds) * 100, 1) if machine_on_seconds else 0.0
 
     return {
         "machine_on_seconds": machine_on_seconds,
@@ -1593,6 +1593,7 @@ def build_today_stats(machine_key: str) -> dict:
         "utilization_percent": utilization,
         "randament_percent": utilization,
         "availability_percent": availability,
+        "availability_label": f"Disponibilitate taiere/masina_pornita {availability}%",
         "production_window_label": format_seconds(elapsed_seconds),
         "updated_at": now.isoformat(timespec="seconds"),
     }

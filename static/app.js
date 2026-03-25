@@ -523,7 +523,8 @@ function renderOperator(operatorSnapshot) {
 
 function renderStats(stats) {
     document.getElementById("metric-randament").textContent = `${stats.randament_percent}%`;
-    document.getElementById("metric-availability").textContent = `Disponibilitate ${stats.availability_percent}%`;
+    document.getElementById("metric-availability").textContent =
+        stats.availability_label || `Disponibilitate taiere/masina_pornita ${stats.availability_percent}%`;
     document.getElementById("metric-window").textContent = stats.production_window_label;
     document.getElementById("metric-machine-on").textContent = stats.machine_on_label;
     document.getElementById("metric-cutting").textContent = stats.cutting_label;
@@ -572,8 +573,8 @@ function tickLiveStats() {
     const randamentPercent = machineOnSeconds > 0
         ? roundToOneDecimal((cuttingSeconds / machineOnSeconds) * 100)
         : 0;
-    const availabilityPercent = productionWindowSeconds > 0
-        ? roundToOneDecimal((machineOnSeconds / productionWindowSeconds) * 100)
+    const availabilityPercent = machineOnSeconds > 0
+        ? roundToOneDecimal((cuttingSeconds / machineOnSeconds) * 100)
         : 0;
 
     renderStats({
@@ -583,7 +584,8 @@ function tickLiveStats() {
         idle_label: formatSeconds(idleSeconds),
         production_window_label: formatSeconds(productionWindowSeconds),
         randament_percent: randamentPercent,
-        availability_percent: availabilityPercent
+        availability_percent: availabilityPercent,
+        availability_label: `Disponibilitate taiere/masina_pornita ${availabilityPercent}%`
     });
  }
 

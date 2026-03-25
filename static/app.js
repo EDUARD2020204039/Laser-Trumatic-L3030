@@ -742,9 +742,17 @@ function renderSavedRecords(records) {
                         <span>Schimb masa</span>
                         <strong>${formatDateTime(record.table_change_started_at)}</strong>
                     </div>
+                    <div>
+                        <span>Final schimb masa</span>
+                        <strong>${record.table_change_ended_at ? formatDateTime(record.table_change_ended_at) : "In lucru"}</strong>
+                    </div>
+                    <div>
+                        <span>Durata schimb masa</span>
+                        <strong>${record.table_change_duration_label || "00:00:00"}</strong>
+                    </div>
                 </div>
                 <p class="saved-record-note">
-                    Status la salvare: ${record.program_status}. Operator: ${record.operator_name}.
+                    Status la salvare: ${record.program_status}. Operator: ${record.operator_name}. Ciclu: ${record.cycle_duration_label}.
                 </p>
             </article>
         `)

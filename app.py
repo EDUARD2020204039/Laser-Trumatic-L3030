@@ -590,10 +590,19 @@ def init_db() -> None:
                 program_status TEXT,
                 cutting_started_at TEXT,
                 table_change_started_at TEXT NOT NULL,
+                table_change_ended_at TEXT,
+                table_change_duration_seconds INTEGER,
                 cycle_duration_seconds INTEGER,
                 source TEXT NOT NULL DEFAULT 'live-ocr',
                 snapshot_json TEXT,
                 created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS machine_runtime (
+                machine_key TEXT PRIMARY KEY,
+                last_snapshot_json TEXT,
+                pending_cycle_json TEXT,
+                updated_at TEXT NOT NULL
             );
             """
         )
@@ -606,6 +615,15 @@ def init_db() -> None:
             connection.execute(
                 "ALTER TABLE signal_events ADD COLUMN machine_key TEXT NOT NULL DEFAULT 'laser1'"
             )
+
+        saved_cycle_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(saved_cycles)").fetchall()
+        }
+        if "table_change_ended_at" not in saved_cycle_columns:
+            connection.execute("ALTER TABLE saved_cycles ADD COLUMN table_change_ended_at TEXT")
+        if "table_change_duration_seconds" not in saved_cycle_columns:
+            connection.execute("ALTER TABLE saved_cycles ADD COLUMN table_change_duration_seconds INTEGER")
 
         connection.execute(
             """
@@ -660,6 +678,18 @@ def init_db() -> None:
                     profile["sort_order"],
                     profile["workcenter_id"],
                     profile["machine_key"],
+                ),
+            )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO machine_runtime (
+                    machine_key, last_snapshot_json, pending_cycle_json, updated_at
+                )
+                VALUES (?, NULL, NULL, ?)
+                """,
+                (
+                    profile["machine_key"],
+                    updated_at,
                 ),
             )
 
@@ -888,6 +918,9 @@ def format_saved_cycle_row(row: sqlite3.Row) -> dict:
         "program_status": row["program_status"] or "Necitit",
         "cutting_started_at": row["cutting_started_at"],
         "table_change_started_at": row["table_change_started_at"],
+        "table_change_ended_at": row["table_change_ended_at"],
+        "table_change_duration_seconds": row["table_change_duration_seconds"] or 0,
+        "table_change_duration_label": format_seconds(row["table_change_duration_seconds"] or 0),
         "cycle_duration_seconds": duration_seconds,
         "cycle_duration_label": format_seconds(duration_seconds or 0),
         "source": row["source"],
@@ -970,6 +1003,178 @@ def build_saved_cycles_payload(machine_key: str | None = None) -> dict:
         "records_count": len(records),
         "updated_at": now_local().isoformat(timespec="seconds"),
     }
+
+
+def get_machine_runtime(machine_key: str) -> dict:
+    with get_sqlite_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT machine_key, last_snapshot_json, pending_cycle_json, updated_at
+            FROM machine_runtime
+            WHERE machine_key = ?
+            """,
+            (machine_key,),
+        ).fetchone()
+
+    if row is None:
+        return {
+            "machine_key": machine_key,
+            "last_snapshot": None,
+            "pending_cycle": None,
+            "updated_at": None,
+        }
+
+    return {
+        "machine_key": row["machine_key"],
+        "last_snapshot": json.loads(row["last_snapshot_json"]) if row["last_snapshot_json"] else None,
+        "pending_cycle": json.loads(row["pending_cycle_json"]) if row["pending_cycle_json"] else None,
+        "updated_at": row["updated_at"],
+    }
+
+
+def save_machine_runtime(machine_key: str, last_snapshot: dict | None, pending_cycle: dict | None) -> None:
+    updated_at = now_local().isoformat(timespec="seconds")
+    with get_sqlite_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO machine_runtime (machine_key, last_snapshot_json, pending_cycle_json, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(machine_key) DO UPDATE SET
+                last_snapshot_json = excluded.last_snapshot_json,
+                pending_cycle_json = excluded.pending_cycle_json,
+                updated_at = excluded.updated_at
+            """,
+            (
+                machine_key,
+                json.dumps(last_snapshot, ensure_ascii=False) if last_snapshot is not None else None,
+                json.dumps(pending_cycle, ensure_ascii=False) if pending_cycle is not None else None,
+                updated_at,
+            ),
+        )
+        connection.commit()
+
+
+def cache_live_snapshot(machine_key: str, snapshot: dict) -> None:
+    runtime = get_machine_runtime(machine_key)
+    save_machine_runtime(machine_key, snapshot, runtime.get("pending_cycle"))
+
+
+def open_pending_cycle(
+    machine_key: str,
+    machine_profile: dict,
+    snapshot: dict,
+    operator_snapshot: dict,
+    current_signals: dict[str, dict],
+) -> None:
+    operator = operator_snapshot.get("primary_operator") or {}
+    pending_cycle = {
+        "machine_key": machine_key,
+        "workcenter_id": machine_profile.get("workcenter_id"),
+        "operator_id": operator.get("employee_id"),
+        "operator_name": operator.get("full_name"),
+        "selected_program": snapshot.get("selected_program"),
+        "active_program": snapshot.get("active_program"),
+        "material": snapshot.get("material"),
+        "program_status": snapshot.get("program_status"),
+        "cutting_started_at": current_signals["cutting_active"]["changed_at"] if current_signals["cutting_active"]["active"] else None,
+        "table_change_started_at": now_local().isoformat(timespec="seconds"),
+        "source": snapshot.get("source", "live-ocr"),
+        "snapshot_json": snapshot,
+    }
+    runtime = get_machine_runtime(machine_key)
+    save_machine_runtime(machine_key, runtime.get("last_snapshot"), pending_cycle)
+
+
+def finalize_pending_cycle(machine_key: str, current_snapshot: dict) -> None:
+    runtime = get_machine_runtime(machine_key)
+    pending_cycle = runtime.get("pending_cycle")
+    if not pending_cycle:
+        return
+
+    table_change_started_at = parse_timestamp(pending_cycle["table_change_started_at"])
+    table_change_ended_at = now_local()
+    table_change_duration_seconds = max(
+        int((table_change_ended_at - table_change_started_at).total_seconds()),
+        0,
+    )
+
+    cutting_started_at_raw = pending_cycle.get("cutting_started_at")
+    cycle_duration_seconds = None
+    if cutting_started_at_raw:
+        cycle_duration_seconds = max(
+            int((table_change_started_at - parse_timestamp(cutting_started_at_raw)).total_seconds()),
+            0,
+        )
+
+    recent_cutoff_iso = datetime.fromtimestamp(table_change_ended_at.timestamp() - 45).isoformat(timespec="seconds")
+    with get_sqlite_connection() as connection:
+        duplicate = connection.execute(
+            """
+            SELECT id
+            FROM saved_cycles
+            WHERE machine_key = ?
+              AND selected_program = ?
+              AND table_change_started_at >= ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (
+                machine_key,
+                pending_cycle.get("selected_program"),
+                recent_cutoff_iso,
+            ),
+        ).fetchone()
+        if duplicate is None:
+            connection.execute(
+                """
+                INSERT INTO saved_cycles (
+                    machine_key,
+                    workcenter_id,
+                    operator_id,
+                    operator_name,
+                    selected_program,
+                    active_program,
+                    material,
+                    program_status,
+                    cutting_started_at,
+                    table_change_started_at,
+                    table_change_ended_at,
+                    table_change_duration_seconds,
+                    cycle_duration_seconds,
+                    source,
+                    snapshot_json,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    machine_key,
+                    pending_cycle.get("workcenter_id"),
+                    pending_cycle.get("operator_id"),
+                    pending_cycle.get("operator_name"),
+                    pending_cycle.get("selected_program"),
+                    pending_cycle.get("active_program"),
+                    pending_cycle.get("material"),
+                    pending_cycle.get("program_status"),
+                    pending_cycle.get("cutting_started_at"),
+                    pending_cycle.get("table_change_started_at"),
+                    table_change_ended_at.isoformat(timespec="seconds"),
+                    table_change_duration_seconds,
+                    cycle_duration_seconds,
+                    pending_cycle.get("source", "live-ocr"),
+                    json.dumps(
+                        {
+                            "pending_snapshot": pending_cycle.get("snapshot_json"),
+                            "resume_snapshot": current_snapshot,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    table_change_ended_at.isoformat(timespec="seconds"),
+                ),
+            )
+            connection.commit()
+
+    save_machine_runtime(machine_key, current_snapshot, None)
 
 
 def fetch_current_signals(machine_key: str) -> dict[str, dict]:
@@ -1122,93 +1327,13 @@ def insert_event(
         connection.commit()
 
 
-def save_table_change_record(
-    machine_key: str,
-    machine_profile: dict,
-    snapshot: dict,
-    operator_snapshot: dict,
-    current_signals: dict[str, dict],
-) -> None:
-    operator = operator_snapshot.get("primary_operator") or {}
-    table_change_started_at = now_local()
-    cutting_started_at_raw = current_signals["cutting_active"]["changed_at"] if current_signals["cutting_active"]["active"] else None
-    cycle_duration_seconds = None
-    if cutting_started_at_raw:
-        cycle_duration_seconds = max(
-            int((table_change_started_at - parse_timestamp(cutting_started_at_raw)).total_seconds()),
-            0,
-        )
-
-    selected_program = snapshot.get("selected_program")
-    active_program = snapshot.get("active_program")
-    recent_cutoff = (table_change_started_at.timestamp() - 45)
-    recent_cutoff_iso = datetime.fromtimestamp(recent_cutoff).isoformat(timespec="seconds")
-
-    with get_sqlite_connection() as connection:
-        duplicate = connection.execute(
-            """
-            SELECT id
-            FROM saved_cycles
-            WHERE machine_key = ?
-              AND selected_program = ?
-              AND active_program = ?
-              AND table_change_started_at >= ?
-            ORDER BY id DESC
-            LIMIT 1
-            """,
-            (
-                machine_key,
-                selected_program,
-                active_program,
-                recent_cutoff_iso,
-            ),
-        ).fetchone()
-        if duplicate is not None:
-            return
-
-        connection.execute(
-            """
-            INSERT INTO saved_cycles (
-                machine_key,
-                workcenter_id,
-                operator_id,
-                operator_name,
-                selected_program,
-                active_program,
-                material,
-                program_status,
-                cutting_started_at,
-                table_change_started_at,
-                cycle_duration_seconds,
-                source,
-                snapshot_json,
-                created_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                machine_key,
-                machine_profile.get("workcenter_id"),
-                operator.get("employee_id"),
-                operator.get("full_name"),
-                selected_program,
-                active_program,
-                snapshot.get("material"),
-                snapshot.get("program_status"),
-                cutting_started_at_raw,
-                table_change_started_at.isoformat(timespec="seconds"),
-                cycle_duration_seconds,
-                snapshot.get("source", "live-ocr"),
-                json.dumps(snapshot, ensure_ascii=False),
-                table_change_started_at.isoformat(timespec="seconds"),
-            ),
-        )
-        connection.commit()
-
-
 def sync_machine_events_from_live_snapshot(machine_key: str) -> dict | None:
     snapshot = get_live_machine_snapshot(machine_key)
-    if not snapshot or not snapshot.get("available"):
+    if not snapshot:
+        return snapshot
+
+    cache_live_snapshot(machine_key, snapshot)
+    if not snapshot.get("available"):
         return snapshot
 
     derived_signals = snapshot.get("derived_signals") or {}
@@ -1223,8 +1348,12 @@ def sync_machine_events_from_live_snapshot(machine_key: str) -> dict | None:
         f"status={snapshot.get('program_status')}"
     )
 
-    if bool(derived_signals.get("table_change", False)) and not current_signals["table_change"]["active"]:
-        save_table_change_record(machine_key, machine_profile, snapshot, operator_snapshot, current_signals)
+    old_table_change = bool(current_signals["table_change"]["active"])
+    new_table_change = bool(derived_signals.get("table_change", False))
+    if new_table_change and not old_table_change:
+        open_pending_cycle(machine_key, machine_profile, snapshot, operator_snapshot, current_signals)
+    elif old_table_change and not new_table_change:
+        finalize_pending_cycle(machine_key, snapshot)
 
     for signal_name in ("machine_on", "cutting_active", "table_change"):
         new_value = bool(derived_signals.get(signal_name, False))
@@ -1346,7 +1475,11 @@ def build_event_sequence(signal_name: str, target_value: bool, current_signals: 
 def build_dashboard_payload(machine_key: str = DEFAULT_MACHINE_KEY) -> dict:
     machine_key = ensure_machine_key(machine_key)
     machine_profile = get_machine_profile(machine_key)
-    live_extraction = sync_machine_events_from_live_snapshot(machine_key)
+    if BACKGROUND_SYNC_ENABLED:
+        runtime = get_machine_runtime(machine_key)
+        live_extraction = runtime.get("last_snapshot")
+    else:
+        live_extraction = sync_machine_events_from_live_snapshot(machine_key)
     current_signals = fetch_current_signals(machine_key)
     operator_snapshot = fetch_current_operator(machine_profile["workcenter_id"])
     current_state = derive_machine_state(current_signals)

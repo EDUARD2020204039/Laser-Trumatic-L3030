@@ -16,6 +16,103 @@ const state = {
     lastStatsSyncMs: 0
 };
 
+const savedPeriodReportLabelMap = {
+    day: "Zilnic",
+    week: "Saptamanal",
+    month: "Lunar"
+};
+
+function formatSavedPeriodDate(value, options = { dateStyle: "medium" }) {
+    return new Intl.DateTimeFormat("ro-RO", options).format(value);
+}
+
+function getStartOfCurrentWeek(now) {
+    const weekStart = new Date(now);
+    weekStart.setHours(0, 0, 0, 0);
+    const dayOffset = (weekStart.getDay() + 6) % 7;
+    weekStart.setDate(weekStart.getDate() - dayOffset);
+    return weekStart;
+}
+
+function getSavedPeriodMeta(period) {
+    const normalizedPeriod = ["all", "day", "week", "month"].includes(period) ? period : "all";
+    const now = new Date();
+    const todayLabel = formatSavedPeriodDate(now, { dateStyle: "full" });
+    const weekStart = getStartOfCurrentWeek(now);
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    if (normalizedPeriod === "day") {
+        return {
+            key: "day",
+            sectionTitle: "Ce au facut operatorii azi",
+            subtitle: "Ciclurile salvate automat la schimb de masa pentru ziua curenta.",
+            hint: `Filtrul ia doar ciclurile din ${todayLabel}. Maine se muta automat pe noua zi.`,
+            countLabel: "Cicluri azi",
+            reportCardText: "Randament pentru ziua curenta",
+            machineReportTitle: "Randament azi",
+            emptySummary: "Nu exista inca cicluri salvate pentru ziua curenta.",
+            emptyReports: "Raportul zilnic va aparea aici dupa primele cicluri salvate azi.",
+            emptyMachineReports: "Raportul zilnic pe utilaj va aparea aici dupa primele cicluri salvate azi.",
+            emptyRecords: "Nu exista inca cicluri salvate pentru ziua curenta."
+        };
+    }
+
+    if (normalizedPeriod === "week") {
+        return {
+            key: "week",
+            sectionTitle: "Ce au facut operatorii saptamana aceasta",
+            subtitle: "Ciclurile salvate automat la schimb de masa pentru saptamana curenta.",
+            hint: `Filtrul ia intervalul ${formatSavedPeriodDate(weekStart)} - ${formatSavedPeriodDate(now)}. La inceputul saptamanii urmatoare se muta automat pe noua saptamana.`,
+            countLabel: "Cicluri saptamana",
+            reportCardText: "Randament pentru saptamana curenta",
+            machineReportTitle: "Randament saptamanal",
+            emptySummary: "Nu exista inca cicluri salvate pentru saptamana curenta.",
+            emptyReports: "Raportul saptamanal va aparea aici dupa primele cicluri salvate din saptamana curenta.",
+            emptyMachineReports: "Raportul saptamanal pe utilaj va aparea aici dupa primele cicluri salvate din saptamana curenta.",
+            emptyRecords: "Nu exista inca cicluri salvate pentru saptamana curenta."
+        };
+    }
+
+    if (normalizedPeriod === "month") {
+        return {
+            key: "month",
+            sectionTitle: "Ce au facut operatorii luna aceasta",
+            subtitle: "Ciclurile salvate automat la schimb de masa pentru luna curenta.",
+            hint: `Filtrul ia intervalul ${formatSavedPeriodDate(monthStart)} - ${formatSavedPeriodDate(now)}. La inceputul lunii urmatoare se muta automat pe luna noua.`,
+            countLabel: "Cicluri luna",
+            reportCardText: "Randament pentru luna curenta",
+            machineReportTitle: "Randament lunar",
+            emptySummary: "Nu exista inca cicluri salvate pentru luna curenta.",
+            emptyReports: "Raportul lunar va aparea aici dupa primele cicluri salvate din luna curenta.",
+            emptyMachineReports: "Raportul lunar pe utilaj va aparea aici dupa primele cicluri salvate din luna curenta.",
+            emptyRecords: "Nu exista inca cicluri salvate pentru luna curenta."
+        };
+    }
+
+    return {
+        key: "all",
+        sectionTitle: "Toate ciclurile salvate",
+        subtitle: "Ciclurile salvate automat la schimb de masa din tot istoricul disponibil.",
+        hint: "Filtrul arata tot istoricul salvat local, fara limita de zi, saptamana sau luna.",
+        countLabel: "Total cicluri",
+        reportCardText: "Media randamentului din ciclurile salvate",
+        machineReportTitle: "Randament pe perioade",
+        emptySummary: "Nu exista inca date salvate in istoric.",
+        emptyReports: "Raportul de randament se va afisa aici dupa primele cicluri salvate.",
+        emptyMachineReports: "Raportul separat pe utilaj se va afisa aici dupa primele cicluri salvate.",
+        emptyRecords: "Cand apare un schimb de masa, dashboard-ul salveaza automat ciclul aici."
+    };
+}
+
+function filterSavedReportsByPeriod(reports, period) {
+    if (period === "all") {
+        return reports;
+    }
+
+    const targetLabel = savedPeriodReportLabelMap[period];
+    return reports.filter((item) => item.label === targetLabel);
+}
+
 document.addEventListener("DOMContentLoaded", () => {
     initThemeToggle();
 
@@ -352,14 +449,16 @@ function renderDashboard(payload) {
 }
 
 function renderSavedView(payload) {
+    const currentPeriod = payload.period || state.savedPeriod;
+    const periodMeta = getSavedPeriodMeta(currentPeriod);
     syncSectionVisibility("saved");
-    renderSavedHeader(payload);
+    renderSavedHeader(payload, periodMeta);
     renderMachineSelector(state.dashboard?.machines || window.appConfig.initialMachines || []);
-    renderSavedSummary(payload.summary || []);
-    renderSavedFilters(payload.period || state.savedPeriod);
-    renderSavedReports(payload.reports || []);
-    renderSavedMachineReports(payload.reports_by_machine || []);
-    renderSavedRecords(payload.records || []);
+    renderSavedSummary(payload.summary || [], periodMeta);
+    renderSavedFilters(currentPeriod);
+    renderSavedReports(payload.reports || [], currentPeriod, periodMeta);
+    renderSavedMachineReports(payload.reports_by_machine || [], currentPeriod, periodMeta);
+    renderSavedRecords(payload.records || [], periodMeta);
 }
 
 function renderHeader(payload) {
@@ -374,14 +473,17 @@ function renderHeader(payload) {
         : "necunoscut";
 }
 
-function renderSavedHeader(payload) {
+function renderSavedHeader(payload, periodMeta) {
     document.getElementById("dashboard-title").textContent = "Date salvate / operatori";
-    document.getElementById("dashboard-subtitle").textContent = "Ciclurile salvate automat la schimb de masa si ce a facut fiecare operator azi.";
+    document.getElementById("dashboard-subtitle").textContent = periodMeta.subtitle;
     document.getElementById("active-machine-label").textContent = "DATE SALVATE";
     document.getElementById("active-workcenter-label").textContent = "Toate utilajele";
     document.getElementById("updated-at").textContent = payload.updated_at
         ? formatDateTime(payload.updated_at)
         : "necunoscut";
+    document.getElementById("saved-section-title").textContent = periodMeta.sectionTitle;
+    document.getElementById("saved-period-hint").textContent = periodMeta.hint;
+    document.getElementById("saved-records-label").textContent = periodMeta.countLabel;
 }
 
 function renderMachineSelector(machines) {
@@ -741,14 +843,14 @@ function renderTimeline(events) {
     });
 }
 
-function renderSavedSummary(summary) {
+function renderSavedSummary(summary, periodMeta) {
     const container = document.getElementById("saved-summary");
     const count = document.getElementById("saved-records-count");
     const recordsCount = Number(state.savedRecords?.records_count || 0);
     count.textContent = String(recordsCount);
 
     if (!summary.length) {
-        container.innerHTML = `<p class="empty-state">Nu exista inca cicluri salvate pentru azi.</p>`;
+        container.innerHTML = `<p class="empty-state">${periodMeta.emptySummary}</p>`;
         return;
     }
 
@@ -771,19 +873,21 @@ function renderSavedFilters(period) {
     });
 }
 
-function renderSavedReports(reports) {
+function renderSavedReports(reports, period, periodMeta) {
     const container = document.getElementById("saved-reports");
-    if (!reports.length) {
-        container.innerHTML = `<p class="empty-state">Raportul de randament se va afisa aici dupa primele cicluri salvate.</p>`;
+    const visibleReports = filterSavedReportsByPeriod(reports, period);
+
+    if (!visibleReports.length) {
+        container.innerHTML = `<p class="empty-state">${periodMeta.emptyReports}</p>`;
         return;
     }
 
-    container.innerHTML = reports
+    container.innerHTML = visibleReports
         .map((item) => `
             <article class="saved-report-card">
                 <small>${item.label}</small>
                 <strong>${item.efficiency_percent}%</strong>
-                <p>Media randamentului din ciclurile salvate</p>
+                <p>${periodMeta.reportCardText}</p>
                 <div class="saved-report-metrics">
                     <span>${item.records_count} cicluri</span>
                     <span>Taiere ${item.cutting_label}</span>
@@ -794,18 +898,25 @@ function renderSavedReports(reports) {
         .join("");
 }
 
-function renderSavedMachineReports(reportsByMachine) {
+function renderSavedMachineReports(reportsByMachine, period, periodMeta) {
     const container = document.getElementById("saved-machine-reports");
-    if (!reportsByMachine.length) {
-        container.innerHTML = `<p class="empty-state">Raportul separat pe utilaj se va afisa aici dupa primele cicluri salvate.</p>`;
+    const visibleMachineReports = reportsByMachine
+        .map((machineReport) => ({
+            ...machineReport,
+            periods: filterSavedReportsByPeriod(machineReport.periods || [], period)
+        }))
+        .filter((machineReport) => machineReport.periods.length);
+
+    if (!visibleMachineReports.length) {
+        container.innerHTML = `<p class="empty-state">${periodMeta.emptyMachineReports}</p>`;
         return;
     }
 
-    container.innerHTML = reportsByMachine
+    container.innerHTML = visibleMachineReports
         .map((machineReport) => `
             <article class="saved-machine-report-card">
                 <small>${machineReport.machine_label}</small>
-                <strong>Randament pe perioade</strong>
+                <strong>${periodMeta.machineReportTitle}</strong>
                 <div class="saved-machine-period-list">
                     ${machineReport.periods.map((period) => `
                         <div class="saved-machine-period-item">
@@ -822,10 +933,10 @@ function renderSavedMachineReports(reportsByMachine) {
         .join("");
 }
 
-function renderSavedRecords(records) {
+function renderSavedRecords(records, periodMeta) {
     const container = document.getElementById("saved-record-list");
     if (!records.length) {
-        container.innerHTML = `<p class="empty-state">Cand apare un schimb de masa, dashboard-ul salveaza automat ciclul aici.</p>`;
+        container.innerHTML = `<p class="empty-state">${periodMeta.emptyRecords}</p>`;
         return;
     }
 

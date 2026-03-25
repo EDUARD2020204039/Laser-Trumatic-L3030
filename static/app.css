@@ -641,6 +641,11 @@ body.dark-mode .timeline-item {
     margin: 0 0 20px;
 }
 
+.saved-period-hint {
+    margin: 8px 0 0;
+    max-width: 760px;
+}
+
 .saved-filter-btn {
     padding: 10px 16px;
     border: 1px solid #800000;

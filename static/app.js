@@ -8,7 +8,9 @@ const state = {
     dashboard: null,
     isSubmitting: false,
     selectedMachineKey: window.appConfig.defaultMachineKey || "laser1",
-    workcenterFeedback: null
+    workcenterFeedback: null,
+    lastStatsSnapshot: null,
+    lastStatsSyncMs: 0
 };
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -21,7 +23,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
     bindActions();
     loadDashboard(state.selectedMachineKey);
-    window.setInterval(() => loadDashboard(state.selectedMachineKey), 15000);
+    window.setInterval(() => loadDashboard(state.selectedMachineKey), 10000);
+    window.setInterval(() => tickLiveStats(), 1000);
 });
 
 function initThemeToggle() {
@@ -270,6 +273,7 @@ function renderDashboard(payload) {
     renderOperator(payload.operator_snapshot);
     renderSource(payload.real_data_source);
     renderLiveExtraction(payload.live_extraction);
+    syncStatsSnapshot(payload);
     renderStats(payload.stats_today);
     renderTimeline(payload.recent_events);
 }
@@ -419,6 +423,61 @@ function renderStats(stats) {
     document.getElementById("utilization-fill").style.width = `${Math.min(stats.randament_percent, 100)}%`;
 }
 
+function syncStatsSnapshot(payload) {
+    const stats = payload?.stats_today;
+    if (!stats) {
+        state.lastStatsSnapshot = null;
+        state.lastStatsSyncMs = 0;
+        return;
+    }
+
+    state.lastStatsSnapshot = {
+        machine_on_seconds: Number(stats.machine_on_seconds || 0),
+        cutting_seconds: Number(stats.cutting_seconds || 0),
+        table_change_seconds: Number(stats.table_change_seconds || 0),
+        idle_seconds: Number(stats.idle_seconds || 0),
+        production_window_seconds: parseDurationLabel(stats.production_window_label),
+        base_updated_at: stats.updated_at || null
+    };
+    state.lastStatsSyncMs = Date.now();
+}
+
+function tickLiveStats() {
+    if (!state.dashboard || !state.lastStatsSnapshot) {
+        return;
+    }
+
+    const elapsedSeconds = Math.max(Math.floor((Date.now() - state.lastStatsSyncMs) / 1000), 0);
+    const signals = state.dashboard.current_signals || {};
+    const machineOnActive = Boolean(signals.machine_on?.active);
+    const cuttingActive = Boolean(signals.cutting_active?.active);
+    const tableChangeActive = Boolean(signals.table_change?.active);
+    const idleActive = machineOnActive && !cuttingActive && !tableChangeActive;
+
+    const machineOnSeconds = state.lastStatsSnapshot.machine_on_seconds + (machineOnActive ? elapsedSeconds : 0);
+    const cuttingSeconds = state.lastStatsSnapshot.cutting_seconds + (cuttingActive ? elapsedSeconds : 0);
+    const tableChangeSeconds = state.lastStatsSnapshot.table_change_seconds + (tableChangeActive ? elapsedSeconds : 0);
+    const idleSeconds = state.lastStatsSnapshot.idle_seconds + (idleActive ? elapsedSeconds : 0);
+    const productionWindowSeconds = state.lastStatsSnapshot.production_window_seconds + elapsedSeconds;
+
+    const randamentPercent = machineOnSeconds > 0
+        ? roundToOneDecimal((cuttingSeconds / machineOnSeconds) * 100)
+        : 0;
+    const availabilityPercent = productionWindowSeconds > 0
+        ? roundToOneDecimal((machineOnSeconds / productionWindowSeconds) * 100)
+        : 0;
+
+    renderStats({
+        machine_on_label: formatSeconds(machineOnSeconds),
+        cutting_label: formatSeconds(cuttingSeconds),
+        table_change_label: formatSeconds(tableChangeSeconds),
+        idle_label: formatSeconds(idleSeconds),
+        production_window_label: formatSeconds(productionWindowSeconds),
+        randament_percent: randamentPercent,
+        availability_percent: availabilityPercent
+    });
+ }
+
 function renderSource(realDataSource) {
     const dot = document.getElementById("source-dot");
     const text = document.getElementById("source-status-text");
@@ -565,4 +624,26 @@ function formatDateTime(value) {
         dateStyle: "short",
         timeStyle: "medium"
     }).format(date);
+}
+
+function formatSeconds(totalSeconds) {
+    const safeTotal = Math.max(Number(totalSeconds || 0), 0);
+    const hours = Math.floor(safeTotal / 3600);
+    const minutes = Math.floor((safeTotal % 3600) / 60);
+    const seconds = safeTotal % 60;
+    return [hours, minutes, seconds].map((part) => String(part).padStart(2, "0")).join(":");
+}
+
+function parseDurationLabel(label) {
+    const match = String(label || "").match(/^(\d{1,}):(\d{2}):(\d{2})$/);
+    if (!match) {
+        return 0;
+    }
+
+    const [, hours, minutes, seconds] = match;
+    return Number(hours) * 3600 + Number(minutes) * 60 + Number(seconds);
+}
+
+function roundToOneDecimal(value) {
+    return Math.round(Number(value || 0) * 10) / 10;
 }

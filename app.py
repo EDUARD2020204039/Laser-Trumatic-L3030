@@ -4,6 +4,8 @@ import json
 import os
 import re
 import sqlite3
+import threading
+import time as time_module
 import urllib.request
 from datetime import date, datetime, time
 from pathlib import Path
@@ -45,6 +47,9 @@ DASHBOARD_TITLE = "Laser TruMatic L3030"
 DEFAULT_MACHINE_KEY = "laser1"
 MANUAL_SOURCE_PREFIX = "manual"
 OCR_AVAILABLE = cv2 is not None and np is not None and pytesseract is not None
+BACKGROUND_SYNC_ENABLED = os.getenv("BACKGROUND_SYNC_ENABLED", "1") != "0"
+BACKGROUND_SYNC_INTERVAL_SECONDS = max(int(os.getenv("BACKGROUND_SYNC_INTERVAL_SECONDS", "10")), 3)
+_background_sync_started = False
 
 if pytesseract is not None:  # pragma: no cover - runtime environment specific
     windows_tesseract = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
@@ -572,6 +577,24 @@ def init_db() -> None:
                 sort_order INTEGER NOT NULL DEFAULT 0,
                 updated_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS saved_cycles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                machine_key TEXT NOT NULL,
+                workcenter_id INTEGER,
+                operator_id TEXT,
+                operator_name TEXT,
+                selected_program TEXT,
+                active_program TEXT,
+                material TEXT,
+                program_status TEXT,
+                cutting_started_at TEXT,
+                table_change_started_at TEXT NOT NULL,
+                cycle_duration_seconds INTEGER,
+                source TEXT NOT NULL DEFAULT 'live-ocr',
+                snapshot_json TEXT,
+                created_at TEXT NOT NULL
+            );
             """
         )
 
@@ -594,6 +617,18 @@ def init_db() -> None:
             """
             CREATE INDEX IF NOT EXISTS idx_signal_events_machine_time
             ON signal_events (machine_key, created_at DESC, id DESC)
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_saved_cycles_machine_time
+            ON saved_cycles (machine_key, table_change_started_at DESC, id DESC)
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_saved_cycles_operator_time
+            ON saved_cycles (operator_id, table_change_started_at DESC, id DESC)
             """
         )
 
@@ -838,6 +873,105 @@ def fetch_recent_events(machine_key: str, limit: int = 18) -> list[dict]:
     ]
 
 
+def format_saved_cycle_row(row: sqlite3.Row) -> dict:
+    duration_seconds = row["cycle_duration_seconds"]
+    return {
+        "id": row["id"],
+        "machine_key": row["machine_key"],
+        "machine_label": MACHINE_DEFINITIONS.get(row["machine_key"], {}).get("label", row["machine_key"]),
+        "workcenter_id": row["workcenter_id"],
+        "operator_id": row["operator_id"],
+        "operator_name": row["operator_name"] or "Operator necunoscut",
+        "selected_program": row["selected_program"] or "Necitit",
+        "active_program": row["active_program"] or "Necitit",
+        "material": row["material"] or "Necitit",
+        "program_status": row["program_status"] or "Necitit",
+        "cutting_started_at": row["cutting_started_at"],
+        "table_change_started_at": row["table_change_started_at"],
+        "cycle_duration_seconds": duration_seconds,
+        "cycle_duration_label": format_seconds(duration_seconds or 0),
+        "source": row["source"],
+        "created_at": row["created_at"],
+    }
+
+
+def fetch_saved_cycles(machine_key: str | None = None, day: date | None = None, limit: int = 120) -> list[dict]:
+    start_day = datetime.combine(day or date.today(), time.min).isoformat(timespec="seconds")
+
+    with get_sqlite_connection() as connection:
+        if machine_key:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM saved_cycles
+                WHERE machine_key = ? AND table_change_started_at >= ?
+                ORDER BY table_change_started_at DESC, id DESC
+                LIMIT ?
+                """,
+                (machine_key, start_day, limit),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM saved_cycles
+                WHERE table_change_started_at >= ?
+                ORDER BY table_change_started_at DESC, id DESC
+                LIMIT ?
+                """,
+                (start_day, limit),
+            ).fetchall()
+
+    return [format_saved_cycle_row(row) for row in rows]
+
+
+def summarize_saved_cycles(records: list[dict]) -> list[dict]:
+    grouped: dict[str, dict] = {}
+    for record in records:
+        operator_key = record["operator_id"] or record["operator_name"]
+        summary = grouped.setdefault(
+            operator_key,
+            {
+                "operator_id": record["operator_id"],
+                "operator_name": record["operator_name"],
+                "records_count": 0,
+                "machines": set(),
+                "total_cycle_seconds": 0,
+            },
+        )
+        summary["records_count"] += 1
+        summary["machines"].add(record["machine_label"])
+        summary["total_cycle_seconds"] += int(record["cycle_duration_seconds"] or 0)
+
+    output = []
+    for summary in grouped.values():
+        output.append(
+            {
+                "operator_id": summary["operator_id"],
+                "operator_name": summary["operator_name"],
+                "records_count": summary["records_count"],
+                "machines": sorted(summary["machines"]),
+                "total_cycle_seconds": summary["total_cycle_seconds"],
+                "total_cycle_label": format_seconds(summary["total_cycle_seconds"]),
+            }
+        )
+
+    output.sort(key=lambda item: (-item["records_count"], -item["total_cycle_seconds"], item["operator_name"]))
+    return output
+
+
+def build_saved_cycles_payload(machine_key: str | None = None) -> dict:
+    records = fetch_saved_cycles(machine_key=machine_key)
+    return {
+        "view": "saved",
+        "selected_machine_key": machine_key,
+        "records": records,
+        "summary": summarize_saved_cycles(records),
+        "records_count": len(records),
+        "updated_at": now_local().isoformat(timespec="seconds"),
+    }
+
+
 def fetch_current_signals(machine_key: str) -> dict[str, dict]:
     current_signals: dict[str, dict] = {}
     with get_sqlite_connection() as connection:
@@ -988,6 +1122,90 @@ def insert_event(
         connection.commit()
 
 
+def save_table_change_record(
+    machine_key: str,
+    machine_profile: dict,
+    snapshot: dict,
+    operator_snapshot: dict,
+    current_signals: dict[str, dict],
+) -> None:
+    operator = operator_snapshot.get("primary_operator") or {}
+    table_change_started_at = now_local()
+    cutting_started_at_raw = current_signals["cutting_active"]["changed_at"] if current_signals["cutting_active"]["active"] else None
+    cycle_duration_seconds = None
+    if cutting_started_at_raw:
+        cycle_duration_seconds = max(
+            int((table_change_started_at - parse_timestamp(cutting_started_at_raw)).total_seconds()),
+            0,
+        )
+
+    selected_program = snapshot.get("selected_program")
+    active_program = snapshot.get("active_program")
+    recent_cutoff = (table_change_started_at.timestamp() - 45)
+    recent_cutoff_iso = datetime.fromtimestamp(recent_cutoff).isoformat(timespec="seconds")
+
+    with get_sqlite_connection() as connection:
+        duplicate = connection.execute(
+            """
+            SELECT id
+            FROM saved_cycles
+            WHERE machine_key = ?
+              AND selected_program = ?
+              AND active_program = ?
+              AND table_change_started_at >= ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (
+                machine_key,
+                selected_program,
+                active_program,
+                recent_cutoff_iso,
+            ),
+        ).fetchone()
+        if duplicate is not None:
+            return
+
+        connection.execute(
+            """
+            INSERT INTO saved_cycles (
+                machine_key,
+                workcenter_id,
+                operator_id,
+                operator_name,
+                selected_program,
+                active_program,
+                material,
+                program_status,
+                cutting_started_at,
+                table_change_started_at,
+                cycle_duration_seconds,
+                source,
+                snapshot_json,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                machine_key,
+                machine_profile.get("workcenter_id"),
+                operator.get("employee_id"),
+                operator.get("full_name"),
+                selected_program,
+                active_program,
+                snapshot.get("material"),
+                snapshot.get("program_status"),
+                cutting_started_at_raw,
+                table_change_started_at.isoformat(timespec="seconds"),
+                cycle_duration_seconds,
+                snapshot.get("source", "live-ocr"),
+                json.dumps(snapshot, ensure_ascii=False),
+                table_change_started_at.isoformat(timespec="seconds"),
+            ),
+        )
+        connection.commit()
+
+
 def sync_machine_events_from_live_snapshot(machine_key: str) -> dict | None:
     snapshot = get_live_machine_snapshot(machine_key)
     if not snapshot or not snapshot.get("available"):
@@ -995,7 +1213,8 @@ def sync_machine_events_from_live_snapshot(machine_key: str) -> dict | None:
 
     derived_signals = snapshot.get("derived_signals") or {}
     current_signals = fetch_current_signals(machine_key)
-    operator_snapshot = fetch_current_operator(get_machine_profile(machine_key)["workcenter_id"])
+    machine_profile = get_machine_profile(machine_key)
+    operator_snapshot = fetch_current_operator(machine_profile["workcenter_id"])
 
     note = (
         f"selected={snapshot.get('selected_program')}; "
@@ -1003,6 +1222,9 @@ def sync_machine_events_from_live_snapshot(machine_key: str) -> dict | None:
         f"material={snapshot.get('material')}; "
         f"status={snapshot.get('program_status')}"
     )
+
+    if bool(derived_signals.get("table_change", False)) and not current_signals["table_change"]["active"]:
+        save_table_change_record(machine_key, machine_profile, snapshot, operator_snapshot, current_signals)
 
     for signal_name in ("machine_on", "cutting_active", "table_change"):
         new_value = bool(derived_signals.get(signal_name, False))
@@ -1156,6 +1378,33 @@ def build_dashboard_payload(machine_key: str = DEFAULT_MACHINE_KEY) -> dict:
     }
 
 
+def background_sync_loop() -> None:
+    while True:
+        for machine_key in MACHINE_DEFINITIONS:
+            try:
+                sync_machine_events_from_live_snapshot(machine_key)
+            except Exception:
+                pass
+        time_module.sleep(BACKGROUND_SYNC_INTERVAL_SECONDS)
+
+
+def ensure_background_sync_started() -> None:
+    global _background_sync_started
+    if _background_sync_started or not BACKGROUND_SYNC_ENABLED:
+        return
+
+    if os.getenv("FLASK_DEBUG", "0") == "1" and os.getenv("WERKZEUG_RUN_MAIN") != "true":
+        return
+
+    worker_count = int(os.getenv("GUNICORN_WORKERS", "1"))
+    if worker_count > 1:
+        return
+
+    thread = threading.Thread(target=background_sync_loop, name="laser-background-sync", daemon=True)
+    thread.start()
+    _background_sync_started = True
+
+
 @app.route("/")
 def index():
     return render_template(
@@ -1225,6 +1474,18 @@ def dashboard():
     return jsonify(payload)
 
 
+@app.route("/api/saved-records")
+def saved_records():
+    machine_key = request.args.get("machine")
+    if machine_key:
+        try:
+            machine_key = ensure_machine_key(machine_key)
+        except ValueError as exc:
+            return jsonify({"success": False, "message": str(exc)}), 400
+
+    return jsonify(build_saved_cycles_payload(machine_key))
+
+
 @app.route("/api/events", methods=["POST"])
 def create_event():
     data = request.get_json(silent=True) or {}
@@ -1290,6 +1551,7 @@ def delete_event_history():
 
 
 init_db()
+ensure_background_sync_started()
 
 
 if __name__ == "__main__":

@@ -63,7 +63,7 @@
                 </div>
             </section>
 
-            <section class="surface-section overview-section">
+            <section class="surface-section overview-section" id="dashboard-overview-section">
                 <div class="overview-head">
                     <div>
                         <p class="page-kicker">Imagine de ansamblu</p>
@@ -113,7 +113,7 @@
                 </div>
             </section>
 
-            <section class="surface-section integrated-section">
+            <section class="surface-section integrated-section" id="dashboard-integrated-section">
                 <div class="integrated-grid">
                     <div class="integrated-main">
                         <div class="subsection">
@@ -192,6 +192,27 @@
                 </div>
             </section>
 
+            <section class="surface-section saved-section is-hidden" id="saved-section">
+                <div class="subsection-headline">
+                    <div>
+                        <p class="page-kicker">Date salvate</p>
+                        <h2 class="section-title">Ce au facut operatorii azi</h2>
+                    </div>
+                    <div class="meta-item compact-meta">
+                        <span>Total cicluri</span>
+                        <strong id="saved-records-count">0</strong>
+                    </div>
+                </div>
+
+                <div class="saved-summary-grid" id="saved-summary">
+                    <p class="empty-state">Nu exista inca date salvate pentru azi.</p>
+                </div>
+
+                <div class="saved-record-list" id="saved-record-list">
+                    <p class="empty-state">Cand apare un `Table change`, ciclul se salveaza automat aici.</p>
+                </div>
+            </section>
+
         </main>
     </div>
 
@@ -200,8 +221,10 @@
             dashboardUrl: "{{ url_for('dashboard') }}",
             eventsUrl: "{{ url_for('create_event') }}",
             operatorUrl: "{{ url_for('operator_status') }}",
+            savedRecordsUrl: "{{ url_for('saved_records') }}",
             machinesUrl: "{{ url_for('machines_index') }}",
-            defaultMachineKey: "{{ default_machine_key }}"
+            defaultMachineKey: "{{ default_machine_key }}",
+            initialMachines: {{ machines|tojson }}
         };
     </script>
     <script src="{{ url_for('static', filename='app.js') }}"></script>

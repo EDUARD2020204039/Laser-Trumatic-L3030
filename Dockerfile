@@ -3,6 +3,8 @@ FROM python:3.12-slim-bookworm
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV ACCEPT_EULA=Y
+ENV GUNICORN_WORKERS=1
+ENV BACKGROUND_SYNC_ENABLED=1
 
 WORKDIR /app
 
@@ -30,4 +32,4 @@ COPY . .
 
 EXPOSE 3030
 
-CMD ["gunicorn", "--bind", "0.0.0.0:3030", "--workers", "2", "app:app"]
+CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:3030 --workers ${GUNICORN_WORKERS:-1} --threads 4 app:app"]

@@ -49,6 +49,8 @@ Aplicatia porneste implicit pe `http://localhost:3030`.
 - `LASER_REAL_DATA_ENDPOINT` endpointul sau descrierea sursei reale, pentru afisare in UI
 - `LASER1_REAL_DATA_ENDPOINT`, `LASER2_REAL_DATA_ENDPOINT`, `ABKANT_REAL_DATA_ENDPOINT` pentru endpoint separat pe fiecare utilaj
 - daca rulezi aplicatia in Docker pe un server public, endpointurile de tip Tailscale sau hostname intern trebuie sa fie accesibile si din container; altfel utilajul ramine `OFF`
+- `BACKGROUND_SYNC_ENABLED=1` porneste pollerul din fundal care urmareste utilajele chiar daca nu ai pagina deschisa
+- `BACKGROUND_SYNC_INTERVAL_SECONDS=10` controleaza la cite secunde se face sincronizarea live si salvarea automata in SQLite
 
 ## Docker pentru Unraid
 
@@ -64,6 +66,8 @@ Run:
 docker run -d \
   --name lasertrumaticl3030 \
   -p 3030:3030 \
+  -e BACKGROUND_SYNC_ENABLED=1 \
+  -e BACKGROUND_SYNC_INTERVAL_SECONDS=10 \
   -e LASER1_REAL_DATA_ENDPOINT='https://laser.helpan.ro/' \
   -e LASER2_REAL_DATA_ENDPOINT='https://laser.helpan.ro/' \
   -e ABKANT_REAL_DATA_ENDPOINT='https://abkant.helpan.ro/' \

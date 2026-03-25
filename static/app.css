@@ -65,6 +65,10 @@ body.dark-mode .surface-section {
     border-bottom: 0;
 }
 
+.is-hidden {
+    display: none !important;
+}
+
 .page-kicker {
     margin: 0 0 8px;
     color: #800000;
@@ -209,6 +213,10 @@ body.dark-mode .screen-row span {
 .machine-tab.is-selected {
     background: #800000;
     color: white;
+}
+
+.machine-tab.saved-tab {
+    border-style: dashed;
 }
 
 .machine-tab small,
@@ -450,7 +458,8 @@ body.dark-mode .secondary-btn {
 .operator-list,
 #source-panel,
 .timeline,
-#live-extraction {
+#live-extraction,
+.saved-record-list {
     display: flex;
     flex-direction: column;
     gap: 12px;
@@ -532,6 +541,80 @@ body.dark-mode .timeline-item {
     line-height: 1.45;
 }
 
+.compact-meta {
+    min-width: 150px;
+}
+
+.saved-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+    margin: 18px 0 24px;
+}
+
+.saved-summary-card,
+.saved-record-card {
+    padding: 16px 0 16px 16px;
+    border: 1px solid rgba(128, 0, 0, 0.1);
+    border-left: 3px solid #800000;
+}
+
+body.dark-mode .saved-summary-card,
+body.dark-mode .saved-record-card {
+    border-color: #555;
+    border-left-color: #80dfff;
+}
+
+.saved-summary-card strong,
+.saved-record-card strong {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 21px;
+}
+
+.saved-summary-card p,
+.saved-record-card p {
+    margin: 0 0 8px;
+}
+
+.saved-record-list {
+    gap: 16px;
+}
+
+.saved-record-top {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 14px;
+}
+
+.saved-record-meta {
+    text-align: right;
+}
+
+.saved-record-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.saved-record-grid span {
+    display: block;
+    margin-bottom: 8px;
+    color: #7a5a5a;
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+body.dark-mode .saved-record-grid span {
+    color: #cfcfcf;
+}
+
+.saved-record-note {
+    margin-top: 14px !important;
+}
+
 .script-status.is-found {
     background: #dff3e8;
     color: #11663d;
@@ -609,7 +692,9 @@ body.dark-mode .timeline-item {
     .metric-line,
     .integrated-grid,
     .signal-grid,
-    .live-screen-row {
+    .live-screen-row,
+    .saved-summary-grid,
+    .saved-record-grid {
         grid-template-columns: 1fr;
     }
 }

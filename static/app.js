@@ -6,8 +6,10 @@ const signalLabels = {
 
 const state = {
     dashboard: null,
+    savedRecords: null,
     isSubmitting: false,
     selectedMachineKey: window.appConfig.defaultMachineKey || "laser1",
+    currentView: window.localStorage.getItem("currentView") || "dashboard",
     workcenterFeedback: null,
     lastStatsSnapshot: null,
     lastStatsSyncMs: 0
@@ -22,8 +24,18 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     bindActions();
-    loadDashboard(state.selectedMachineKey);
-    window.setInterval(() => loadDashboard(state.selectedMachineKey), 10000);
+    if (state.currentView === "saved") {
+        loadSavedRecords();
+    } else {
+        loadDashboard(state.selectedMachineKey);
+    }
+    window.setInterval(() => {
+        if (state.currentView === "saved") {
+            loadSavedRecords();
+            return;
+        }
+        loadDashboard(state.selectedMachineKey);
+    }, 10000);
     window.setInterval(() => tickLiveStats(), 1000);
 });
 
@@ -69,10 +81,31 @@ function bindActions() {
             }
 
             const nextMachineKey = button.dataset.machineKey;
-            if (!nextMachineKey || nextMachineKey === state.selectedMachineKey) {
+            const nextView = button.dataset.view || "dashboard";
+
+            if (nextView === "saved") {
+                if (state.currentView === "saved") {
+                    await loadSavedRecords();
+                    return;
+                }
+
+                state.currentView = "saved";
+                window.localStorage.setItem("currentView", state.currentView);
+                await loadSavedRecords();
                 return;
             }
 
+            if (!nextMachineKey) {
+                return;
+            }
+
+            if (nextMachineKey === state.selectedMachineKey && state.currentView === "dashboard") {
+                await loadDashboard(nextMachineKey);
+                return;
+            }
+
+            state.currentView = "dashboard";
+            window.localStorage.setItem("currentView", state.currentView);
             state.workcenterFeedback = null;
             await loadDashboard(nextMachineKey);
         });
@@ -132,10 +165,30 @@ async function loadDashboard(machineKey = state.selectedMachineKey) {
         state.dashboard = payload;
         state.selectedMachineKey = payload.selected_machine_key;
         window.localStorage.setItem("selectedMachineKey", payload.selected_machine_key);
+        window.localStorage.setItem("currentView", "dashboard");
+        state.currentView = "dashboard";
         renderDashboard(payload);
     } catch (error) {
         console.error(error);
         setWorkcenterFeedback(error.message, "error");
+    }
+}
+
+async function loadSavedRecords() {
+    try {
+        const response = await fetch(window.appConfig.savedRecordsUrl);
+        const payload = await response.json();
+        if (!response.ok) {
+            throw new Error(payload.message || "Nu am putut incarca datele salvate.");
+        }
+
+        state.savedRecords = payload;
+        state.currentView = "saved";
+        window.localStorage.setItem("currentView", "saved");
+        renderSavedView(payload);
+    } catch (error) {
+        console.error(error);
+        window.alert(error.message);
     }
 }
 
@@ -264,6 +317,7 @@ async function updateWorkcenter() {
 }
 
 function renderDashboard(payload) {
+    syncSectionVisibility("dashboard");
     renderHeader(payload);
     renderMachineSelector(payload.machines);
     renderMachineState(payload.machine, payload.current_state);
@@ -278,6 +332,14 @@ function renderDashboard(payload) {
     renderTimeline(payload.recent_events);
 }
 
+function renderSavedView(payload) {
+    syncSectionVisibility("saved");
+    renderSavedHeader(payload);
+    renderMachineSelector(state.dashboard?.machines || window.appConfig.initialMachines || []);
+    renderSavedSummary(payload.summary || []);
+    renderSavedRecords(payload.records || []);
+}
+
 function renderHeader(payload) {
     document.getElementById("dashboard-title").textContent = `${payload.dashboard_title} / ${payload.machine.label}`;
     document.getElementById("dashboard-subtitle").textContent = payload.machine.description;
@@ -290,13 +352,24 @@ function renderHeader(payload) {
         : "necunoscut";
 }
 
+function renderSavedHeader(payload) {
+    document.getElementById("dashboard-title").textContent = "Date salvate / operatori";
+    document.getElementById("dashboard-subtitle").textContent = "Ciclurile salvate automat la schimb de masa si ce a facut fiecare operator azi.";
+    document.getElementById("active-machine-label").textContent = "DATE SALVATE";
+    document.getElementById("active-workcenter-label").textContent = "Toate utilajele";
+    document.getElementById("updated-at").textContent = payload.updated_at
+        ? formatDateTime(payload.updated_at)
+        : "necunoscut";
+}
+
 function renderMachineSelector(machines) {
     const selector = document.getElementById("machine-selector");
-    selector.innerHTML = machines
+    const machineButtons = machines
         .map((machine) => `
             <button
                 class="machine-tab ${machine.is_selected ? "is-selected" : ""}"
                 data-machine-key="${machine.key}"
+                data-view="dashboard"
                 type="button"
             >
                 <small>${machine.label}</small>
@@ -305,6 +378,20 @@ function renderMachineSelector(machines) {
             </button>
         `)
         .join("");
+
+    const savedButton = `
+        <button
+            class="machine-tab saved-tab ${state.currentView === "saved" ? "is-selected" : ""}"
+            data-view="saved"
+            type="button"
+        >
+            <small>Arhiva</small>
+            <strong>DATE SALVATE</strong>
+            <span>Operatori, programe si cicluri salvate automat azi.</span>
+        </button>
+    `;
+
+    selector.innerHTML = `${machineButtons}${savedButton}`;
 }
 
 function renderMachineState(machine, machineState) {
@@ -592,6 +679,82 @@ function renderTimeline(events) {
         `;
         timeline.appendChild(item);
     });
+}
+
+function renderSavedSummary(summary) {
+    const container = document.getElementById("saved-summary");
+    const count = document.getElementById("saved-records-count");
+    const recordsCount = Number(state.savedRecords?.records_count || 0);
+    count.textContent = String(recordsCount);
+
+    if (!summary.length) {
+        container.innerHTML = `<p class="empty-state">Nu exista inca cicluri salvate pentru azi.</p>`;
+        return;
+    }
+
+    container.innerHTML = summary
+        .map((item) => `
+            <article class="saved-summary-card">
+                <small>Operator</small>
+                <strong>${item.operator_name}</strong>
+                <p>${item.records_count} cicluri salvate</p>
+                <small>${item.total_cycle_label} timp cumulat</small>
+                <small>${item.machines.join(", ")}</small>
+            </article>
+        `)
+        .join("");
+}
+
+function renderSavedRecords(records) {
+    const container = document.getElementById("saved-record-list");
+    if (!records.length) {
+        container.innerHTML = `<p class="empty-state">Cand apare un schimb de masa, dashboard-ul salveaza automat ciclul aici.</p>`;
+        return;
+    }
+
+    container.innerHTML = records
+        .map((record) => `
+            <article class="saved-record-card">
+                <div class="saved-record-top">
+                    <div>
+                        <small>${record.machine_label}</small>
+                        <strong>${record.selected_program}</strong>
+                    </div>
+                    <div class="saved-record-meta">
+                        <small>${record.operator_name}</small>
+                        <strong>${record.cycle_duration_label}</strong>
+                    </div>
+                </div>
+                <div class="saved-record-grid">
+                    <div>
+                        <span>Program activ</span>
+                        <strong>${record.active_program}</strong>
+                    </div>
+                    <div>
+                        <span>Material</span>
+                        <strong>${record.material}</strong>
+                    </div>
+                    <div>
+                        <span>Inceput taiere</span>
+                        <strong>${record.cutting_started_at ? formatDateTime(record.cutting_started_at) : "Necunoscut"}</strong>
+                    </div>
+                    <div>
+                        <span>Schimb masa</span>
+                        <strong>${formatDateTime(record.table_change_started_at)}</strong>
+                    </div>
+                </div>
+                <p class="saved-record-note">
+                    Status la salvare: ${record.program_status}. Operator: ${record.operator_name}.
+                </p>
+            </article>
+        `)
+        .join("");
+}
+
+function syncSectionVisibility(view) {
+    document.getElementById("dashboard-overview-section").classList.toggle("is-hidden", view !== "dashboard");
+    document.getElementById("dashboard-integrated-section").classList.toggle("is-hidden", view !== "dashboard");
+    document.getElementById("saved-section").classList.toggle("is-hidden", view !== "saved");
 }
 
 function setWorkcenterFeedback(message, tone = "muted") {

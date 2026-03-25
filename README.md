@@ -64,9 +64,9 @@ Run:
 docker run -d \
   --name lasertrumaticl3030 \
   -p 3030:3030 \
-  -e LASER1_REAL_DATA_ENDPOINT='http://100.94.113.74:8081' \
-  -e LASER2_REAL_DATA_ENDPOINT='http://100.94.113.74:8081' \
-  -e ABKANT_REAL_DATA_ENDPOINT='http://100.126.29.52:8081' \
+  -e LASER1_REAL_DATA_ENDPOINT='https://laser.helpan.ro/' \
+  -e LASER2_REAL_DATA_ENDPOINT='https://laser.helpan.ro/' \
+  -e ABKANT_REAL_DATA_ENDPOINT='https://abkant.helpan.ro/' \
   -e PONTAJ_LASER1_WORKCENTER_ID=1 \
   -e PONTAJ_LASER2_WORKCENTER_ID=2 \
   -e PONTAJ_ABKANT_WORKCENTER_ID=3 \

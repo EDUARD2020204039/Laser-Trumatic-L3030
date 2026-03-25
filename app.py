@@ -73,7 +73,7 @@ REAL_DATA_FEEDS = {
     "laser1": {
         "script_name": "laserFeed.py",
         "display_name": "laserFeed OCR bridge",
-        "endpoint": "http://laserbvision-1:8081",
+        "endpoint": "https://laser.helpan.ro/",
         "transport": "Redis + MQTT",
         "left_panel": [
             {"label": "OCR program", "value": "da"},
@@ -106,7 +106,7 @@ REAL_DATA_FEEDS = {
     "laser2": {
         "script_name": "laserFeed.py",
         "display_name": "laserFeed OCR bridge",
-        "endpoint": "http://laserbvision-1:8081",
+        "endpoint": "https://laser.helpan.ro/",
         "transport": "Redis + MQTT",
         "left_panel": [
             {"label": "OCR program", "value": "da"},
@@ -139,7 +139,7 @@ REAL_DATA_FEEDS = {
     "abkant": {
         "script_name": "AbkantFeed.py",
         "display_name": "Abkant OCR bridge",
-        "endpoint": "http://100.126.29.52:8081",
+        "endpoint": "https://abkant.helpan.ro/",
         "transport": "MQTT + PostgreSQL",
         "left_panel": [
             {"label": "OCR program", "value": "da"},

@@ -213,10 +213,8 @@ STATE_DEFINITIONS = {
 }
 
 LASER_OCR_ZONES = {
-    "selected_program": (680, 315, 470, 74),
-    "active_program": (680, 410, 470, 74),
-    "material": (220, 320, 220, 86),
-    "program_status": (700, 720, 380, 70),
+    "right_panel": (620, 170, 620, 550),
+    "left_panel": (0, 170, 620, 260),
 }
 
 app = Flask(__name__)
@@ -337,8 +335,86 @@ def read_ocr_zone(image, zone: tuple[int, int, int, int], whitelist: str, psm: i
         return ""
 
 
+def read_ocr_block(image, zone: tuple[int, int, int, int], psm: int = 6) -> str:
+    if not OCR_AVAILABLE or image is None:
+        return ""
+
+    x, y, width, height = zone
+    crop = image[y : y + height, x : x + width]
+    if crop.size == 0:
+        return ""
+
+    enlarged = cv2.resize(crop, None, fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
+    gray = cv2.cvtColor(enlarged, cv2.COLOR_BGR2GRAY)
+    threshold = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+    config = f"--psm {psm} --oem 3 -c preserve_interword_spaces=1"
+    try:
+        return clean_ocr_text(pytesseract.image_to_string(threshold, config=config))
+    except Exception:
+        return ""
+
+
+def normalize_program_token(token: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_]", "", token or "").upper()
+    if re.match(r"^P\d{5,}_", cleaned):
+        cleaned = f"S{cleaned}"
+    underscore_count = cleaned.count("_")
+    if underscore_count == 2:
+        parts = cleaned.split("_")
+        if len(parts) == 3 and len(parts[2]) == 3:
+            cleaned = f"{parts[0]}_{parts[1]}_{parts[2][:2]}_{parts[2][2:]}"
+    return cleaned
+
+
+def extract_section_token(text: str, start_label: str, end_label: str | None = None) -> str:
+    if not text:
+        return ""
+
+    pattern = re.escape(start_label)
+    if end_label:
+        pattern += rf"(.*?){re.escape(end_label)}"
+    else:
+        pattern += r"(.*)"
+
+    match = re.search(pattern, text, re.IGNORECASE)
+    if not match:
+        return ""
+
+    section = match.group(1)
+    token_match = re.search(r"[A-Z]{0,3}\d{5,}_[A-Z0-9]{2}_[A-Z0-9]{2}_?[A-Z0-9]", section, re.IGNORECASE)
+    if not token_match:
+        return ""
+
+    return normalize_program_token(token_match.group(0))
+
+
+def extract_program_status(text: str) -> str:
+    if not text:
+        return ""
+
+    match = re.search(r"Program\s*status\s*([A-Za-z]+)", text, re.IGNORECASE)
+    if not match:
+        return ""
+
+    return clean_ocr_text(match.group(1)).title()
+
+
+def extract_material(text: str) -> str:
+    if not text:
+        return ""
+
+    patterns = (
+        r"\b\d\.\d{4}-\d+\b",
+        r"\b[A-Za-z]{1,3}\d{2,}-\d{2}\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return clean_ocr_text(match.group(0))
+    return ""
+
+
 def analyze_laser_live_snapshot(machine_key: str) -> dict | None:
-    feed = REAL_DATA_FEEDS.get(machine_key, {})
     endpoint = resolve_real_data_endpoint(machine_key)
     image, error_message = fetch_mjpeg_frame(endpoint)
     if image is None:
@@ -349,32 +425,19 @@ def analyze_laser_live_snapshot(machine_key: str) -> dict | None:
             "message": f"Nu pot citi captura live de la {endpoint}. Motiv: {error_message}",
         }
 
-    selected_program = read_ocr_zone(
-        image,
-        LASER_OCR_ZONES["selected_program"],
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-/.",
-    )
-    active_program = read_ocr_zone(
-        image,
-        LASER_OCR_ZONES["active_program"],
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-/.",
-    )
-    material = read_ocr_zone(
-        image,
-        LASER_OCR_ZONES["material"],
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.-xX/",
-    )
-    program_status = read_ocr_zone(
-        image,
-        LASER_OCR_ZONES["program_status"],
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
-    )
+    right_panel_text = read_ocr_block(image, LASER_OCR_ZONES["right_panel"], psm=6)
+    left_panel_text = read_ocr_block(image, LASER_OCR_ZONES["left_panel"], psm=11)
+
+    selected_program = extract_section_token(right_panel_text, "Selected program", "Active program")
+    active_program = extract_section_token(right_panel_text, "Active program", "NC blocks")
+    material = extract_material(left_panel_text)
+    program_status = extract_program_status(right_panel_text)
 
     normalized_status = program_status.upper()
     normalized_active_program = active_program.upper()
     machine_on = bool(selected_program or active_program or program_status or material)
     table_change = "SHEET_LOAD" in normalized_active_program or "LOAD_SHEET" in normalized_active_program
-    cutting_active = machine_on and "RUN" in normalized_status and not table_change
+    cutting_active = machine_on and normalized_status == "RUNNING" and not table_change
     idle = machine_on and not cutting_active and not table_change
 
     return {
@@ -392,7 +455,7 @@ def analyze_laser_live_snapshot(machine_key: str) -> dict | None:
             "table_change": table_change,
             "idle": idle,
         },
-        "message": "Stare derivata din captura live a ecranului laser.",
+        "message": "Stare derivata din OCR pe panourile din stanga si dreapta ale ecranului laser.",
     }
 
 

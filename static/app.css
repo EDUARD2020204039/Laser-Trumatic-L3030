@@ -559,6 +559,37 @@ body.dark-mode .timeline-item {
     margin: 0 0 24px;
 }
 
+.saved-filter-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin: 0 0 20px;
+}
+
+.saved-filter-btn {
+    padding: 10px 16px;
+    border: 1px solid #800000;
+    border-radius: 999px;
+    background: transparent;
+    color: #800000;
+    font-weight: 600;
+}
+
+.saved-filter-btn.is-selected {
+    background: #800000;
+    color: #fff;
+}
+
+body.dark-mode .saved-filter-btn {
+    border-color: #80dfff;
+    color: #80dfff;
+}
+
+body.dark-mode .saved-filter-btn.is-selected {
+    background: #80dfff;
+    color: #1e1e1e;
+}
+
 .saved-summary-card,
 .saved-report-card,
 .saved-record-card {

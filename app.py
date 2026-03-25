@@ -997,6 +997,33 @@ def fetch_saved_cycles_between(
     return [format_saved_cycle_row(row) for row in rows]
 
 
+def fetch_saved_cycles_all(machine_key: str | None = None, limit: int = 500) -> list[dict]:
+    with get_sqlite_connection() as connection:
+        if machine_key:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM saved_cycles
+                WHERE machine_key = ?
+                ORDER BY table_change_started_at DESC, id DESC
+                LIMIT ?
+                """,
+                (machine_key, limit),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM saved_cycles
+                ORDER BY table_change_started_at DESC, id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+
+    return [format_saved_cycle_row(row) for row in rows]
+
+
 def summarize_saved_cycles(records: list[dict]) -> list[dict]:
     grouped: dict[str, dict] = {}
     for record in records:
@@ -1069,11 +1096,38 @@ def build_saved_cycles_reports(machine_key: str | None = None) -> list[dict]:
     ]
 
 
-def build_saved_cycles_payload(machine_key: str | None = None) -> dict:
-    records = fetch_saved_cycles(machine_key=machine_key)
+def resolve_saved_period(period: str | None) -> str:
+    candidate = (period or "all").strip().lower()
+    if candidate not in {"all", "day", "week", "month"}:
+        raise ValueError(f"Unsupported saved period: {candidate}")
+    return candidate
+
+
+def fetch_saved_cycles_for_period(machine_key: str | None, period: str) -> list[dict]:
+    period = resolve_saved_period(period)
+    now = now_local()
+
+    if period == "all":
+        return fetch_saved_cycles_all(machine_key=machine_key)
+    if period == "day":
+        return fetch_saved_cycles_between(datetime.combine(date.today(), time.min), now, machine_key=machine_key)
+    if period == "week":
+        week_start = datetime.combine(date.today(), time.min) - timedelta(days=date.today().weekday())
+        return fetch_saved_cycles_between(week_start, now, machine_key=machine_key)
+    if period == "month":
+        month_start = datetime.combine(date.today().replace(day=1), time.min)
+        return fetch_saved_cycles_between(month_start, now, machine_key=machine_key)
+
+    return []
+
+
+def build_saved_cycles_payload(machine_key: str | None = None, period: str = "all") -> dict:
+    normalized_period = resolve_saved_period(period)
+    records = fetch_saved_cycles_for_period(machine_key=machine_key, period=normalized_period)
     return {
         "view": "saved",
         "selected_machine_key": machine_key,
+        "period": normalized_period,
         "records": records,
         "summary": summarize_saved_cycles(records),
         "reports": build_saved_cycles_reports(machine_key),
@@ -1687,13 +1741,17 @@ def dashboard():
 @app.route("/api/saved-records")
 def saved_records():
     machine_key = request.args.get("machine")
+    period = request.args.get("period", "all")
     if machine_key:
         try:
             machine_key = ensure_machine_key(machine_key)
         except ValueError as exc:
             return jsonify({"success": False, "message": str(exc)}), 400
 
-    return jsonify(build_saved_cycles_payload(machine_key))
+    try:
+        return jsonify(build_saved_cycles_payload(machine_key, period=period))
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 400
 
 
 @app.route("/api/events", methods=["POST"])

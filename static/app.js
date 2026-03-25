@@ -10,6 +10,7 @@ const state = {
     isSubmitting: false,
     selectedMachineKey: window.appConfig.defaultMachineKey || "laser1",
     currentView: window.localStorage.getItem("currentView") || "dashboard",
+    savedPeriod: window.localStorage.getItem("savedPeriod") || "all",
     workcenterFeedback: null,
     lastStatsSnapshot: null,
     lastStatsSyncMs: 0
@@ -111,6 +112,20 @@ function bindActions() {
         });
     }
 
+    const savedFilterRow = document.getElementById("saved-filter-row");
+    if (savedFilterRow) {
+        savedFilterRow.addEventListener("click", async (event) => {
+            const button = event.target.closest("[data-saved-period]");
+            if (!button) {
+                return;
+            }
+
+            state.savedPeriod = button.dataset.savedPeriod || "all";
+            window.localStorage.setItem("savedPeriod", state.savedPeriod);
+            await loadSavedRecords();
+        });
+    }
+
     document.querySelectorAll("[data-signal]").forEach((button) => {
         button.addEventListener("click", async () => {
             const signalName = button.dataset.signal;
@@ -176,15 +191,18 @@ async function loadDashboard(machineKey = state.selectedMachineKey) {
 
 async function loadSavedRecords() {
     try {
-        const response = await fetch(window.appConfig.savedRecordsUrl);
+        const query = new URLSearchParams({ period: state.savedPeriod });
+        const response = await fetch(`${window.appConfig.savedRecordsUrl}?${query.toString()}`);
         const payload = await response.json();
         if (!response.ok) {
             throw new Error(payload.message || "Nu am putut incarca datele salvate.");
         }
 
         state.savedRecords = payload;
+        state.savedPeriod = payload.period || state.savedPeriod;
         state.currentView = "saved";
         window.localStorage.setItem("currentView", "saved");
+        window.localStorage.setItem("savedPeriod", state.savedPeriod);
         renderSavedView(payload);
     } catch (error) {
         console.error(error);
@@ -337,6 +355,7 @@ function renderSavedView(payload) {
     renderSavedHeader(payload);
     renderMachineSelector(state.dashboard?.machines || window.appConfig.initialMachines || []);
     renderSavedSummary(payload.summary || []);
+    renderSavedFilters(payload.period || state.savedPeriod);
     renderSavedReports(payload.reports || []);
     renderSavedRecords(payload.records || []);
 }
@@ -704,6 +723,12 @@ function renderSavedSummary(summary) {
             </article>
         `)
         .join("");
+}
+
+function renderSavedFilters(period) {
+    document.querySelectorAll("[data-saved-period]").forEach((button) => {
+        button.classList.toggle("is-selected", button.dataset.savedPeriod === period);
+    });
 }
 
 function renderSavedReports(reports) {

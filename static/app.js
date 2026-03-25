@@ -57,20 +57,23 @@ function initThemeToggle() {
 }
 
 function bindActions() {
-    document.getElementById("machine-selector").addEventListener("click", async (event) => {
-        const button = event.target.closest("[data-machine-key]");
-        if (!button) {
-            return;
-        }
+    const machineSelector = document.getElementById("machine-selector");
+    if (machineSelector) {
+        machineSelector.addEventListener("click", async (event) => {
+            const button = event.target.closest("[data-machine-key]");
+            if (!button) {
+                return;
+            }
 
-        const nextMachineKey = button.dataset.machineKey;
-        if (!nextMachineKey || nextMachineKey === state.selectedMachineKey) {
-            return;
-        }
+            const nextMachineKey = button.dataset.machineKey;
+            if (!nextMachineKey || nextMachineKey === state.selectedMachineKey) {
+                return;
+            }
 
-        state.workcenterFeedback = null;
-        await loadDashboard(nextMachineKey);
-    });
+            state.workcenterFeedback = null;
+            await loadDashboard(nextMachineKey);
+        });
+    }
 
     document.querySelectorAll("[data-signal]").forEach((button) => {
         button.addEventListener("click", async () => {
@@ -80,16 +83,35 @@ function bindActions() {
         });
     });
 
-    document.getElementById("refresh-operator").addEventListener("click", () => loadDashboard(state.selectedMachineKey));
-    document.getElementById("delete-latest-tests").addEventListener("click", () => deleteEvents("manual_latest", 10));
-    document.getElementById("delete-all-tests").addEventListener("click", () => deleteEvents("manual_all"));
-    document.getElementById("save-workcenter").addEventListener("click", updateWorkcenter);
-    document.getElementById("workcenter-id-input").addEventListener("keydown", (event) => {
-        if (event.key === "Enter") {
-            event.preventDefault();
-            updateWorkcenter();
-        }
-    });
+    const refreshButton = document.getElementById("refresh-operator");
+    if (refreshButton) {
+        refreshButton.addEventListener("click", () => loadDashboard(state.selectedMachineKey));
+    }
+
+    const deleteLatestButton = document.getElementById("delete-latest-tests");
+    if (deleteLatestButton) {
+        deleteLatestButton.addEventListener("click", () => deleteEvents("manual_latest", 10));
+    }
+
+    const deleteAllButton = document.getElementById("delete-all-tests");
+    if (deleteAllButton) {
+        deleteAllButton.addEventListener("click", () => deleteEvents("manual_all"));
+    }
+
+    const saveWorkcenterButton = document.getElementById("save-workcenter");
+    if (saveWorkcenterButton) {
+        saveWorkcenterButton.addEventListener("click", updateWorkcenter);
+    }
+
+    const workcenterInput = document.getElementById("workcenter-id-input");
+    if (workcenterInput) {
+        workcenterInput.addEventListener("keydown", (event) => {
+            if (event.key === "Enter") {
+                event.preventDefault();
+                updateWorkcenter();
+            }
+        });
+    }
 }
 
 async function loadDashboard(machineKey = state.selectedMachineKey) {

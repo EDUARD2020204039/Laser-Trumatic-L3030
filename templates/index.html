@@ -18,257 +18,209 @@
     </div>
 
     <div class="container monitor-container">
-        <section class="app-card hero-card">
-            <p class="page-kicker">HABA / monitor productie</p>
-            <h1 id="dashboard-title">{{ dashboard_title }}</h1>
-            <p class="hero-text" id="dashboard-subtitle">
-                O pagina clara pentru selectie utilaj, operator activ, workcenter si randament.
-            </p>
-
-            <div class="status-pills">
-                <div class="status-pill">
-                    <span>Utilaj activ</span>
-                    <strong id="active-machine-label">{{ machines[0].label if machines else "Laser1" }}</strong>
-                </div>
-                <div class="status-pill">
-                    <span>WorkCenter</span>
-                    <strong id="active-workcenter-label">WC --</strong>
-                </div>
-                <div class="status-pill">
-                    <span>Ultima actualizare</span>
-                    <strong id="updated-at">Se incarca...</strong>
-                </div>
-            </div>
-        </section>
-
-        <section class="app-card">
-            <div class="section-title-wrap">
-                <p class="page-kicker">Selectie utilaj</p>
-                <h2 class="section-title">Alege utilajul pe care vrei sa il urmaresti</h2>
-            </div>
-
-            <div class="title-actions machine-selector" id="machine-selector">
-                {% for machine in machines %}
-                <button
-                    class="machine-tab {% if machine.key == default_machine_key %}is-selected{% endif %}"
-                    data-machine-key="{{ machine.key }}"
-                    type="button"
-                >
-                    <small>{{ machine.label }}</small>
-                    <strong>{% if machine.workcenter_id %}WC {{ machine.workcenter_id }}{% else %}Fara WC{% endif %}</strong>
-                    <span>{{ machine.description }}</span>
-                </button>
-                {% endfor %}
-            </div>
-        </section>
-
-        <div class="row g-4">
-            <div class="col-xl-8">
-                <section class="app-card mb-4">
-                    <div class="card-headline">
-                        <div>
-                            <p class="page-kicker">Imagine de ansamblu</p>
-                            <h2 class="section-title" id="machine-context-title">Se incarca...</h2>
-                        </div>
-                        <span class="state-badge" id="machine-state-badge">--</span>
+        <main class="monitor-surface">
+            <section class="surface-section hero-section">
+                <p class="page-kicker">HABA / monitor productie</p>
+                <div class="hero-row">
+                    <div>
+                        <h1 id="dashboard-title">{{ dashboard_title }}</h1>
+                        <p class="hero-text" id="dashboard-subtitle">
+                            O pagina clara pentru selectie utilaj, operator activ, workcenter si randament.
+                        </p>
                     </div>
 
-                    <p class="hero-text compact" id="machine-state-description">Astept date.</p>
-
-                    <div class="highlight-row">
-                        <div class="highlight-box">
-                            <span>Stare curenta</span>
-                            <strong id="machine-state-label">Se incarca...</strong>
+                    <div class="hero-meta">
+                        <div class="meta-item">
+                            <span>Utilaj activ</span>
+                            <strong id="active-machine-label">{{ machines[0].label if machines else "Laser1" }}</strong>
                         </div>
-                        <div class="highlight-box">
-                            <span>Randament estimat</span>
-                            <strong id="metric-randament">0%</strong>
-                            <small id="metric-availability">Disponibilitate 0%</small>
-                            <div class="utilization-bar">
-                                <span id="utilization-fill"></span>
+                        <div class="meta-item">
+                            <span>WorkCenter</span>
+                            <strong id="active-workcenter-label">WC --</strong>
+                        </div>
+                        <div class="meta-item">
+                            <span>Ultima actualizare</span>
+                            <strong id="updated-at">Se incarca...</strong>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="surface-section machine-section">
+                <p class="page-kicker">Selectie utilaj</p>
+                <div class="machine-selector" id="machine-selector">
+                    {% for machine in machines %}
+                    <button
+                        class="machine-tab {% if machine.key == default_machine_key %}is-selected{% endif %}"
+                        data-machine-key="{{ machine.key }}"
+                        type="button"
+                    >
+                        <small>{{ machine.label }}</small>
+                        <strong>{% if machine.workcenter_id %}WC {{ machine.workcenter_id }}{% else %}Fara WC{% endif %}</strong>
+                        <span>{{ machine.description }}</span>
+                    </button>
+                    {% endfor %}
+                </div>
+            </section>
+
+            <section class="surface-section overview-section">
+                <div class="overview-head">
+                    <div>
+                        <p class="page-kicker">Imagine de ansamblu</p>
+                        <h2 class="section-title" id="machine-context-title">Se incarca...</h2>
+                    </div>
+                    <span class="state-badge" id="machine-state-badge">--</span>
+                </div>
+
+                <p class="hero-text compact" id="machine-state-description">Astept date.</p>
+
+                <div class="overview-line">
+                    <div class="line-item">
+                        <span>Stare curenta</span>
+                        <strong id="machine-state-label">Se incarca...</strong>
+                    </div>
+                    <div class="line-item">
+                        <span>Randament estimat</span>
+                        <strong id="metric-randament">0%</strong>
+                        <small id="metric-availability">Disponibilitate 0%</small>
+                    </div>
+                    <div class="line-item line-progress">
+                        <span>Fereastra azi</span>
+                        <strong id="metric-window">00:00:00</strong>
+                        <div class="utilization-bar">
+                            <span id="utilization-fill"></span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="metric-line">
+                    <div class="metric-item">
+                        <span>Machine ON</span>
+                        <strong id="metric-machine-on">00:00:00</strong>
+                    </div>
+                    <div class="metric-item">
+                        <span>Cutting</span>
+                        <strong id="metric-cutting">00:00:00</strong>
+                    </div>
+                    <div class="metric-item">
+                        <span>Table change</span>
+                        <strong id="metric-table-change">00:00:00</strong>
+                    </div>
+                    <div class="metric-item">
+                        <span>Idle</span>
+                        <strong id="metric-idle">00:00:00</strong>
+                    </div>
+                </div>
+            </section>
+
+            <section class="surface-section integrated-section">
+                <div class="integrated-grid">
+                    <div class="integrated-main">
+                        <div class="subsection">
+                            <p class="page-kicker">Semnale utilaj</p>
+                            <div class="signal-grid" id="signal-grid"></div>
+                        </div>
+
+                        <div class="subsection">
+                            <p class="page-kicker">Sursa date</p>
+                            <div class="status-row">
+                                <span class="dot" id="source-dot"></span>
+                                <span id="source-status-text">Se verifica sursa reala...</span>
+                            </div>
+                            <div id="source-panel">
+                                <p class="empty-state">Nu exista inca informatie despre sursa reala.</p>
                             </div>
                         </div>
-                        <div class="highlight-box">
-                            <span>Fereastra azi</span>
-                            <strong id="metric-window">00:00:00</strong>
+
+                        <div class="subsection">
+                            <p class="page-kicker">Istoric</p>
+                            <div class="timeline" id="timeline">
+                                <p class="empty-state">Nu exista inca evenimente.</p>
+                            </div>
                         </div>
                     </div>
 
-                    <div class="metric-grid">
-                        <article class="metric-box">
-                            <span>Machine ON</span>
-                            <strong id="metric-machine-on">00:00:00</strong>
-                        </article>
-                        <article class="metric-box">
-                            <span>Cutting</span>
-                            <strong id="metric-cutting">00:00:00</strong>
-                        </article>
-                        <article class="metric-box">
-                            <span>Table change</span>
-                            <strong id="metric-table-change">00:00:00</strong>
-                        </article>
-                        <article class="metric-box">
-                            <span>Idle</span>
-                            <strong id="metric-idle">00:00:00</strong>
-                        </article>
-                    </div>
-                </section>
-
-                <section class="app-card mb-4">
-                    <div class="section-title-wrap">
-                        <p class="page-kicker">Semnale utilaj</p>
-                        <h2 class="section-title">Stari principale ale masinii</h2>
-                    </div>
-                    <div class="signal-grid" id="signal-grid"></div>
-                </section>
-
-                <section class="app-card mb-4">
-                    <div class="section-title-wrap">
-                        <p class="page-kicker">Sursa date</p>
-                        <h2 class="section-title">Ce avem deja din feed-urile reale</h2>
-                    </div>
-
-                    <div class="status-row">
-                        <span class="dot" id="source-dot"></span>
-                        <span id="source-status-text">Se verifica sursa reala...</span>
-                    </div>
-
-                    <div id="source-panel">
-                        <p class="empty-state">Nu exista inca informatie despre sursa reala.</p>
-                    </div>
-                </section>
-
-                <section class="app-card">
-                    <div class="section-title-wrap">
-                        <p class="page-kicker">Istoric</p>
-                        <h2 class="section-title">Ultimele evenimente pentru utilajul selectat</h2>
-                    </div>
-
-                    <div class="timeline" id="timeline">
-                        <p class="empty-state">Nu exista inca evenimente.</p>
-                    </div>
-                </section>
-            </div>
-
-            <div class="col-xl-4">
-                <section class="app-card mb-4">
-                    <div class="section-title-wrap">
-                        <p class="page-kicker">Configurare</p>
-                        <h2 class="section-title">WorkCenter activ</h2>
-                    </div>
-
-                    <label class="form-label field-label" for="workcenter-id-input">WorkCenter ID</label>
-                    <div class="workcenter-form">
-                        <input
-                            id="workcenter-id-input"
-                            class="form-control"
-                            type="number"
-                            min="1"
-                            inputmode="numeric"
-                            placeholder="Ex: 7"
-                        >
-                        <button class="btn btn-primary action-btn" id="save-workcenter" type="button">Actualizeaza</button>
-                    </div>
-                    <p class="feedback-text" id="workcenter-feedback">
-                        Cand schimbi ID-ul, operatorul activ se reincarca imediat.
-                    </p>
-                </section>
-
-                <section class="app-card mb-4">
-                    <div class="card-headline">
-                        <div>
-                            <p class="page-kicker">Operator activ</p>
-                            <h2 class="section-title">Din PontajWorkCenter</h2>
+                    <aside class="integrated-side">
+                        <div class="subsection">
+                            <p class="page-kicker">Configurare</p>
+                            <h2 class="section-title small">WorkCenter activ</h2>
+                            <label class="form-label field-label" for="workcenter-id-input">WorkCenter ID</label>
+                            <div class="workcenter-form">
+                                <input
+                                    id="workcenter-id-input"
+                                    class="form-control"
+                                    type="number"
+                                    min="1"
+                                    inputmode="numeric"
+                                    placeholder="Ex: 7"
+                                >
+                                <button class="btn btn-primary action-btn" id="save-workcenter" type="button">Actualizeaza</button>
+                            </div>
+                            <p class="feedback-text" id="workcenter-feedback">
+                                Cand schimbi ID-ul, operatorul activ se reincarca imediat.
+                            </p>
                         </div>
-                        <button class="btn action-btn secondary-btn" id="refresh-operator" type="button">Refresh</button>
-                    </div>
 
-                    <div class="status-row">
-                        <span class="dot" id="operator-dot"></span>
-                        <span id="operator-status-text">Se verifica conexiunea...</span>
-                    </div>
+                        <div class="subsection">
+                            <div class="subsection-headline">
+                                <div>
+                                    <p class="page-kicker">Operator activ</p>
+                                    <h2 class="section-title small">Din PontajWorkCenter</h2>
+                                </div>
+                                <button class="btn action-btn secondary-btn" id="refresh-operator" type="button">Refresh</button>
+                            </div>
 
-                    <div id="operator-primary">
-                        <p class="empty-state">Nu exista operator activ pentru acest workcenter.</p>
-                    </div>
+                            <div class="status-row">
+                                <span class="dot" id="operator-dot"></span>
+                                <span id="operator-status-text">Se verifica conexiunea...</span>
+                            </div>
 
-                    <div class="operator-list" id="operator-list"></div>
-                </section>
+                            <div id="operator-primary">
+                                <p class="empty-state">Nu exista operator activ pentru acest workcenter.</p>
+                            </div>
 
-                <section class="app-card">
-                    <div class="card-headline">
-                        <div>
-                            <p class="page-kicker">Control manual</p>
-                            <h2 class="section-title">Test pana legam datele live</h2>
+                            <div class="operator-list" id="operator-list"></div>
                         </div>
-                        <span class="panel-chip">manual mode</span>
-                    </div>
+                    </aside>
+                </div>
+            </section>
 
-                    <label class="form-label field-label" for="event-note">Observatie optionala</label>
-                    <input
-                        id="event-note"
-                        class="form-control"
-                        type="text"
-                        maxlength="180"
-                        placeholder="Ex: pornire schimb dimineata"
-                    >
+            <section class="surface-section script-section">
+                <p class="page-kicker">Extrase din scripturi</p>
+                <h2 class="section-title">Vedere tip ecran utilaj pentru fiecare sursa</h2>
 
-                    <div class="manual-actions">
-                        <button class="action-button steel" data-signal="machine_on" id="button-machine_on" type="button">
-                            Machine ON
-                        </button>
-                        <button class="action-button ember" data-signal="cutting_active" id="button-cutting_active" type="button">
-                            Cutting active
-                        </button>
-                        <button class="action-button teal" data-signal="table_change" id="button-table_change" type="button">
-                            Table change
-                        </button>
-                    </div>
-
-                    <div class="cleanup-actions">
-                        <button class="btn action-btn danger-btn" id="delete-latest-tests" type="button">
-                            Sterge ultimele 10 teste
-                        </button>
-                        <button class="btn action-btn danger-btn" id="delete-all-tests" type="button">
-                            Sterge toate testele
-                        </button>
-                    </div>
-                </section>
-            </div>
-        </div>
-
-        <section class="app-card script-card-section">
-            <div class="section-title-wrap">
-                <p class="page-kicker">Scripturi identificate</p>
-                <h2 class="section-title">Ce am extras din fisierele pentru fiecare utilaj</h2>
-            </div>
-
-            <div class="script-grid">
-                {% for item in script_catalog %}
-                <article class="script-card-item">
-                    <div class="script-card-head">
-                        <div>
-                            <small>{{ item.label }}</small>
-                            <h3>{{ item.script_name }}</h3>
+                <div class="machine-screen-list">
+                    {% for item in script_catalog %}
+                    <article class="machine-screen">
+                        <div class="machine-screen-top">
+                            <div>
+                                <small>{{ item.label }}</small>
+                                <strong>{{ item.script_name }}</strong>
+                            </div>
+                            <span class="script-status {% if item.script_exists %}is-found{% else %}is-missing{% endif %}">
+                                {% if item.script_exists %}gasit{% else %}lipsa{% endif %}
+                            </span>
                         </div>
-                        <span class="script-status {% if item.script_exists %}is-found{% else %}is-missing{% endif %}">
-                            {% if item.script_exists %}gasit{% else %}lipsa{% endif %}
-                        </span>
-                    </div>
 
-                    <p class="script-description">{{ item.description }}</p>
-                    <p><strong>Endpoint:</strong> {{ item.endpoint }}</p>
-                    <p><strong>Transport:</strong> {{ item.transport }}</p>
+                        <div class="machine-screen-body">
+                            {% for row in item.screen_rows %}
+                            <div class="screen-row">
+                                <span>{{ row.label }}</span>
+                                <strong>{{ row.value }}</strong>
+                            </div>
+                            {% endfor %}
+                        </div>
 
-                    <ul class="script-list">
-                        {% for detail in item.details %}
-                        <li>{{ detail }}</li>
-                        {% endfor %}
-                    </ul>
-                </article>
-                {% endfor %}
-            </div>
-        </section>
+                        <div class="machine-screen-note">
+                            {% for detail in item.details %}
+                            <p>{{ detail }}</p>
+                            {% endfor %}
+                        </div>
+                    </article>
+                    {% endfor %}
+                </div>
+            </section>
+        </main>
     </div>
 
     <script>

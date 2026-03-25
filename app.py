@@ -51,6 +51,14 @@ REAL_DATA_FEEDS = {
         "display_name": "laserFeed OCR bridge",
         "endpoint": "http://laserbvision-1:8081",
         "transport": "Redis + MQTT",
+        "screen_rows": [
+            {"label": "Program monitorizat", "value": "OCR din captura ecran"},
+            {"label": "Program activ", "value": "LaserState / nume program OCR"},
+            {"label": "Stare feed", "value": "LaserStatus"},
+            {"label": "Comunicare", "value": "Redis + MQTT"},
+            {"label": "MQTT topic", "value": "Laser/3020/Status"},
+            {"label": "Camera", "value": "http://laserbvision-1:8081"},
+        ],
         "details": [
             "Camera OCR: laserbvision-1:8081",
             "Redis keys observate: LaserStatus, LaserState",
@@ -63,6 +71,14 @@ REAL_DATA_FEEDS = {
         "display_name": "laserFeed OCR bridge",
         "endpoint": "http://laserbvision-1:8081",
         "transport": "Redis + MQTT",
+        "screen_rows": [
+            {"label": "Program monitorizat", "value": "OCR din captura ecran"},
+            {"label": "Program activ", "value": "LaserState / nume program OCR"},
+            {"label": "Stare feed", "value": "LaserStatus"},
+            {"label": "Comunicare", "value": "Redis + MQTT"},
+            {"label": "MQTT topic", "value": "Laser/3020/Status"},
+            {"label": "Camera", "value": "http://laserbvision-1:8081"},
+        ],
         "details": [
             "Foloseste acelasi feed incarcat pentru Laser1",
             "Camera OCR: laserbvision-1:8081",
@@ -75,6 +91,14 @@ REAL_DATA_FEEDS = {
         "display_name": "Abkant OCR bridge",
         "endpoint": "http://100.126.29.52:8081",
         "transport": "MQTT + PostgreSQL",
+        "screen_rows": [
+            {"label": "Program activ", "value": "Abkant/ProgramActiv"},
+            {"label": "Identificare", "value": "Abkant/StareProgramIdentificat"},
+            {"label": "Persistenta", "value": "raportare_abkant"},
+            {"label": "Comunicare", "value": "MQTT + PostgreSQL"},
+            {"label": "OCR", "value": "Program si numar de bucati"},
+            {"label": "Camera", "value": "http://100.126.29.52:8081"},
+        ],
         "details": [
             "Camera OCR: 100.126.29.52:8081",
             "MQTT topics observate: Abkant/StareProgramIdentificat, Abkant/ProgramActiv",
@@ -395,6 +419,7 @@ def build_script_catalog() -> list[dict]:
                 "script_exists": bool(script_name and (BASE_DIR / script_name).exists()),
                 "endpoint": feed["endpoint"] or "Fara endpoint clar",
                 "transport": feed["transport"],
+                "screen_rows": feed["screen_rows"],
                 "details": feed["details"],
             }
         )

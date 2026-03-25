@@ -74,6 +74,12 @@ MACHINE_DEFINITIONS = {
     },
 }
 
+DEFAULT_MACHINE_HMI_URLS = {
+    "laser1": "https://laser.helpan.ro/",
+    "laser2": "https://laser.helpan.ro/",
+    "abkant": "https://abkant.helpan.ro/",
+}
+
 REAL_DATA_FEEDS = {
     "laser1": {
         "script_name": "laserFeed.py",
@@ -289,6 +295,37 @@ def resolve_real_data_endpoint(machine_key: str) -> str:
 def resolve_real_data_name(machine_key: str) -> str:
     legacy_names = ("LASER_REAL_DATA_NAME",) if machine_key in {"laser1", "laser2"} else ()
     return get_machine_env_value(machine_key, "REAL_DATA_NAME", legacy_names) or REAL_DATA_FEEDS[machine_key]["display_name"]
+
+
+def resolve_machine_camera_feed_url(machine_key: str) -> str:
+    return get_machine_env_value(machine_key, "CAMERA_FEED_URL") or resolve_real_data_endpoint(machine_key)
+
+
+def resolve_machine_hmi_feed_url(machine_key: str) -> str:
+    return get_machine_env_value(machine_key, "HMI_FEED_URL") or DEFAULT_MACHINE_HMI_URLS.get(machine_key, "")
+
+
+def build_machine_feeds(machine_key: str) -> list[dict]:
+    machine_key = ensure_machine_key(machine_key)
+    camera_url = resolve_machine_camera_feed_url(machine_key)
+    hmi_url = resolve_machine_hmi_feed_url(machine_key)
+    feeds = [
+        {
+            "key": "camera",
+            "label": "Camera utilaj",
+            "mode": "image",
+            "url": camera_url,
+            "description": "Feedul video folosit si pentru OCR / supraveghere.",
+        },
+        {
+            "key": "hmi",
+            "label": "HMI",
+            "mode": "page",
+            "url": hmi_url,
+            "description": "Interfata operatorului, pentru vizualizare directa in dashboard.",
+        },
+    ]
+    return feeds
 
 
 def clean_ocr_text(value: str) -> str:
@@ -1635,6 +1672,7 @@ def build_dashboard_payload(machine_key: str = DEFAULT_MACHINE_KEY) -> dict:
         "stats_today": stats_today,
         "operator_snapshot": operator_snapshot,
         "real_data_source": get_real_data_settings(machine_profile),
+        "machine_feeds": build_machine_feeds(machine_key),
         "live_extraction": live_extraction,
         "recent_events": fetch_recent_events(machine_key),
         "signal_definitions": SIGNAL_DEFINITIONS,

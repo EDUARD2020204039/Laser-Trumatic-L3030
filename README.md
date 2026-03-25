@@ -48,6 +48,8 @@ Aplicatia porneste implicit pe `http://localhost:3030`.
 - `LASER_REAL_DATA_NAME` numele sursei reale care va trimite date spre dashboard
 - `LASER_REAL_DATA_ENDPOINT` endpointul sau descrierea sursei reale, pentru afisare in UI
 - `LASER1_REAL_DATA_ENDPOINT`, `LASER2_REAL_DATA_ENDPOINT`, `ABKANT_REAL_DATA_ENDPOINT` pentru endpoint separat pe fiecare utilaj
+- `LASER1_CAMERA_FEED_URL`, `LASER2_CAMERA_FEED_URL`, `ABKANT_CAMERA_FEED_URL` pentru feedul video pe care vrei sa-l vezi in dashboard
+- `LASER1_HMI_FEED_URL`, `LASER2_HMI_FEED_URL`, `ABKANT_HMI_FEED_URL` pentru pagina HMI embed-uita in dashboard
 - daca rulezi aplicatia in Docker pe un server public, endpointurile de tip Tailscale sau hostname intern trebuie sa fie accesibile si din container; altfel utilajul ramine `OFF`
 - `BACKGROUND_SYNC_ENABLED=1` porneste pollerul din fundal care urmareste utilajele chiar daca nu ai pagina deschisa
 - `BACKGROUND_SYNC_INTERVAL_SECONDS=10` controleaza la cite secunde se face sincronizarea live si salvarea automata in SQLite
@@ -71,6 +73,12 @@ docker run -d \
   -e LASER1_REAL_DATA_ENDPOINT='https://laser.helpan.ro/' \
   -e LASER2_REAL_DATA_ENDPOINT='https://laser.helpan.ro/' \
   -e ABKANT_REAL_DATA_ENDPOINT='https://abkant.helpan.ro/' \
+  -e LASER1_CAMERA_FEED_URL='https://laser.helpan.ro/' \
+  -e LASER2_CAMERA_FEED_URL='https://laser.helpan.ro/' \
+  -e ABKANT_CAMERA_FEED_URL='https://abkant.helpan.ro/' \
+  -e LASER1_HMI_FEED_URL='https://laser.helpan.ro/' \
+  -e LASER2_HMI_FEED_URL='https://laser.helpan.ro/' \
+  -e ABKANT_HMI_FEED_URL='https://abkant.helpan.ro/' \
   -e PONTAJ_LASER1_WORKCENTER_ID=1 \
   -e PONTAJ_LASER2_WORKCENTER_ID=2 \
   -e PONTAJ_ABKANT_WORKCENTER_ID=3 \

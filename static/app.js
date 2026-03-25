@@ -345,6 +345,7 @@ function renderDashboard(payload) {
     renderOperator(payload.operator_snapshot);
     renderSource(payload.real_data_source);
     renderLiveExtraction(payload.live_extraction);
+    renderMachineFeeds(payload.machine_feeds || []);
     syncStatsSnapshot(payload);
     renderStats(payload.stats_today);
     renderTimeline(payload.recent_events);
@@ -674,6 +675,42 @@ function renderLiveExtraction(snapshot) {
         </div>
         <p class="feedback-text">${snapshot.message || ""}</p>
     `;
+}
+
+function renderMachineFeeds(feeds) {
+    const container = document.getElementById("machine-feeds");
+    if (!container) {
+        return;
+    }
+
+    if (!feeds.length || !feeds.some((feed) => feed.url)) {
+        container.innerHTML = `<p class="empty-state">Nu exista inca feeduri configurate pentru utilajul selectat.</p>`;
+        return;
+    }
+
+    container.innerHTML = feeds
+        .filter((feed) => feed.url)
+        .map((feed) => {
+            const body = feed.mode === "page"
+                ? `<iframe class="feed-frame" src="${feed.url}" loading="lazy" referrerpolicy="no-referrer"></iframe>`
+                : `<img class="feed-image" src="${feed.url}" alt="${feed.label}" loading="lazy">`;
+
+            return `
+                <article class="feed-card">
+                    <div class="feed-card-head">
+                        <div>
+                            <small>${feed.label}</small>
+                            <strong>${feed.description}</strong>
+                        </div>
+                        <a class="feed-link" href="${feed.url}" target="_blank" rel="noopener noreferrer">Deschide</a>
+                    </div>
+                    <div class="feed-viewport">
+                        ${body}
+                    </div>
+                </article>
+            `;
+        })
+        .join("");
 }
 
 function renderTimeline(events) {

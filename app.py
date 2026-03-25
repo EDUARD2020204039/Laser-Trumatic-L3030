@@ -306,6 +306,13 @@ def resolve_machine_camera_feed_url(machine_key: str) -> str:
     return get_machine_env_value(machine_key, "CAMERA_FEED_URL") or resolve_real_data_endpoint(machine_key)
 
 
+def resolve_machine_camera_feed_mode(machine_key: str) -> str:
+    mode = (get_machine_env_value(machine_key, "CAMERA_FEED_MODE") or "image").strip().lower()
+    if mode not in {"image", "page"}:
+        return "image"
+    return mode
+
+
 def resolve_machine_hmi_feed_url(machine_key: str) -> str:
     return get_machine_env_value(machine_key, "HMI_FEED_URL") or DEFAULT_MACHINE_HMI_URLS.get(machine_key, "")
 
@@ -313,12 +320,13 @@ def resolve_machine_hmi_feed_url(machine_key: str) -> str:
 def build_machine_feeds(machine_key: str) -> list[dict]:
     machine_key = ensure_machine_key(machine_key)
     camera_url = resolve_machine_camera_feed_url(machine_key)
+    camera_mode = resolve_machine_camera_feed_mode(machine_key)
     hmi_url = resolve_machine_hmi_feed_url(machine_key)
     feeds = [
         {
             "key": "camera",
             "label": "Camera utilaj",
-            "mode": "image",
+            "mode": camera_mode,
             "url": camera_url,
             "description": "Feedul video folosit si pentru OCR / supraveghere.",
         },

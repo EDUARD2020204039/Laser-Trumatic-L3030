@@ -75,7 +75,7 @@ function bindActions() {
     const machineSelector = document.getElementById("machine-selector");
     if (machineSelector) {
         machineSelector.addEventListener("click", async (event) => {
-            const button = event.target.closest("[data-machine-key]");
+            const button = event.target.closest("[data-machine-key], [data-view]");
             if (!button) {
                 return;
             }

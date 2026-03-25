@@ -643,7 +643,8 @@ body.dark-mode .timeline-item {
 
 .saved-period-hint {
     margin: 8px 0 0;
-    max-width: 760px;
+    white-space: nowrap;
+    min-height: 24px;
 }
 
 .saved-filter-btn {
@@ -887,5 +888,10 @@ body.dark-mode .saved-record-grid span {
 
     .surface-section {
         padding: 20px;
+    }
+
+    .saved-period-hint {
+        white-space: normal;
+        min-height: 0;
     }
 }

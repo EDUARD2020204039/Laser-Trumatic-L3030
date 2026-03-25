@@ -337,6 +337,7 @@ function renderSavedView(payload) {
     renderSavedHeader(payload);
     renderMachineSelector(state.dashboard?.machines || window.appConfig.initialMachines || []);
     renderSavedSummary(payload.summary || []);
+    renderSavedReports(payload.reports || []);
     renderSavedRecords(payload.records || []);
 }
 
@@ -700,6 +701,29 @@ function renderSavedSummary(summary) {
                 <p>${item.records_count} cicluri salvate</p>
                 <small>${item.total_cycle_label} timp cumulat</small>
                 <small>${item.machines.join(", ")}</small>
+            </article>
+        `)
+        .join("");
+}
+
+function renderSavedReports(reports) {
+    const container = document.getElementById("saved-reports");
+    if (!reports.length) {
+        container.innerHTML = `<p class="empty-state">Raportul de randament se va afisa aici dupa primele cicluri salvate.</p>`;
+        return;
+    }
+
+    container.innerHTML = reports
+        .map((item) => `
+            <article class="saved-report-card">
+                <small>${item.label}</small>
+                <strong>${item.efficiency_percent}%</strong>
+                <p>Media randamentului din ciclurile salvate</p>
+                <div class="saved-report-metrics">
+                    <span>${item.records_count} cicluri</span>
+                    <span>Taiere ${item.cutting_label}</span>
+                    <span>Schimb masa ${item.table_change_label}</span>
+                </div>
             </article>
         `)
         .join("");

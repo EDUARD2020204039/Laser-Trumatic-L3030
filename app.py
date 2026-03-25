@@ -7,7 +7,7 @@ import sqlite3
 import threading
 import time as time_module
 import urllib.request
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request
@@ -958,6 +958,45 @@ def fetch_saved_cycles(machine_key: str | None = None, day: date | None = None, 
     return [format_saved_cycle_row(row) for row in rows]
 
 
+def fetch_saved_cycles_between(
+    start_dt: datetime,
+    end_dt: datetime,
+    machine_key: str | None = None,
+    limit: int = 500,
+) -> list[dict]:
+    start_iso = start_dt.isoformat(timespec="seconds")
+    end_iso = end_dt.isoformat(timespec="seconds")
+
+    with get_sqlite_connection() as connection:
+        if machine_key:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM saved_cycles
+                WHERE machine_key = ?
+                  AND table_change_started_at >= ?
+                  AND table_change_started_at <= ?
+                ORDER BY table_change_started_at DESC, id DESC
+                LIMIT ?
+                """,
+                (machine_key, start_iso, end_iso, limit),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM saved_cycles
+                WHERE table_change_started_at >= ?
+                  AND table_change_started_at <= ?
+                ORDER BY table_change_started_at DESC, id DESC
+                LIMIT ?
+                """,
+                (start_iso, end_iso, limit),
+            ).fetchall()
+
+    return [format_saved_cycle_row(row) for row in rows]
+
+
 def summarize_saved_cycles(records: list[dict]) -> list[dict]:
     grouped: dict[str, dict] = {}
     for record in records:
@@ -993,6 +1032,43 @@ def summarize_saved_cycles(records: list[dict]) -> list[dict]:
     return output
 
 
+def build_efficiency_report(label: str, records: list[dict]) -> dict:
+    total_cutting_seconds = sum(int(record.get("cycle_duration_seconds") or 0) for record in records)
+    total_table_change_seconds = sum(int(record.get("table_change_duration_seconds") or 0) for record in records)
+    productive_seconds = total_cutting_seconds + total_table_change_seconds
+    efficiency_percent = (
+        round((total_cutting_seconds / productive_seconds) * 100, 1)
+        if productive_seconds > 0
+        else 0.0
+    )
+
+    return {
+        "label": label,
+        "records_count": len(records),
+        "efficiency_percent": efficiency_percent,
+        "cutting_seconds": total_cutting_seconds,
+        "cutting_label": format_seconds(total_cutting_seconds),
+        "table_change_seconds": total_table_change_seconds,
+        "table_change_label": format_seconds(total_table_change_seconds),
+        "productive_window_seconds": productive_seconds,
+        "productive_window_label": format_seconds(productive_seconds),
+    }
+
+
+def build_saved_cycles_reports(machine_key: str | None = None) -> list[dict]:
+    now = now_local()
+    today_start = datetime.combine(date.today(), time.min)
+    week_start = datetime.combine(date.today(), time.min)
+    week_start = week_start.replace(day=week_start.day) - timedelta(days=week_start.weekday())
+    month_start = datetime.combine(date.today().replace(day=1), time.min)
+
+    return [
+        build_efficiency_report("Zilnic", fetch_saved_cycles_between(today_start, now, machine_key=machine_key)),
+        build_efficiency_report("Saptamanal", fetch_saved_cycles_between(week_start, now, machine_key=machine_key)),
+        build_efficiency_report("Lunar", fetch_saved_cycles_between(month_start, now, machine_key=machine_key)),
+    ]
+
+
 def build_saved_cycles_payload(machine_key: str | None = None) -> dict:
     records = fetch_saved_cycles(machine_key=machine_key)
     return {
@@ -1000,6 +1076,7 @@ def build_saved_cycles_payload(machine_key: str | None = None) -> dict:
         "selected_machine_key": machine_key,
         "records": records,
         "summary": summarize_saved_cycles(records),
+        "reports": build_saved_cycles_reports(machine_key),
         "records_count": len(records),
         "updated_at": now_local().isoformat(timespec="seconds"),
     }

@@ -552,7 +552,15 @@ body.dark-mode .timeline-item {
     margin: 18px 0 24px;
 }
 
+.saved-report-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+    margin: 0 0 24px;
+}
+
 .saved-summary-card,
+.saved-report-card,
 .saved-record-card {
     padding: 16px 0 16px 16px;
     border: 1px solid rgba(128, 0, 0, 0.1);
@@ -560,12 +568,14 @@ body.dark-mode .timeline-item {
 }
 
 body.dark-mode .saved-summary-card,
+body.dark-mode .saved-report-card,
 body.dark-mode .saved-record-card {
     border-color: #555;
     border-left-color: #80dfff;
 }
 
 .saved-summary-card strong,
+.saved-report-card strong,
 .saved-record-card strong {
     display: block;
     margin-bottom: 6px;
@@ -573,8 +583,24 @@ body.dark-mode .saved-record-card {
 }
 
 .saved-summary-card p,
+.saved-report-card p,
 .saved-record-card p {
     margin: 0 0 8px;
+}
+
+.saved-report-metrics {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.saved-report-metrics span {
+    color: #7a5a5a;
+    font-size: 13px;
+}
+
+body.dark-mode .saved-report-metrics span {
+    color: #cfcfcf;
 }
 
 .saved-record-list {
@@ -694,6 +720,7 @@ body.dark-mode .saved-record-grid span {
     .signal-grid,
     .live-screen-row,
     .saved-summary-grid,
+    .saved-report-grid,
     .saved-record-grid {
         grid-template-columns: 1fr;
     }

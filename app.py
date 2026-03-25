@@ -8,6 +8,7 @@ import threading
 import time as time_module
 import urllib.request
 from datetime import date, datetime, time, timedelta
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request
@@ -471,6 +472,45 @@ def read_ocr_block(image, zone: tuple[int, int, int, int], psm: int = 6) -> str:
         return ""
 
 
+def read_ocr_block_variants(image, zone: tuple[int, int, int, int]) -> list[str]:
+    if not OCR_AVAILABLE or image is None:
+        return []
+
+    x, y, width, height = zone
+    crop = image[y : y + height, x : x + width]
+    if crop.size == 0:
+        return []
+
+    enlarged = cv2.resize(crop, None, fx=2.8, fy=2.8, interpolation=cv2.INTER_CUBIC)
+    gray = cv2.cvtColor(enlarged, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (3, 3), 0)
+    threshold = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+    adaptive = cv2.adaptiveThreshold(
+        blurred,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        31,
+        11,
+    )
+
+    variants = []
+    configs = (
+        ("--psm 6 --oem 3 -c preserve_interword_spaces=1", threshold),
+        ("--psm 11 --oem 3 -c preserve_interword_spaces=1", threshold),
+        ("--psm 6 --oem 3 -c preserve_interword_spaces=1", adaptive),
+        ("--psm 11 --oem 3 -c preserve_interword_spaces=1", adaptive),
+    )
+    for config, prepared_image in configs:
+        try:
+            text = clean_ocr_text(pytesseract.image_to_string(prepared_image, config=config))
+        except Exception:
+            text = ""
+        if text and text not in variants:
+            variants.append(text)
+    return variants
+
+
 def normalize_program_token(token: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9_ ]", "", token or "").upper().replace(" ", "_")
     cleaned = re.sub(r"_+", "_", cleaned).strip("_")
@@ -532,15 +572,60 @@ def extract_section_token(text: str, start_label: str, end_label: str | None = N
     return extract_program_value(section)
 
 
-def extract_program_status(text: str) -> str:
-    if not text:
+PROGRAM_STATUS_ALIASES = {
+    "Running": ("RUNNING", "RUNING", "RUNNING", "RURNING", "RUNN1NG"),
+    "Ready": ("READY", "RDY"),
+    "Stopped": ("STOPPED", "STOPPEDD", "STOP", "ST0PPED"),
+    "Hold": ("HOLD", "PAUSE", "PAUSED"),
+    "Error": ("ERROR", "ERR"),
+}
+
+
+def canonicalize_program_status(token: str) -> str:
+    normalized = re.sub(r"[^A-Z]", "", (token or "").upper())
+    if not normalized:
         return ""
 
-    match = re.search(r"Program\s*status\s*([A-Za-z]+)", text, re.IGNORECASE)
-    if not match:
-        return ""
+    for label, aliases in PROGRAM_STATUS_ALIASES.items():
+        if normalized in aliases:
+            return label
 
-    return clean_ocr_text(match.group(1)).title()
+    best_label = ""
+    best_score = 0.0
+    for label, aliases in PROGRAM_STATUS_ALIASES.items():
+        for alias in aliases:
+            score = SequenceMatcher(None, normalized, alias).ratio()
+            if score > best_score:
+                best_score = score
+                best_label = label
+
+    if best_score >= 0.72 and len(normalized) >= 3:
+        return best_label
+    return ""
+
+
+def extract_program_status(*texts: str) -> str:
+    candidate_tokens: list[str] = []
+    for text in texts:
+        if not text:
+            continue
+
+        match = re.search(r"Program\s*status\s*([A-Za-z]+)", text, re.IGNORECASE)
+        if match:
+            candidate_tokens.append(match.group(1))
+
+        section = extract_section_text(text, "Program status")
+        if section:
+            candidate_tokens.extend(re.findall(r"[A-Za-z]+", section))
+
+        candidate_tokens.extend(re.findall(r"[A-Za-z]+", text))
+
+    for token in candidate_tokens:
+        status = canonicalize_program_status(token)
+        if status:
+            return status
+
+    return ""
 
 
 def extract_material(text: str) -> str:
@@ -696,13 +781,18 @@ def analyze_laser_live_snapshot(machine_key: str) -> dict | None:
             "message": f"Nu pot citi captura live de la {endpoint}. Motiv: {error_message}",
         }
 
-    right_panel_text = read_ocr_block(image, LASER_OCR_ZONES["right_panel"], psm=6)
+    right_panel_variants = read_ocr_block_variants(image, LASER_OCR_ZONES["right_panel"])
+    if right_panel_variants:
+        right_panel_text = right_panel_variants[0]
+    else:
+        right_panel_text = read_ocr_block(image, LASER_OCR_ZONES["right_panel"], psm=6)
+        right_panel_variants = [right_panel_text] if right_panel_text else []
     left_panel_text = read_ocr_block(image, LASER_OCR_ZONES["left_panel"], psm=11)
 
     selected_program = extract_section_token(right_panel_text, "Selected program", "Active program")
     active_program = extract_section_token(right_panel_text, "Active program", "NC blocks")
     material = extract_material(left_panel_text)
-    program_status = extract_program_status(right_panel_text)
+    program_status = extract_program_status(*right_panel_variants)
 
     normalized_status = program_status.upper()
     normalized_active_program = active_program.upper()

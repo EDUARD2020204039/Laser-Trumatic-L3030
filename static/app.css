@@ -449,7 +449,8 @@ body.dark-mode .secondary-btn {
 
 .operator-list,
 #source-panel,
-.timeline {
+.timeline,
+#live-extraction {
     display: flex;
     flex-direction: column;
     gap: 12px;
@@ -488,68 +489,47 @@ body.dark-mode .timeline-item {
     flex-wrap: wrap;
 }
 
-.machine-screen-list {
-    display: flex;
-    flex-direction: column;
-    gap: 18px;
-}
-
-.machine-screen {
-    background: #e6e6e6;
+.live-screen {
     border: 2px solid #8c8c8c;
+    background: #e6e6e6;
     color: #111;
 }
 
-.machine-screen-top {
-    display: flex;
-    justify-content: space-between;
-    gap: 16px;
-    align-items: flex-start;
-    padding: 12px 16px;
-    background: #cfd5db;
-    border-bottom: 2px solid #8c8c8c;
-}
-
-.machine-screen-top small {
-    display: block;
-    margin-bottom: 6px;
-    color: #3a3a3a;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-}
-
-.machine-screen-body {
+.live-screen-row {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px;
-    padding: 14px 16px;
-    background: #efefef;
+    gap: 0;
+    border-bottom: 1px solid #9f9f9f;
 }
 
-.screen-row {
-    min-height: 74px;
-    padding: 10px 12px;
-    background: #fbfbfb;
-    border: 1px solid #b8b8b8;
+.live-screen-row:last-child {
+    border-bottom: 0;
 }
 
-.screen-row strong {
+.live-cell {
+    min-height: 86px;
+    padding: 12px 14px;
+    border-right: 1px solid #9f9f9f;
+    background: #f4f4f4;
+}
+
+.live-cell:last-child {
+    border-right: 0;
+}
+
+.live-cell span {
     display: block;
-    line-height: 1.4;
+    margin-bottom: 10px;
+    color: #666;
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
 }
 
-.machine-screen-note {
-    padding: 12px 16px;
-    border-top: 2px solid #b8b8b8;
-    background: #f8f8f8;
-}
-
-.machine-screen-note p {
-    margin: 0 0 8px;
-}
-
-.machine-screen-note p:last-child {
-    margin-bottom: 0;
+.live-cell strong {
+    display: block;
+    font-size: 20px;
+    line-height: 1.45;
 }
 
 .script-status.is-found {
@@ -629,7 +609,7 @@ body.dark-mode .timeline-item {
     .metric-line,
     .integrated-grid,
     .signal-grid,
-    .machine-screen-body {
+    .live-screen-row {
         grid-template-columns: 1fr;
     }
 }

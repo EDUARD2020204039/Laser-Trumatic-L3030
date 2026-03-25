@@ -133,6 +133,13 @@
                         </div>
 
                         <div class="subsection">
+                            <p class="page-kicker">Extrase live din ecran</p>
+                            <div id="live-extraction">
+                                <p class="empty-state">Nu exista inca date extrase live.</p>
+                            </div>
+                        </div>
+
+                        <div class="subsection">
                             <p class="page-kicker">Istoric</p>
                             <div class="timeline" id="timeline">
                                 <p class="empty-state">Nu exista inca evenimente.</p>
@@ -185,41 +192,6 @@
                 </div>
             </section>
 
-            <section class="surface-section script-section">
-                <p class="page-kicker">Extrase din scripturi</p>
-                <h2 class="section-title">Vedere tip ecran utilaj pentru fiecare sursa</h2>
-
-                <div class="machine-screen-list">
-                    {% for item in script_catalog %}
-                    <article class="machine-screen">
-                        <div class="machine-screen-top">
-                            <div>
-                                <small>{{ item.label }}</small>
-                                <strong>{{ item.script_name }}</strong>
-                            </div>
-                            <span class="script-status {% if item.script_exists %}is-found{% else %}is-missing{% endif %}">
-                                {% if item.script_exists %}gasit{% else %}lipsa{% endif %}
-                            </span>
-                        </div>
-
-                        <div class="machine-screen-body">
-                            {% for row in item.screen_rows %}
-                            <div class="screen-row">
-                                <span>{{ row.label }}</span>
-                                <strong>{{ row.value }}</strong>
-                            </div>
-                            {% endfor %}
-                        </div>
-
-                        <div class="machine-screen-note">
-                            {% for detail in item.details %}
-                            <p>{{ detail }}</p>
-                            {% endfor %}
-                        </div>
-                    </article>
-                    {% endfor %}
-                </div>
-            </section>
         </main>
     </div>
 

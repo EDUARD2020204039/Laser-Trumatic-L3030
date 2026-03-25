@@ -14,6 +14,7 @@ RUN apt-get update \
         gcc \
         g++ \
         gnupg2 \
+        tesseract-ocr \
         unixodbc \
         unixodbc-dev \
     && curl -sSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > /usr/share/keyrings/microsoft-prod.gpg \

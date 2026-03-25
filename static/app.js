@@ -269,6 +269,7 @@ function renderDashboard(payload) {
     renderWorkcenter(payload.machine);
     renderOperator(payload.operator_snapshot);
     renderSource(payload.real_data_source);
+    renderLiveExtraction(payload.live_extraction);
     renderStats(payload.stats_today);
     renderTimeline(payload.recent_events);
 }
@@ -443,6 +444,69 @@ function renderSource(realDataSource) {
             <small>${realDataSource.endpoint || "Nu exista inca endpoint clar pentru acest utilaj."}</small>
             ${details ? `<ul class="source-detail-list">${details}</ul>` : ""}
         </div>
+    `;
+}
+
+function renderLiveExtraction(snapshot) {
+    const container = document.getElementById("live-extraction");
+    if (!container) {
+        return;
+    }
+
+    if (!snapshot || !snapshot.available) {
+        container.innerHTML = `
+            <p class="empty-state">
+                ${snapshot?.message || "Nu exista inca date extrase live din ecranul utilajului."}
+            </p>
+        `;
+        return;
+    }
+
+    const signals = snapshot.derived_signals || {};
+    container.innerHTML = `
+        <div class="live-screen">
+            <div class="live-screen-row">
+                <div class="live-cell">
+                    <span>Selected program</span>
+                    <strong>${snapshot.selected_program || "Necitit"}</strong>
+                </div>
+                <div class="live-cell">
+                    <span>Active program</span>
+                    <strong>${snapshot.active_program || "Necitit"}</strong>
+                </div>
+            </div>
+            <div class="live-screen-row">
+                <div class="live-cell">
+                    <span>Material</span>
+                    <strong>${snapshot.material || "Necitit"}</strong>
+                </div>
+                <div class="live-cell">
+                    <span>Program status</span>
+                    <strong>${snapshot.program_status || "Necitit"}</strong>
+                </div>
+            </div>
+            <div class="live-screen-row">
+                <div class="live-cell">
+                    <span>Machine ON</span>
+                    <strong>${signals.machine_on ? "DA" : "NU"}</strong>
+                </div>
+                <div class="live-cell">
+                    <span>Cutting</span>
+                    <strong>${signals.cutting_active ? "DA" : "NU"}</strong>
+                </div>
+            </div>
+            <div class="live-screen-row">
+                <div class="live-cell">
+                    <span>Table change</span>
+                    <strong>${signals.table_change ? "DA" : "NU"}</strong>
+                </div>
+                <div class="live-cell">
+                    <span>Idle</span>
+                    <strong>${signals.idle ? "DA" : "NU"}</strong>
+                </div>
+            </div>
+        </div>
+        <p class="feedback-text">${snapshot.message || ""}</p>
     `;
 }
 

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
+import re
 import sqlite3
+import urllib.request
 from datetime import date, datetime, time
 from pathlib import Path
 
@@ -12,6 +15,21 @@ try:
     import pyodbc
 except ImportError:  # pragma: no cover - optional during early local setup
     pyodbc = None
+
+try:  # pragma: no cover - optional OCR stack
+    import cv2
+except ImportError:  # pragma: no cover
+    cv2 = None
+
+try:  # pragma: no cover - optional OCR stack
+    import numpy as np
+except ImportError:  # pragma: no cover
+    np = None
+
+try:  # pragma: no cover - optional OCR stack
+    import pytesseract
+except ImportError:  # pragma: no cover
+    pytesseract = None
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -26,6 +44,12 @@ APP_TITLE = "HABA Production Monitor"
 DASHBOARD_TITLE = "Laser TruMatic L3030"
 DEFAULT_MACHINE_KEY = "laser1"
 MANUAL_SOURCE_PREFIX = "manual"
+OCR_AVAILABLE = cv2 is not None and np is not None and pytesseract is not None
+
+if pytesseract is not None:  # pragma: no cover - runtime environment specific
+    windows_tesseract = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
+    if windows_tesseract.exists():
+        pytesseract.pytesseract.tesseract_cmd = str(windows_tesseract)
 
 MACHINE_DEFINITIONS = {
     "laser1": {
@@ -188,6 +212,13 @@ STATE_DEFINITIONS = {
     },
 }
 
+LASER_OCR_ZONES = {
+    "selected_program": (680, 315, 470, 74),
+    "active_program": (680, 410, 470, 74),
+    "material": (220, 320, 220, 86),
+    "program_status": (700, 720, 380, 70),
+}
+
 app = Flask(__name__)
 app.config["JSON_SORT_KEYS"] = False
 
@@ -236,6 +267,138 @@ def ensure_machine_key(machine_key: str | None) -> str:
     if candidate not in MACHINE_DEFINITIONS:
         raise ValueError(f"Unsupported machine: {candidate}")
     return candidate
+
+
+def clean_ocr_text(value: str) -> str:
+    sanitized = re.sub(r"\s+", " ", (value or "").replace("\x0c", " ")).strip()
+    return sanitized.replace(" / ", "/").replace(" _ ", "_")
+
+
+def fetch_mjpeg_frame(url: str, timeout: float = 2.0):
+    if not OCR_AVAILABLE or not url:
+        return None
+
+    buffer_bytes = bytes()
+    try:
+        stream = urllib.request.urlopen(url, timeout=timeout)
+        while True:
+            buffer_bytes += stream.read(1024)
+            start = buffer_bytes.find(b"\xff\xd8")
+            end = buffer_bytes.find(b"\xff\xd9")
+            if start != -1 and end != -1:
+                jpg = buffer_bytes[start : end + 2]
+                image = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
+                return image
+    except Exception:
+        return None
+
+
+def read_ocr_zone(image, zone: tuple[int, int, int, int], whitelist: str, psm: int = 7) -> str:
+    if not OCR_AVAILABLE or image is None:
+        return ""
+
+    x, y, width, height = zone
+    crop = image[y : y + height, x : x + width]
+    if crop.size == 0:
+        return ""
+
+    enlarged = cv2.resize(crop, None, fx=2.4, fy=2.4, interpolation=cv2.INTER_LINEAR)
+    gray = cv2.cvtColor(enlarged, cv2.COLOR_BGR2GRAY)
+    _, threshold = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    config = f"--psm {psm} --oem 3 -c tessedit_char_whitelist={whitelist}"
+    try:
+        return clean_ocr_text(pytesseract.image_to_string(threshold, config=config))
+    except Exception:
+        return ""
+
+
+def analyze_laser_live_snapshot(machine_key: str) -> dict | None:
+    feed = REAL_DATA_FEEDS.get(machine_key, {})
+    image = fetch_mjpeg_frame(feed.get("endpoint", ""))
+    if image is None:
+        return {
+            "available": False,
+            "connected": False,
+            "message": "Nu pot citi captura live de la camera laser.",
+        }
+
+    selected_program = read_ocr_zone(
+        image,
+        LASER_OCR_ZONES["selected_program"],
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-/.",
+    )
+    active_program = read_ocr_zone(
+        image,
+        LASER_OCR_ZONES["active_program"],
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-/.",
+    )
+    material = read_ocr_zone(
+        image,
+        LASER_OCR_ZONES["material"],
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.-xX/",
+    )
+    program_status = read_ocr_zone(
+        image,
+        LASER_OCR_ZONES["program_status"],
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
+    )
+
+    normalized_status = program_status.upper()
+    normalized_active_program = active_program.upper()
+    machine_on = bool(selected_program or active_program or program_status or material)
+    table_change = "SHEET_LOAD" in normalized_active_program or "LOAD_SHEET" in normalized_active_program
+    cutting_active = machine_on and "RUN" in normalized_status and not table_change
+    idle = machine_on and not cutting_active and not table_change
+
+    return {
+        "available": True,
+        "connected": True,
+        "source": "live-ocr",
+        "selected_program": selected_program or "Necitit",
+        "active_program": active_program or "Necitit",
+        "material": material or "Necitit",
+        "program_status": program_status or "Necitit",
+        "derived_signals": {
+            "machine_on": machine_on,
+            "cutting_active": cutting_active,
+            "table_change": table_change,
+            "idle": idle,
+        },
+        "message": "Stare derivata din captura live a ecranului laser.",
+    }
+
+
+def analyze_abkant_live_snapshot(machine_key: str) -> dict | None:
+    feed = REAL_DATA_FEEDS.get(machine_key, {})
+    reachable = bool(feed.get("endpoint"))
+    return {
+        "available": reachable,
+        "connected": reachable,
+        "source": "feed-script",
+        "selected_program": "n/a",
+        "active_program": "Abkant/ProgramActiv",
+        "material": "n/a",
+        "program_status": "Program identificat din script",
+        "derived_signals": {
+            "machine_on": reachable,
+            "cutting_active": False,
+            "table_change": False,
+            "idle": False,
+        },
+        "message": (
+            "Abkant foloseste momentan feedul din script, nu OCR live direct in dashboard."
+            if reachable
+            else "Feedul abkant nu este accesibil din dashboard."
+        ),
+    }
+
+
+def get_live_machine_snapshot(machine_key: str) -> dict | None:
+    if machine_key in {"laser1", "laser2"}:
+        return analyze_laser_live_snapshot(machine_key)
+    if machine_key == "abkant":
+        return analyze_abkant_live_snapshot(machine_key)
+    return None
 
 
 def get_sqlite_connection() -> sqlite3.Connection:
@@ -733,6 +896,40 @@ def insert_event(
         connection.commit()
 
 
+def sync_machine_events_from_live_snapshot(machine_key: str) -> dict | None:
+    snapshot = get_live_machine_snapshot(machine_key)
+    if not snapshot or not snapshot.get("available"):
+        return snapshot
+
+    derived_signals = snapshot.get("derived_signals") or {}
+    current_signals = fetch_current_signals(machine_key)
+    operator_snapshot = fetch_current_operator(get_machine_profile(machine_key)["workcenter_id"])
+
+    note = (
+        f"selected={snapshot.get('selected_program')}; "
+        f"active={snapshot.get('active_program')}; "
+        f"material={snapshot.get('material')}; "
+        f"status={snapshot.get('program_status')}"
+    )
+
+    for signal_name in ("machine_on", "cutting_active", "table_change"):
+        new_value = bool(derived_signals.get(signal_name, False))
+        if current_signals[signal_name]["active"] == new_value:
+            continue
+
+        insert_event(
+            machine_key=machine_key,
+            signal_name=signal_name,
+            value=new_value,
+            source=snapshot.get("source", "real-live"),
+            note=note,
+            operator_snapshot=operator_snapshot,
+        )
+        current_signals[signal_name]["active"] = new_value
+
+    return snapshot
+
+
 def delete_events(machine_key: str, mode: str, limit: int | None = None) -> int:
     with get_sqlite_connection() as connection:
         if mode == "manual_latest":
@@ -835,6 +1032,7 @@ def build_event_sequence(signal_name: str, target_value: bool, current_signals: 
 def build_dashboard_payload(machine_key: str = DEFAULT_MACHINE_KEY) -> dict:
     machine_key = ensure_machine_key(machine_key)
     machine_profile = get_machine_profile(machine_key)
+    live_extraction = sync_machine_events_from_live_snapshot(machine_key)
     current_signals = fetch_current_signals(machine_key)
     operator_snapshot = fetch_current_operator(machine_profile["workcenter_id"])
     current_state = derive_machine_state(current_signals)
@@ -859,6 +1057,7 @@ def build_dashboard_payload(machine_key: str = DEFAULT_MACHINE_KEY) -> dict:
         "stats_today": stats_today,
         "operator_snapshot": operator_snapshot,
         "real_data_source": get_real_data_settings(machine_profile),
+        "live_extraction": live_extraction,
         "recent_events": fetch_recent_events(machine_key),
         "signal_definitions": SIGNAL_DEFINITIONS,
         "updated_at": now_local().isoformat(timespec="seconds"),

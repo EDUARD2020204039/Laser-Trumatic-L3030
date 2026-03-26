@@ -810,9 +810,30 @@ def fetch_abkant_postgres_snapshot() -> dict | None:
     pieces_label = pieces_text or (
         f"{produced_pieces}/{total_pieces}" if total_pieces is not None else str(produced_pieces)
     )
-    bend_change = bool(machine_on and active_program and total_pieces and produced_pieces >= total_pieces)
-    bending_active = bool(machine_on and active_program and not bend_change)
-    idle = bool(machine_on and not bending_active and not bend_change)
+    pieces_done = pieces_done_from_text if pieces_done_from_text is not None else produced_pieces
+    has_piece_counters = pieces_done is not None and total_pieces is not None
+    bend_change = bool(
+        machine_on
+        and active_program
+        and has_piece_counters
+        and pieces_done == 0
+        and total_pieces == 0
+    )
+    idle = bool(
+        machine_on
+        and active_program
+        and has_piece_counters
+        and pieces_done == 0
+        and (total_pieces or 0) > 0
+    )
+    bending_active = bool(
+        machine_on
+        and active_program
+        and (
+            (has_piece_counters and not bend_change and not idle)
+            or not has_piece_counters
+        )
+    )
 
     if bend_change:
         program_status = "Bend change"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import sqlite3
 import threading
 import time as time_module
@@ -42,9 +43,44 @@ except ImportError:  # pragma: no cover
 
 
 BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data"
 load_dotenv(BASE_DIR / ".env")
-SQLITE_PATH = Path(os.getenv("LASER_SQLITE_PATH", DATA_DIR / "laser_monitor.db"))
+DEFAULT_SQLITE_FILENAME = "laser_monitor.db"
+
+
+def resolve_sqlite_path() -> Path:
+    explicit_sqlite_path = os.getenv("LASER_SQLITE_PATH")
+    if explicit_sqlite_path:
+        return Path(explicit_sqlite_path).expanduser()
+
+    explicit_data_dir = os.getenv("LASER_DATA_DIR")
+    if explicit_data_dir:
+        return Path(explicit_data_dir).expanduser() / DEFAULT_SQLITE_FILENAME
+
+    legacy_path = BASE_DIR / "data" / DEFAULT_SQLITE_FILENAME
+    persistent_path = Path("/data") / DEFAULT_SQLITE_FILENAME
+
+    if legacy_path.exists():
+        return legacy_path
+    if persistent_path.exists():
+        return persistent_path
+    if persistent_path.parent.exists():
+        return persistent_path
+    return legacy_path
+
+
+SQLITE_PATH = resolve_sqlite_path()
+DATA_DIR = SQLITE_PATH.parent
+
+
+def migrate_legacy_sqlite_if_needed() -> None:
+    legacy_path = BASE_DIR / "data" / DEFAULT_SQLITE_FILENAME
+    if SQLITE_PATH == legacy_path:
+        return
+    if SQLITE_PATH.exists() or not legacy_path.exists():
+        return
+
+    SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(legacy_path, SQLITE_PATH)
 
 DEFAULT_ODBC_DRIVER = (
     "ODBC Driver 17 for SQL Server" if os.name == "nt" else "ODBC Driver 18 for SQL Server"
@@ -1019,6 +1055,8 @@ def serialize_machine_profile(row: sqlite3.Row, selected_machine_key: str | None
 
 
 def init_db() -> None:
+    migrate_legacy_sqlite_if_needed()
+    print(f"SQLite storage path: {SQLITE_PATH}")
     with get_sqlite_connection() as connection:
         connection.executescript(
             """

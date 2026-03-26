@@ -5,6 +5,7 @@ ENV PYTHONUNBUFFERED=1
 ENV ACCEPT_EULA=Y
 ENV GUNICORN_WORKERS=1
 ENV BACKGROUND_SYNC_ENABLED=1
+ENV LASER_DATA_DIR=/data
 
 WORKDIR /app
 
@@ -29,6 +30,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+
+VOLUME ["/data"]
 
 EXPOSE 3030
 

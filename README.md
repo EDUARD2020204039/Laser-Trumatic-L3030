@@ -7,7 +7,7 @@ Faza 1 pentru monitorizare laser:
 - butoane pentru stergerea rapida a testelor manuale
 - operator curent luat din `PontajWorkCenter` / baza `Metal`
 - `workcenter_id` configurabil direct din UI pentru fiecare utilaj
-- persistenta locala in SQLite pentru evenimente si timpi pe zi
+- persistenta locala in SQLite pentru evenimente, timpi pe zi si cicluri salvate
 - Dockerfile pentru Unraid
 - workflow GitHub Actions pentru publicare imagine in GHCR ca `ghcr.io/eduard2020204039/lasertrumaticl3030:latest`
 
@@ -44,7 +44,10 @@ Aplicatia porneste implicit pe `http://localhost:3030`.
 - `PONTAJ_SQL_DRIVER`
   - pe Windows merge de obicei `ODBC Driver 17 for SQL Server`
   - in containerul Docker se foloseste `ODBC Driver 18 for SQL Server`
-- `LASER_SQLITE_PATH` daca vrei alta locatie pentru baza locala
+- `LASER_DATA_DIR` pentru directorul persistent in care se salveaza SQLite-ul local
+- `LASER_SQLITE_PATH` daca vrei sa controlezi direct fisierul SQLite
+- daca exista deja o baza veche in `/app/data/laser_monitor.db`, aplicatia o migreaza automat spre noul path persistent la prima pornire
+- fara volum persistent montat, se pierd la update: timpii, randamentele, evenimentele si ciclurile salvate
 - `LASER_REAL_DATA_NAME` numele sursei reale care va trimite date spre dashboard
 - `LASER_REAL_DATA_ENDPOINT` endpointul sau descrierea sursei reale, pentru afisare in UI
 - `LASER1_REAL_DATA_ENDPOINT`, `LASER2_REAL_DATA_ENDPOINT`, `ABKANT_REAL_DATA_ENDPOINT` pentru endpoint separat pe fiecare utilaj
@@ -104,11 +107,11 @@ docker run -d \
   -e PONTAJ_SQL_USERNAME=bogdan \
   -e PONTAJ_SQL_PASSWORD='HELPAN123$' \
   -e PONTAJ_SQL_DRIVER='ODBC Driver 18 for SQL Server' \
-  -v /mnt/user/appdata/lasertrumaticl3030:/app/data \
+  -v /mnt/user/appdata/lasertrumaticl3030:/data \
   lasertrumaticl3030:latest
 ```
 
-Pe Unraid, monteaza `/app/data` ca volum persistent.
+Pe Unraid, monteaza `/data` ca volum persistent. Acolo ramin `laser_monitor.db`, timpii, randamentele si toate datele salvate dupa update.
 
 ## GitHub Container Registry
 

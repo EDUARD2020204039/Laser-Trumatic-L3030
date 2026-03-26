@@ -119,17 +119,17 @@ MACHINE_DEFINITIONS = {
 
 DEFAULT_MACHINE_HMI_URLS = {
     "laser1": "https://laser.helpan.ro/",
-    "laser2": "https://laser.helpan.ro/",
+    "laser2": "",
     "abkant": "https://abkant.helpan.ro/",
 }
 
 DEFAULT_MACHINE_CAMERA_FEEDS = {
     "laser1": {
-        "url": "http://192.168.2.140/ISAPI/Streaming/channels/101/picture",
+        "url": "",
         "mode": "image",
-        "username": "admin",
-        "password": "HELPAN2011$",
-        "auth": "digest",
+        "username": "",
+        "password": "",
+        "auth": "basic",
     },
     "laser2": {
         "url": "",
@@ -184,34 +184,33 @@ REAL_DATA_FEEDS = {
     "laser2": {
         "script_name": "laserFeed.py",
         "display_name": "laserFeed OCR bridge",
-        "endpoint": "https://laser.helpan.ro/",
+        "endpoint": "",
         "transport": "Redis + MQTT",
         "left_panel": [
-            {"label": "OCR program", "value": "da"},
-            {"label": "OCR repetitie", "value": "da"},
-            {"label": "Camera feed", "value": "UP / DOWN"},
-            {"label": "Semnal live", "value": "partial"},
+            {"label": "OCR program", "value": "in asteptare"},
+            {"label": "OCR repetitie", "value": "in asteptare"},
+            {"label": "Camera feed", "value": "neconfigurat"},
+            {"label": "Semnal live", "value": "oprit"},
         ],
         "screen_rows": [
-            {"label": "Selected program", "value": "OCR nume program din ecran"},
-            {"label": "Active program", "value": "LaserState / nume program OCR"},
-            {"label": "Program status", "value": "OK / ERR din script"},
-            {"label": "Machine ON", "value": "LaserStatus = UP"},
-            {"label": "Cutting", "value": "nu este extras direct inca"},
-            {"label": "Table change", "value": "nu este extras direct inca"},
-            {"label": "Idle", "value": "derivat doar dupa ce avem Cutting"},
+            {"label": "Selected program", "value": "necitit"},
+            {"label": "Active program", "value": "necitit"},
+            {"label": "Program status", "value": "fara feed dedicat"},
+            {"label": "Machine ON", "value": "ramane OFF pana exista sursa separata"},
+            {"label": "Cutting", "value": "oprit"},
+            {"label": "Table change", "value": "oprit"},
+            {"label": "Idle", "value": "oprit"},
         ],
         "derivation_rules": [
-            {"label": "Machine ON", "value": "DA cand Redis key LaserStatus este UP"},
-            {"label": "Cutting", "value": "Foloseste momentan acelasi feed ca Laser1, deci nu avem OCR separat"},
-            {"label": "Table change", "value": "Necesita feed separat sau semnal suplimentar pentru Laser2"},
-            {"label": "Idle", "value": "Poate fi calculat doar dupa ce clarificam Cutting si Table change"},
+            {"label": "Machine ON", "value": "ramane NU fara feed sau semnal dedicat pentru Laser2"},
+            {"label": "Cutting", "value": "necesita OCR separat sau PLC dedicat"},
+            {"label": "Table change", "value": "necesita feed separat sau semnal suplimentar"},
+            {"label": "Idle", "value": "va fi calculat doar dupa instrumentarea dedicata"},
         ],
         "details": [
-            "Foloseste acelasi feed incarcat pentru Laser1",
-            "Camera OCR: laserbvision-1:8081",
-            "Redis keys observate: LaserStatus, LaserState",
-            "MQTT topic observat: Laser/3020/Status",
+            "Nu mai mosteneste automat feedul de la Laser1",
+            "Configureaza LASER2_REAL_DATA_ENDPOINT sau LASER2_CAMERA_FEED_URL pentru activare",
+            "Pana atunci dashboardul il trateaza ca utilaj neinstrumentat",
         ],
     },
     "abkant": {
@@ -426,12 +425,44 @@ def resolve_real_data_name(machine_key: str) -> str:
     return get_machine_env_value(machine_key, "REAL_DATA_NAME", legacy_names) or REAL_DATA_FEEDS[machine_key]["display_name"]
 
 
+def machine_has_dedicated_live_source(machine_key: str) -> bool:
+    machine_key = ensure_machine_key(machine_key)
+    if machine_key != "laser2":
+        return True
+
+    laser1_endpoint = get_machine_env_value("laser1", "REAL_DATA_ENDPOINT", ("LASER_REAL_DATA_ENDPOINT",))
+    laser1_camera = get_machine_env_value("laser1", "CAMERA_FEED_URL")
+    laser1_hmi = get_machine_env_value("laser1", "HMI_FEED_URL")
+    laser2_endpoint = get_machine_env_value(machine_key, "REAL_DATA_ENDPOINT")
+    laser2_camera = get_machine_env_value(machine_key, "CAMERA_FEED_URL")
+    laser2_hmi = get_machine_env_value(machine_key, "HMI_FEED_URL")
+
+    return bool(
+        (laser2_endpoint and laser2_endpoint != laser1_endpoint)
+        or (laser2_camera and laser2_camera != laser1_camera and laser2_camera != laser1_endpoint)
+        or (laser2_hmi and laser2_hmi != laser1_hmi)
+    )
+
+
 def resolve_machine_camera_feed_url(machine_key: str) -> str:
-    return (
+    camera_url = (
         get_machine_env_value(machine_key, "CAMERA_FEED_URL")
         or DEFAULT_MACHINE_CAMERA_FEEDS.get(machine_key, {}).get("url", "")
         or resolve_real_data_endpoint(machine_key)
     )
+    if machine_key == "laser1" and camera_url.strip().lower().endswith("/picture"):
+        live_endpoint = resolve_real_data_endpoint(machine_key)
+        if live_endpoint:
+            return live_endpoint
+    return camera_url
+
+
+def should_proxy_camera_feed(machine_key: str, camera_url: str, username: str, password: str) -> bool:
+    if not (camera_url and username and password):
+        return False
+    if machine_key == "laser1" and camera_url == resolve_real_data_endpoint(machine_key):
+        return False
+    return True
 
 
 def resolve_machine_camera_feed_mode(machine_key: str) -> str:
@@ -461,12 +492,27 @@ def resolve_machine_hmi_feed_url(machine_key: str) -> str:
 
 def build_machine_feeds(machine_key: str) -> list[dict]:
     machine_key = ensure_machine_key(machine_key)
+    if machine_key == "laser2" and not machine_has_dedicated_live_source(machine_key):
+        return []
+
     camera_url = resolve_machine_camera_feed_url(machine_key)
     camera_mode = resolve_machine_camera_feed_mode(machine_key)
     camera_username, camera_password, _ = resolve_machine_camera_feed_credentials(machine_key)
     hmi_url = resolve_machine_hmi_feed_url(machine_key)
-    if camera_mode == "image" and camera_url and camera_username and camera_password:
+    if camera_mode == "image" and should_proxy_camera_feed(machine_key, camera_url, camera_username, camera_password):
         camera_url = f"/api/camera-feed/{machine_key}"
+
+    if machine_key == "abkant":
+        return [
+            {
+                "key": "camera",
+                "label": "HMI",
+                "mode": camera_mode,
+                "url": camera_url,
+                "description": "Fluxul live principal al utilajului abkant.",
+            }
+        ]
+
     feeds = [
         {
             "key": "camera",
@@ -907,6 +953,25 @@ def fetch_abkant_postgres_snapshot() -> dict | None:
 
 
 def analyze_laser_live_snapshot(machine_key: str) -> dict | None:
+    if machine_key == "laser2" and not machine_has_dedicated_live_source(machine_key):
+        return {
+            "available": True,
+            "connected": False,
+            "source": "not-configured",
+            "endpoint": "",
+            "selected_program": "n/a",
+            "active_program": "n/a",
+            "material": "n/a",
+            "program_status": "Fara feed dedicat",
+            "derived_signals": {
+                "machine_on": False,
+                "cutting_active": False,
+                "table_change": False,
+                "idle": False,
+            },
+            "message": "Laser2 nu are inca feed sau semnal dedicat, deci ramane OFF pana il configuram separat.",
+        }
+
     endpoint = resolve_real_data_endpoint(machine_key)
     image, error_message = fetch_mjpeg_frame(endpoint)
     if image is None:
@@ -1249,21 +1314,26 @@ def get_real_data_settings(machine_profile: dict) -> dict[str, str]:
     feed = REAL_DATA_FEEDS[machine_profile["key"]]
     script_name = feed["script_name"]
     script_exists = bool(script_name and (BASE_DIR / script_name).exists())
+    dedicated_live_source = machine_has_dedicated_live_source(machine_profile["key"])
 
     endpoint = resolve_real_data_endpoint(machine_profile["key"])
     name = resolve_real_data_name(machine_profile["key"])
-    status = "configured" if script_exists else "pending"
+    status = "configured" if script_exists and dedicated_live_source else "pending"
     return {
         "name": name,
-        "endpoint": endpoint,
+        "endpoint": endpoint or "Fara endpoint dedicat",
         "status": status,
         "transport": feed["transport"],
         "script_name": script_name,
         "details": feed["details"],
         "message": (
             f"Sursa reala pentru {machine_profile['label']} a fost identificata din fisierul {script_name}."
-            if script_exists
-            else "Sursa reala nu este inca pregatita complet. Butoanele manuale raman pentru test."
+            if script_exists and dedicated_live_source
+            else (
+                f"{machine_profile['label']} nu are inca feed live dedicat, asa ca dashboardul nu il mai considera activ automat."
+                if machine_profile["key"] == "laser2"
+                else "Sursa reala nu este inca pregatita complet. Butoanele manuale raman pentru test."
+            )
         ),
     }
 
@@ -2078,6 +2148,115 @@ def build_today_stats(machine_key: str) -> dict:
     }
 
 
+def count_saved_cycles(machine_key: str) -> int:
+    with get_sqlite_connection() as connection:
+        row = connection.execute(
+            "SELECT COUNT(*) AS total FROM saved_cycles WHERE machine_key = ?",
+            (machine_key,),
+        ).fetchone()
+    return int(row["total"]) if row else 0
+
+
+def escape_prometheus_label(value: str) -> str:
+    return str(value).replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
+
+
+def append_prometheus_metric(
+    lines: list[str],
+    name: str,
+    value: int | float,
+    labels: dict[str, str] | None = None,
+) -> None:
+    if labels:
+        rendered_labels = ",".join(
+            f'{key}="{escape_prometheus_label(label_value)}"'
+            for key, label_value in sorted(labels.items())
+        )
+        lines.append(f"{name}{{{rendered_labels}}} {value}")
+        return
+    lines.append(f"{name} {value}")
+
+
+def build_prometheus_metrics() -> str:
+    lines = [
+        "# HELP haba_machine_signal Current machine signals from the dashboard state store.",
+        "# TYPE haba_machine_signal gauge",
+        "# HELP haba_machine_state Current derived machine state.",
+        "# TYPE haba_machine_state gauge",
+        "# HELP haba_machine_seconds_today Daily accumulated seconds by metric.",
+        "# TYPE haba_machine_seconds_today gauge",
+        "# HELP haba_machine_percent_today Daily percentage metrics.",
+        "# TYPE haba_machine_percent_today gauge",
+        "# HELP haba_machine_saved_cycles_total Total saved cycles per machine.",
+        "# TYPE haba_machine_saved_cycles_total gauge",
+        "# HELP haba_machine_workcenter_id Configured workcenter id per machine.",
+        "# TYPE haba_machine_workcenter_id gauge",
+    ]
+
+    for machine_profile in get_machine_profiles():
+        machine_key = machine_profile["key"]
+        current_signals = fetch_current_signals(machine_key)
+        current_state = derive_machine_state(machine_key, current_signals)
+        stats = build_today_stats(machine_key)
+        base_labels = {
+            "machine_key": machine_key,
+            "machine_label": machine_profile["label"],
+        }
+
+        for signal_name, signal in current_signals.items():
+            append_prometheus_metric(
+                lines,
+                "haba_machine_signal",
+                1 if bool(signal["active"]) else 0,
+                {**base_labels, "signal_name": signal_name},
+            )
+
+        append_prometheus_metric(
+            lines,
+            "haba_machine_state",
+            1,
+            {**base_labels, "state_key": current_state["key"]},
+        )
+
+        for metric_name in ("machine_on", "cutting", "table_change", "idle"):
+            append_prometheus_metric(
+                lines,
+                "haba_machine_seconds_today",
+                int(stats.get(f"{metric_name}_seconds", 0) or 0),
+                {**base_labels, "metric_name": metric_name},
+            )
+
+        for metric_name, metric_value in (
+            ("randament", stats.get("randament_percent", 0)),
+            ("availability", stats.get("availability_percent", 0)),
+        ):
+            append_prometheus_metric(
+                lines,
+                "haba_machine_percent_today",
+                float(metric_value or 0),
+                {**base_labels, "metric_name": metric_name},
+            )
+
+        append_prometheus_metric(
+            lines,
+            "haba_machine_saved_cycles_total",
+            count_saved_cycles(machine_key),
+            base_labels,
+        )
+
+        workcenter_id = machine_profile.get("workcenter_id")
+        if workcenter_id is not None:
+            append_prometheus_metric(
+                lines,
+                "haba_machine_workcenter_id",
+                int(workcenter_id),
+                base_labels,
+            )
+
+    lines.append("")
+    return "\n".join(lines)
+
+
 def insert_event(
     machine_key: str,
     signal_name: str,
@@ -2450,6 +2629,11 @@ def camera_feed(machine_key: str):
     response = Response(content, mimetype=(content_type or "image/jpeg"))
     response.headers["Cache-Control"] = "no-store, max-age=0"
     return response
+
+
+@app.route("/metrics")
+def prometheus_metrics():
+    return Response(build_prometheus_metrics(), mimetype="text/plain; version=0.0.4; charset=utf-8")
 
 
 @app.route("/api/events", methods=["POST"])

@@ -79,10 +79,10 @@ docker run -d \
   -e BACKGROUND_SYNC_ENABLED=1 \
   -e BACKGROUND_SYNC_INTERVAL_SECONDS=10 \
   -e LASER1_REAL_DATA_ENDPOINT='https://laser.helpan.ro/' \
-  -e LASER2_REAL_DATA_ENDPOINT='https://laser.helpan.ro/' \
+  -e LASER2_REAL_DATA_ENDPOINT='' \
   -e ABKANT_REAL_DATA_ENDPOINT='https://abkant.helpan.ro/' \
   -e LASER1_CAMERA_FEED_URL='https://laser.helpan.ro/' \
-  -e LASER2_CAMERA_FEED_URL='https://laser.helpan.ro/' \
+  -e LASER2_CAMERA_FEED_URL='' \
   -e ABKANT_CAMERA_FEED_URL='https://abkant.helpan.ro/' \
   -e LASER1_CAMERA_FEED_MODE='image' \
   -e LASER2_CAMERA_FEED_MODE='image' \
@@ -97,7 +97,7 @@ docker run -d \
   -e LASER2_CAMERA_FEED_AUTH='basic' \
   -e ABKANT_CAMERA_FEED_AUTH='basic' \
   -e LASER1_HMI_FEED_URL='https://laser.helpan.ro/' \
-  -e LASER2_HMI_FEED_URL='https://laser.helpan.ro/' \
+  -e LASER2_HMI_FEED_URL='' \
   -e ABKANT_HMI_FEED_URL='https://abkant.helpan.ro/' \
   -e PONTAJ_LASER1_WORKCENTER_ID=1 \
   -e PONTAJ_LASER2_WORKCENTER_ID=2 \

@@ -13,7 +13,9 @@ const state = {
     savedPeriod: window.localStorage.getItem("savedPeriod") || "all",
     workcenterFeedback: null,
     lastStatsSnapshot: null,
-    lastStatsSyncMs: 0
+    lastStatsSyncMs: 0,
+    renderedFeedsSignature: "",
+    liveExtractionLayoutKey: ""
 };
 
 const savedPeriodReportLabelMap = {
@@ -474,23 +476,11 @@ function renderSavedView(payload) {
 function renderHeader(payload) {
     document.getElementById("dashboard-title").textContent = `${payload.dashboard_title} / ${payload.machine.label}`;
     document.getElementById("dashboard-subtitle").textContent = payload.machine.description;
-    document.getElementById("active-machine-label").textContent = payload.machine.label;
-    document.getElementById("active-workcenter-label").textContent = payload.machine.workcenter_id
-        ? `WC ${payload.machine.workcenter_id}`
-        : "WC neconfigurat";
-    document.getElementById("updated-at").textContent = payload.updated_at
-        ? formatDateTime(payload.updated_at)
-        : "necunoscut";
 }
 
 function renderSavedHeader(payload, periodMeta) {
     document.getElementById("dashboard-title").textContent = "Date salvate / operatori";
     document.getElementById("dashboard-subtitle").textContent = periodMeta.subtitle;
-    document.getElementById("active-machine-label").textContent = "DATE SALVATE";
-    document.getElementById("active-workcenter-label").textContent = "Toate utilajele";
-    document.getElementById("updated-at").textContent = payload.updated_at
-        ? formatDateTime(payload.updated_at)
-        : "necunoscut";
     document.getElementById("saved-section-title").textContent = periodMeta.sectionTitle;
     document.getElementById("saved-period-hint").textContent = periodMeta.hint;
     document.getElementById("saved-records-label").textContent = periodMeta.countLabel;
@@ -743,112 +733,73 @@ function renderLiveExtraction(snapshot) {
         return;
     }
 
+    const currentMachineKey = state.dashboard?.machine?.key || state.selectedMachineKey;
+
     if (!snapshot || !snapshot.available) {
-        container.innerHTML = `
-            <p class="empty-state">
-                ${snapshot?.message || "Nu exista inca date extrase live din ecranul utilajului."}
-            </p>
-        `;
+        state.liveExtractionLayoutKey = `${currentMachineKey}:empty`;
+        container.innerHTML = `<p class="empty-state">${snapshot?.message || "Nu exista inca date extrase live din ecranul utilajului."}</p>`;
         return;
     }
 
     const signals = snapshot.derived_signals || {};
-    const currentMachineKey = state.dashboard?.machine?.key || state.selectedMachineKey;
+    const cells = currentMachineKey === "abkant"
+        ? [
+            { slot: "program", label: "Program curent", value: snapshot.active_program || "Necitit" },
+            { slot: "total", label: "Piese de indoit", value: snapshot.total_pieces ?? "Necunoscut" },
+            { slot: "produced", label: "Piese indoite", value: snapshot.produced_pieces ?? 0 },
+            { slot: "progress", label: "Progres", value: snapshot.pieces_label || "n/a" },
+            { slot: "machine_on", label: "Machine ON", value: signals.machine_on ? "DA" : "NU" },
+            { slot: "bending", label: "Bending", value: signals.cutting_active ? "DA" : "NU" },
+            { slot: "bend_change", label: "Bend change", value: signals.table_change ? "DA" : "NU" },
+            { slot: "status", label: "Status program", value: snapshot.program_status || "Necitit" }
+        ]
+        : [
+            { slot: "selected_program", label: "Selected program", value: snapshot.selected_program || "Necitit" },
+            { slot: "active_program", label: "Active program", value: snapshot.active_program || "Necitit" },
+            { slot: "material", label: "Material", value: snapshot.material || "Necitit" },
+            { slot: "program_status", label: "Program status", value: snapshot.program_status || "Necitit" },
+            { slot: "machine_on", label: "Machine ON", value: signals.machine_on ? "DA" : "NU" },
+            { slot: "cutting", label: "Cutting", value: signals.cutting_active ? "DA" : "NU" },
+            { slot: "table_change", label: "Table change", value: signals.table_change ? "DA" : "NU" },
+            { slot: "idle", label: "Idle", value: signals.idle ? "DA" : "NU" }
+        ];
 
-    if (currentMachineKey === "abkant") {
+    const layoutKey = `${currentMachineKey}:live`;
+    if (state.liveExtractionLayoutKey !== layoutKey) {
+        const rows = [];
+        for (let index = 0; index < cells.length; index += 2) {
+            rows.push(cells.slice(index, index + 2));
+        }
+
         container.innerHTML = `
-            <div class="live-screen">
-                <div class="live-screen-row">
-                    <div class="live-cell">
-                        <span>Program curent</span>
-                        <strong>${snapshot.active_program || "Necitit"}</strong>
+            <div class="live-screen live-screen-static">
+                ${rows.map((row) => `
+                    <div class="live-screen-row">
+                        ${row.map((cell) => `
+                            <div class="live-cell">
+                                <span>${cell.label}</span>
+                                <strong data-live-slot="${cell.slot}">--</strong>
+                            </div>
+                        `).join("")}
                     </div>
-                    <div class="live-cell">
-                        <span>Piese de indoit</span>
-                        <strong>${snapshot.total_pieces ?? "Necunoscut"}</strong>
-                    </div>
-                </div>
-                <div class="live-screen-row">
-                    <div class="live-cell">
-                        <span>Piese indoite</span>
-                        <strong>${snapshot.produced_pieces ?? 0}</strong>
-                    </div>
-                    <div class="live-cell">
-                        <span>Progres</span>
-                        <strong>${snapshot.pieces_label || "n/a"}</strong>
-                    </div>
-                </div>
-                <div class="live-screen-row">
-                    <div class="live-cell">
-                        <span>Machine ON</span>
-                        <strong>${signals.machine_on ? "DA" : "NU"}</strong>
-                    </div>
-                    <div class="live-cell">
-                        <span>Bending</span>
-                        <strong>${signals.cutting_active ? "DA" : "NU"}</strong>
-                    </div>
-                </div>
-                <div class="live-screen-row">
-                    <div class="live-cell">
-                        <span>Bend change</span>
-                        <strong>${signals.table_change ? "DA" : "NU"}</strong>
-                    </div>
-                    <div class="live-cell">
-                        <span>Status program</span>
-                        <strong>${snapshot.program_status || "Necitit"}</strong>
-                    </div>
-                </div>
+                `).join("")}
             </div>
-            <p class="feedback-text">${snapshot.message || ""}</p>
+            <p class="feedback-text live-extraction-feedback"></p>
         `;
-        return;
+        state.liveExtractionLayoutKey = layoutKey;
     }
 
-    container.innerHTML = `
-        <div class="live-screen">
-            <div class="live-screen-row">
-                <div class="live-cell">
-                    <span>Selected program</span>
-                    <strong>${snapshot.selected_program || "Necitit"}</strong>
-                </div>
-                <div class="live-cell">
-                    <span>Active program</span>
-                    <strong>${snapshot.active_program || "Necitit"}</strong>
-                </div>
-            </div>
-            <div class="live-screen-row">
-                <div class="live-cell">
-                    <span>Material</span>
-                    <strong>${snapshot.material || "Necitit"}</strong>
-                </div>
-                <div class="live-cell">
-                    <span>Program status</span>
-                    <strong>${snapshot.program_status || "Necitit"}</strong>
-                </div>
-            </div>
-            <div class="live-screen-row">
-                <div class="live-cell">
-                    <span>Machine ON</span>
-                    <strong>${signals.machine_on ? "DA" : "NU"}</strong>
-                </div>
-                <div class="live-cell">
-                    <span>Cutting</span>
-                    <strong>${signals.cutting_active ? "DA" : "NU"}</strong>
-                </div>
-            </div>
-            <div class="live-screen-row">
-                <div class="live-cell">
-                    <span>Table change</span>
-                    <strong>${signals.table_change ? "DA" : "NU"}</strong>
-                </div>
-                <div class="live-cell">
-                    <span>Idle</span>
-                    <strong>${signals.idle ? "DA" : "NU"}</strong>
-                </div>
-            </div>
-        </div>
-        <p class="feedback-text">${snapshot.message || ""}</p>
-    `;
+    cells.forEach((cell) => {
+        const valueNode = container.querySelector(`[data-live-slot="${cell.slot}"]`);
+        if (valueNode) {
+            valueNode.textContent = String(cell.value);
+        }
+    });
+
+    const feedbackNode = container.querySelector(".live-extraction-feedback");
+    if (feedbackNode) {
+        feedbackNode.textContent = snapshot.message || "";
+    }
 }
 
 function renderMachineFeeds(feeds) {
@@ -857,22 +808,40 @@ function renderMachineFeeds(feeds) {
         return;
     }
 
-    if (!feeds.length || !feeds.some((feed) => feed.url)) {
+    const renderedFeeds = feeds
+        .filter((feed) => feed.url)
+        .map((feed) => ({
+            key: feed.key,
+            label: feed.label,
+            mode: feed.mode,
+            url: feed.url,
+            description: feed.description
+        }));
+    const signature = JSON.stringify(renderedFeeds);
+
+    if (!renderedFeeds.length) {
+        state.renderedFeedsSignature = signature;
+        container.classList.remove("is-single-feed");
         container.innerHTML = `<p class="empty-state">Nu exista inca feeduri configurate pentru utilajul selectat.</p>`;
         return;
     }
 
-    container.innerHTML = feeds
-        .filter((feed) => feed.url)
+    if (state.renderedFeedsSignature === signature) {
+        return;
+    }
+
+    state.renderedFeedsSignature = signature;
+    container.classList.toggle("is-single-feed", renderedFeeds.length === 1);
+    container.innerHTML = renderedFeeds
         .map((feed) => {
             const isFitPage = feed.mode === "page" && feed.key === "hmi";
             const body = feed.mode === "page"
                 ? (
                     isFitPage
-                        ? `<div class="feed-fit-shell"><iframe class="feed-frame feed-frame-fit" src="${feed.url}" loading="lazy" referrerpolicy="no-referrer" scrolling="no"></iframe></div>`
-                        : `<iframe class="feed-frame" src="${feed.url}" loading="lazy" referrerpolicy="no-referrer"></iframe>`
+                        ? `<div class="feed-fit-shell"><iframe class="feed-frame feed-frame-fit" src="${feed.url}" loading="eager" referrerpolicy="no-referrer" scrolling="no"></iframe></div>`
+                        : `<iframe class="feed-frame" src="${feed.url}" loading="eager" referrerpolicy="no-referrer"></iframe>`
                 )
-                : `<img class="feed-image" src="${feed.url}" alt="${feed.label}" loading="lazy">`;
+                : `<img class="feed-image" src="${feed.url}" alt="${feed.label}" loading="eager">`;
 
             return `
                 <article class="feed-card">

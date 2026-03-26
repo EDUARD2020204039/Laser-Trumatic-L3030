@@ -1746,6 +1746,112 @@ def finalize_pending_cycle(machine_key: str, current_snapshot: dict) -> None:
     save_machine_runtime(machine_key, current_snapshot, None)
 
 
+def resolve_snapshot_program(snapshot: dict | None) -> str:
+    if not snapshot:
+        return ""
+
+    return (
+        (snapshot.get("selected_program") or "").strip()
+        or (snapshot.get("active_program") or "").strip()
+    )
+
+
+def save_cycle_on_program_change(
+    machine_key: str,
+    machine_profile: dict,
+    previous_snapshot: dict,
+    current_snapshot: dict,
+    operator_snapshot: dict,
+    current_signals: dict[str, dict],
+) -> None:
+    previous_program = resolve_snapshot_program(previous_snapshot)
+    current_program = resolve_snapshot_program(current_snapshot)
+    if not previous_program or not current_program or previous_program == current_program:
+        return
+
+    if not bool(previous_snapshot.get("derived_signals", {}).get("cutting_active")):
+        return
+
+    operator = operator_snapshot.get("primary_operator") or {}
+    change_detected_at = now_local()
+    cutting_started_at_raw = current_signals["cutting_active"]["changed_at"] if current_signals["cutting_active"]["active"] else None
+    cycle_duration_seconds = None
+    if cutting_started_at_raw:
+        cycle_duration_seconds = max(
+            int((change_detected_at - parse_timestamp(cutting_started_at_raw)).total_seconds()),
+            0,
+        )
+
+    recent_cutoff_iso = datetime.fromtimestamp(change_detected_at.timestamp() - 45).isoformat(timespec="seconds")
+    with get_sqlite_connection() as connection:
+        duplicate = connection.execute(
+            """
+            SELECT id
+            FROM saved_cycles
+            WHERE machine_key = ?
+              AND selected_program = ?
+              AND table_change_started_at >= ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (
+                machine_key,
+                previous_program,
+                recent_cutoff_iso,
+            ),
+        ).fetchone()
+        if duplicate is None:
+            connection.execute(
+                """
+                INSERT INTO saved_cycles (
+                    machine_key,
+                    workcenter_id,
+                    operator_id,
+                    operator_name,
+                    selected_program,
+                    active_program,
+                    material,
+                    program_status,
+                    cutting_started_at,
+                    table_change_started_at,
+                    table_change_ended_at,
+                    table_change_duration_seconds,
+                    cycle_duration_seconds,
+                    source,
+                    snapshot_json,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    machine_key,
+                    machine_profile.get("workcenter_id"),
+                    operator.get("employee_id"),
+                    operator.get("full_name"),
+                    previous_snapshot.get("selected_program") or previous_program,
+                    previous_snapshot.get("active_program") or previous_program,
+                    previous_snapshot.get("material"),
+                    f"{previous_snapshot.get('program_status') or 'Necitit'} -> program schimbat",
+                    cutting_started_at_raw,
+                    change_detected_at.isoformat(timespec="seconds"),
+                    change_detected_at.isoformat(timespec="seconds"),
+                    0,
+                    cycle_duration_seconds,
+                    previous_snapshot.get("source", "live-ocr"),
+                    json.dumps(
+                        {
+                            "pending_snapshot": previous_snapshot,
+                            "resume_snapshot": current_snapshot,
+                            "close_reason": "program_change",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    change_detected_at.isoformat(timespec="seconds"),
+                ),
+            )
+            connection.commit()
+
+
 def fetch_current_signals(machine_key: str) -> dict[str, dict]:
     current_signals: dict[str, dict] = {}
     with get_sqlite_connection() as connection:
@@ -1916,7 +2022,9 @@ def sync_machine_events_from_live_snapshot(machine_key: str) -> dict | None:
     if not snapshot:
         return snapshot
 
-    cache_live_snapshot(machine_key, snapshot)
+    runtime = get_machine_runtime(machine_key)
+    previous_snapshot = runtime.get("last_snapshot")
+    save_machine_runtime(machine_key, snapshot, runtime.get("pending_cycle"))
     if not snapshot.get("available"):
         return snapshot
 
@@ -1931,6 +2039,16 @@ def sync_machine_events_from_live_snapshot(machine_key: str) -> dict | None:
         f"material={snapshot.get('material')}; "
         f"status={snapshot.get('program_status')}"
     )
+
+    if previous_snapshot and not runtime.get("pending_cycle"):
+        save_cycle_on_program_change(
+            machine_key,
+            machine_profile,
+            previous_snapshot,
+            snapshot,
+            operator_snapshot,
+            current_signals,
+        )
 
     old_table_change = bool(current_signals["table_change"]["active"])
     new_table_change = bool(derived_signals.get("table_change", False))

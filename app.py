@@ -87,6 +87,30 @@ DEFAULT_MACHINE_HMI_URLS = {
     "abkant": "https://abkant.helpan.ro/",
 }
 
+DEFAULT_MACHINE_CAMERA_FEEDS = {
+    "laser1": {
+        "url": "http://192.168.2.140/ISAPI/Streaming/channels/101/picture",
+        "mode": "image",
+        "username": "admin",
+        "password": "HELPAN2011$",
+        "auth": "digest",
+    },
+    "laser2": {
+        "url": "",
+        "mode": "image",
+        "username": "",
+        "password": "",
+        "auth": "basic",
+    },
+    "abkant": {
+        "url": "",
+        "mode": "image",
+        "username": "",
+        "password": "",
+        "auth": "basic",
+    },
+}
+
 REAL_DATA_FEEDS = {
     "laser1": {
         "script_name": "laserFeed.py",
@@ -367,20 +391,29 @@ def resolve_real_data_name(machine_key: str) -> str:
 
 
 def resolve_machine_camera_feed_url(machine_key: str) -> str:
-    return get_machine_env_value(machine_key, "CAMERA_FEED_URL") or resolve_real_data_endpoint(machine_key)
+    return (
+        get_machine_env_value(machine_key, "CAMERA_FEED_URL")
+        or DEFAULT_MACHINE_CAMERA_FEEDS.get(machine_key, {}).get("url", "")
+        or resolve_real_data_endpoint(machine_key)
+    )
 
 
 def resolve_machine_camera_feed_mode(machine_key: str) -> str:
-    mode = (get_machine_env_value(machine_key, "CAMERA_FEED_MODE") or "image").strip().lower()
+    mode = (
+        get_machine_env_value(machine_key, "CAMERA_FEED_MODE")
+        or DEFAULT_MACHINE_CAMERA_FEEDS.get(machine_key, {}).get("mode", "image")
+        or "image"
+    ).strip().lower()
     if mode not in {"image", "page"}:
         return "image"
     return mode
 
 
 def resolve_machine_camera_feed_credentials(machine_key: str) -> tuple[str, str, str]:
-    username = get_machine_env_value(machine_key, "CAMERA_FEED_USERNAME")
-    password = get_machine_env_value(machine_key, "CAMERA_FEED_PASSWORD")
-    auth_type = (get_machine_env_value(machine_key, "CAMERA_FEED_AUTH") or "basic").strip().lower()
+    defaults = DEFAULT_MACHINE_CAMERA_FEEDS.get(machine_key, {})
+    username = get_machine_env_value(machine_key, "CAMERA_FEED_USERNAME") or defaults.get("username", "")
+    password = get_machine_env_value(machine_key, "CAMERA_FEED_PASSWORD") or defaults.get("password", "")
+    auth_type = (get_machine_env_value(machine_key, "CAMERA_FEED_AUTH") or defaults.get("auth", "basic")).strip().lower()
     if auth_type not in {"basic", "digest"}:
         auth_type = "basic"
     return username, password, auth_type

@@ -865,8 +865,13 @@ function renderMachineFeeds(feeds) {
     container.innerHTML = feeds
         .filter((feed) => feed.url)
         .map((feed) => {
+            const isFitPage = feed.mode === "page" && feed.key === "hmi";
             const body = feed.mode === "page"
-                ? `<iframe class="feed-frame" src="${feed.url}" loading="lazy" referrerpolicy="no-referrer"></iframe>`
+                ? (
+                    isFitPage
+                        ? `<div class="feed-fit-shell"><iframe class="feed-frame feed-frame-fit" src="${feed.url}" loading="lazy" referrerpolicy="no-referrer" scrolling="no"></iframe></div>`
+                        : `<iframe class="feed-frame" src="${feed.url}" loading="lazy" referrerpolicy="no-referrer"></iframe>`
+                )
                 : `<img class="feed-image" src="${feed.url}" alt="${feed.label}" loading="lazy">`;
 
             return `
@@ -878,7 +883,7 @@ function renderMachineFeeds(feeds) {
                         </div>
                         <a class="feed-link" href="${feed.url}" target="_blank" rel="noopener noreferrer">Deschide</a>
                     </div>
-                    <div class="feed-viewport">
+                    <div class="feed-viewport ${isFitPage ? "is-fit-page" : ""}">
                         ${body}
                     </div>
                 </article>

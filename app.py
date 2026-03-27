@@ -126,11 +126,11 @@ DEFAULT_MACHINE_HMI_URLS = {
 
 DEFAULT_MACHINE_CAMERA_FEEDS = {
     "laser1": {
-        "url": "",
+        "url": "http://192.168.2.140/ISAPI/Streaming/channels/101/picture",
         "mode": "image",
-        "username": "",
-        "password": "",
-        "auth": "basic",
+        "username": "admin",
+        "password": "HELPAN2011$",
+        "auth": "digest",
     },
     "laser2": {
         "url": "",

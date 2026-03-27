@@ -519,17 +519,18 @@ body.dark-mode .feed-card-head small {
 }
 
 .feed-viewport {
-    min-height: 560px;
-    height: 560px;
+    min-height: 0;
+    height: auto;
     border: 1px solid rgba(128, 0, 0, 0.1);
-    background: #111;
-    overflow: hidden;
-}
-
-.feed-viewport.is-fit-page {
+    background: transparent;
+    overflow: visible;
     display: flex;
     align-items: flex-start;
     justify-content: center;
+}
+
+.feed-viewport.is-fit-page {
+    overflow: hidden;
 }
 
 body.dark-mode .feed-viewport {
@@ -538,23 +539,26 @@ body.dark-mode .feed-viewport {
 
 .feed-frame,
 .feed-image {
-    width: 100%;
-    height: 560px;
+    width: auto;
+    max-width: 100%;
+    height: auto;
     border: 0;
     display: block;
-    background: #111;
+    background: transparent;
     object-fit: contain;
+    margin: 0 auto;
 }
 
 .feed-fit-shell {
-    width: 100%;
-    height: 560px;
+    width: min(100%, 768px);
+    height: 540px;
     overflow: hidden;
     position: relative;
-    background: #111;
+    background: transparent;
     display: flex;
     align-items: flex-start;
     justify-content: center;
+    margin: 0 auto;
 }
 
 .feed-frame-fit {

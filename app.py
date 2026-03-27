@@ -282,7 +282,7 @@ SIGNAL_DEFINITIONS = {
 MACHINE_SIGNAL_OVERRIDES = {
     "abkant": {
         "cutting_active": {
-            "label": "Bending active",
+            "label": "Bending",
             "description": "Abkantul indoaie activ piesele programului curent.",
             "button_on_label": "Opreste indoirea",
             "button_off_label": "Porneste indoirea",
@@ -1474,7 +1474,7 @@ def fetch_recent_events(machine_key: str, limit: int = 18) -> list[dict]:
             "id": row["id"],
             "machine_key": row["machine_key"],
             "signal_name": row["signal_name"],
-            "signal_label": SIGNAL_DEFINITIONS[row["signal_name"]]["label"],
+            "signal_label": resolve_signal_definition(row["machine_key"], row["signal_name"])["label"],
             "value": bool(row["value"]),
             "source": row["source"],
             "note": row["note"],
@@ -1773,7 +1773,10 @@ def context_requires_stats_reset(previous_snapshot: dict | None, current_snapsho
     current_context = resolve_snapshot_context(current_snapshot)
     if not (current_context["program"] or current_context["material"]):
         return False
-    return previous_context != current_context
+    previous_signals = (previous_snapshot or {}).get("derived_signals") or {}
+    current_signals = (current_snapshot or {}).get("derived_signals") or {}
+    machine_restarted = not bool(previous_signals.get("machine_on")) and bool(current_signals.get("machine_on"))
+    return previous_context != current_context or machine_restarted
 
 
 def get_machine_runtime(machine_key: str) -> dict:

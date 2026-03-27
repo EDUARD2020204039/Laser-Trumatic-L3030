@@ -93,6 +93,7 @@ OCR_AVAILABLE = cv2 is not None and np is not None and pytesseract is not None
 BACKGROUND_SYNC_ENABLED = os.getenv("BACKGROUND_SYNC_ENABLED", "1") != "0"
 BACKGROUND_SYNC_INTERVAL_SECONDS = max(int(os.getenv("BACKGROUND_SYNC_INTERVAL_SECONDS", "10")), 3)
 _background_sync_started = False
+RUNTIME_VALUE_UNCHANGED = object()
 
 if pytesseract is not None:  # pragma: no cover - runtime environment specific
     windows_tesseract = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
@@ -445,24 +446,15 @@ def machine_has_dedicated_live_source(machine_key: str) -> bool:
 
 
 def resolve_machine_camera_feed_url(machine_key: str) -> str:
-    camera_url = (
+    return (
         get_machine_env_value(machine_key, "CAMERA_FEED_URL")
         or DEFAULT_MACHINE_CAMERA_FEEDS.get(machine_key, {}).get("url", "")
         or resolve_real_data_endpoint(machine_key)
     )
-    if machine_key == "laser1" and camera_url.strip().lower().endswith("/picture"):
-        live_endpoint = resolve_real_data_endpoint(machine_key)
-        if live_endpoint:
-            return live_endpoint
-    return camera_url
 
 
 def should_proxy_camera_feed(machine_key: str, camera_url: str, username: str, password: str) -> bool:
-    if not (camera_url and username and password):
-        return False
-    if machine_key == "laser1" and camera_url == resolve_real_data_endpoint(machine_key):
-        return False
-    return True
+    return bool(camera_url and username and password)
 
 
 def resolve_machine_camera_feed_mode(machine_key: str) -> str:
@@ -499,6 +491,12 @@ def build_machine_feeds(machine_key: str) -> list[dict]:
     camera_mode = resolve_machine_camera_feed_mode(machine_key)
     camera_username, camera_password, _ = resolve_machine_camera_feed_credentials(machine_key)
     hmi_url = resolve_machine_hmi_feed_url(machine_key)
+    camera_refresh_ms = None
+    if machine_key == "laser1" and camera_mode == "image" and (
+        camera_url.strip().lower().endswith("/picture")
+        or (camera_username and camera_password)
+    ):
+        camera_refresh_ms = 1500
     if camera_mode == "image" and should_proxy_camera_feed(machine_key, camera_url, camera_username, camera_password):
         camera_url = f"/api/camera-feed/{machine_key}"
 
@@ -510,6 +508,7 @@ def build_machine_feeds(machine_key: str) -> list[dict]:
                 "mode": camera_mode,
                 "url": camera_url,
                 "description": "Fluxul live principal al utilajului abkant.",
+                "refresh_ms": None,
             }
         ]
 
@@ -520,6 +519,7 @@ def build_machine_feeds(machine_key: str) -> list[dict]:
             "mode": camera_mode,
             "url": camera_url,
             "description": "Camera IP dedicata supravegherii utilajului.",
+            "refresh_ms": camera_refresh_ms,
         },
         {
             "key": "hmi",
@@ -527,6 +527,7 @@ def build_machine_feeds(machine_key: str) -> list[dict]:
             "mode": "page",
             "url": hmi_url,
             "description": "Interfata operatorului, pentru vizualizare directa in dashboard.",
+            "refresh_ms": None,
         },
     ]
     return feeds
@@ -1169,6 +1170,8 @@ def init_db() -> None:
                 machine_key TEXT PRIMARY KEY,
                 last_snapshot_json TEXT,
                 pending_cycle_json TEXT,
+                stats_anchor_started_at TEXT,
+                stats_anchor_context_json TEXT,
                 updated_at TEXT NOT NULL
             );
             """
@@ -1191,6 +1194,15 @@ def init_db() -> None:
             connection.execute("ALTER TABLE saved_cycles ADD COLUMN table_change_ended_at TEXT")
         if "table_change_duration_seconds" not in saved_cycle_columns:
             connection.execute("ALTER TABLE saved_cycles ADD COLUMN table_change_duration_seconds INTEGER")
+
+        machine_runtime_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(machine_runtime)").fetchall()
+        }
+        if "stats_anchor_started_at" not in machine_runtime_columns:
+            connection.execute("ALTER TABLE machine_runtime ADD COLUMN stats_anchor_started_at TEXT")
+        if "stats_anchor_context_json" not in machine_runtime_columns:
+            connection.execute("ALTER TABLE machine_runtime ADD COLUMN stats_anchor_context_json TEXT")
 
         connection.execute(
             """
@@ -1250,9 +1262,9 @@ def init_db() -> None:
             connection.execute(
                 """
                 INSERT OR IGNORE INTO machine_runtime (
-                    machine_key, last_snapshot_json, pending_cycle_json, updated_at
+                    machine_key, last_snapshot_json, pending_cycle_json, stats_anchor_started_at, stats_anchor_context_json, updated_at
                 )
-                VALUES (?, NULL, NULL, ?)
+                VALUES (?, NULL, NULL, NULL, NULL, ?)
                 """,
                 (
                     profile["machine_key"],
@@ -1736,11 +1748,45 @@ def build_saved_cycles_payload(machine_key: str | None = None, period: str = "al
     }
 
 
+def normalize_context_token(value: str | None) -> str:
+    normalized = (value or "").strip()
+    if normalized.lower() in {"", "necitit", "n/a"}:
+        return ""
+    return normalized
+
+
+def resolve_snapshot_context(snapshot: dict | None) -> dict[str, str]:
+    if not snapshot:
+        return {"program": "", "material": ""}
+
+    selected_program = normalize_context_token(snapshot.get("selected_program"))
+    active_program = normalize_context_token(snapshot.get("active_program"))
+    material = normalize_context_token(snapshot.get("material"))
+    return {
+        "program": selected_program or active_program,
+        "material": material,
+    }
+
+
+def context_requires_stats_reset(previous_snapshot: dict | None, current_snapshot: dict | None) -> bool:
+    previous_context = resolve_snapshot_context(previous_snapshot)
+    current_context = resolve_snapshot_context(current_snapshot)
+    if not (current_context["program"] or current_context["material"]):
+        return False
+    return previous_context != current_context
+
+
 def get_machine_runtime(machine_key: str) -> dict:
     with get_sqlite_connection() as connection:
         row = connection.execute(
             """
-            SELECT machine_key, last_snapshot_json, pending_cycle_json, updated_at
+            SELECT
+                machine_key,
+                last_snapshot_json,
+                pending_cycle_json,
+                stats_anchor_started_at,
+                stats_anchor_context_json,
+                updated_at
             FROM machine_runtime
             WHERE machine_key = ?
             """,
@@ -1752,6 +1798,7 @@ def get_machine_runtime(machine_key: str) -> dict:
             "machine_key": machine_key,
             "last_snapshot": None,
             "pending_cycle": None,
+            "stats_anchor": None,
             "updated_at": None,
         }
 
@@ -1759,26 +1806,55 @@ def get_machine_runtime(machine_key: str) -> dict:
         "machine_key": row["machine_key"],
         "last_snapshot": json.loads(row["last_snapshot_json"]) if row["last_snapshot_json"] else None,
         "pending_cycle": json.loads(row["pending_cycle_json"]) if row["pending_cycle_json"] else None,
+        "stats_anchor": (
+            {
+                "started_at": row["stats_anchor_started_at"],
+                "context": json.loads(row["stats_anchor_context_json"]) if row["stats_anchor_context_json"] else {},
+            }
+            if row["stats_anchor_started_at"]
+            else None
+        ),
         "updated_at": row["updated_at"],
     }
 
 
-def save_machine_runtime(machine_key: str, last_snapshot: dict | None, pending_cycle: dict | None) -> None:
+def save_machine_runtime(
+    machine_key: str,
+    last_snapshot: dict | None,
+    pending_cycle: dict | None,
+    stats_anchor=RUNTIME_VALUE_UNCHANGED,
+) -> None:
+    if stats_anchor is RUNTIME_VALUE_UNCHANGED:
+        stats_anchor = get_machine_runtime(machine_key).get("stats_anchor")
+
     updated_at = now_local().isoformat(timespec="seconds")
+    stats_anchor_started_at = stats_anchor.get("started_at") if stats_anchor else None
+    stats_anchor_context = stats_anchor.get("context") if stats_anchor else None
     with get_sqlite_connection() as connection:
         connection.execute(
             """
-            INSERT INTO machine_runtime (machine_key, last_snapshot_json, pending_cycle_json, updated_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO machine_runtime (
+                machine_key,
+                last_snapshot_json,
+                pending_cycle_json,
+                stats_anchor_started_at,
+                stats_anchor_context_json,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(machine_key) DO UPDATE SET
                 last_snapshot_json = excluded.last_snapshot_json,
                 pending_cycle_json = excluded.pending_cycle_json,
+                stats_anchor_started_at = excluded.stats_anchor_started_at,
+                stats_anchor_context_json = excluded.stats_anchor_context_json,
                 updated_at = excluded.updated_at
             """,
             (
                 machine_key,
                 json.dumps(last_snapshot, ensure_ascii=False) if last_snapshot is not None else None,
                 json.dumps(pending_cycle, ensure_ascii=False) if pending_cycle is not None else None,
+                stats_anchor_started_at,
+                json.dumps(stats_anchor_context, ensure_ascii=False) if stats_anchor_context is not None else None,
                 updated_at,
             ),
         )
@@ -2113,10 +2189,14 @@ def format_seconds(total_seconds: int) -> str:
 def build_today_stats(machine_key: str) -> dict:
     now = now_local()
     start_of_day = datetime.combine(date.today(), time.min)
-    elapsed_seconds = max(int((now - start_of_day).total_seconds()), 1)
-    machine_on_seconds = calculate_active_seconds(machine_key, "machine_on", start_of_day, now)
-    cutting_seconds = calculate_active_seconds(machine_key, "cutting_active", start_of_day, now)
-    table_change_seconds = calculate_active_seconds(machine_key, "table_change", start_of_day, now)
+    runtime = get_machine_runtime(machine_key)
+    stats_anchor = runtime.get("stats_anchor") or {}
+    stats_anchor_started_at = parse_timestamp(stats_anchor.get("started_at")) if stats_anchor.get("started_at") else None
+    stats_window_start = max(start_of_day, stats_anchor_started_at) if stats_anchor_started_at else start_of_day
+    elapsed_seconds = max(int((now - stats_window_start).total_seconds()), 1)
+    machine_on_seconds = calculate_active_seconds(machine_key, "machine_on", stats_window_start, now)
+    cutting_seconds = calculate_active_seconds(machine_key, "cutting_active", stats_window_start, now)
+    table_change_seconds = calculate_active_seconds(machine_key, "table_change", stats_window_start, now)
     idle_seconds = max(machine_on_seconds - cutting_seconds - table_change_seconds, 0)
     utilization = round((cutting_seconds / machine_on_seconds) * 100, 1) if machine_on_seconds else 0.0
     availability = round((cutting_seconds / machine_on_seconds) * 100, 1) if machine_on_seconds else 0.0
@@ -2144,6 +2224,7 @@ def build_today_stats(machine_key: str) -> dict:
         "availability_percent": availability,
         "availability_label": f"{availability_prefix} {availability}%",
         "production_window_label": format_seconds(elapsed_seconds),
+        "production_window_started_at": stats_window_start.isoformat(timespec="seconds"),
         "updated_at": now.isoformat(timespec="seconds"),
     }
 
@@ -2295,7 +2376,25 @@ def sync_machine_events_from_live_snapshot(machine_key: str) -> dict | None:
 
     runtime = get_machine_runtime(machine_key)
     previous_snapshot = runtime.get("last_snapshot")
-    save_machine_runtime(machine_key, snapshot, runtime.get("pending_cycle"))
+    stats_anchor = runtime.get("stats_anchor")
+    current_context = resolve_snapshot_context(snapshot)
+    if snapshot.get("available") and context_requires_stats_reset(previous_snapshot, snapshot):
+        stats_anchor = {
+            "started_at": now_local().isoformat(timespec="seconds"),
+            "context": current_context,
+        }
+    elif snapshot.get("available") and not stats_anchor and (current_context["program"] or current_context["material"]):
+        stats_anchor = {
+            "started_at": now_local().isoformat(timespec="seconds"),
+            "context": current_context,
+        }
+
+    save_machine_runtime(
+        machine_key,
+        snapshot,
+        runtime.get("pending_cycle"),
+        stats_anchor=stats_anchor,
+    )
     if not snapshot.get("available"):
         return snapshot
 

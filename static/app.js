@@ -15,7 +15,8 @@ const state = {
     lastStatsSnapshot: null,
     lastStatsSyncMs: 0,
     renderedFeedsSignature: "",
-    liveExtractionLayoutKey: ""
+    liveExtractionLayoutKey: "",
+    feedRefreshTimers: []
 };
 
 const savedPeriodReportLabelMap = {
@@ -815,12 +816,15 @@ function renderMachineFeeds(feeds) {
             label: feed.label,
             mode: feed.mode,
             url: feed.url,
-            description: feed.description
+            description: feed.description,
+            refresh_ms: feed.refresh_ms || null
         }));
     const signature = JSON.stringify(renderedFeeds);
 
     if (!renderedFeeds.length) {
         state.renderedFeedsSignature = signature;
+        state.feedRefreshTimers.forEach((timerId) => window.clearInterval(timerId));
+        state.feedRefreshTimers = [];
         container.classList.remove("is-single-feed");
         container.innerHTML = `<p class="empty-state">Nu exista inca feeduri configurate pentru utilajul selectat.</p>`;
         return;
@@ -831,17 +835,22 @@ function renderMachineFeeds(feeds) {
     }
 
     state.renderedFeedsSignature = signature;
+    state.feedRefreshTimers.forEach((timerId) => window.clearInterval(timerId));
+    state.feedRefreshTimers = [];
     container.classList.toggle("is-single-feed", renderedFeeds.length === 1);
     container.innerHTML = renderedFeeds
         .map((feed) => {
             const isFitPage = feed.mode === "page" && feed.key === "hmi";
+            const initialImageSrc = feed.refresh_ms
+                ? `${feed.url}${feed.url.includes("?") ? "&" : "?"}ts=${Date.now()}`
+                : feed.url;
             const body = feed.mode === "page"
                 ? (
                     isFitPage
                         ? `<div class="feed-fit-shell"><iframe class="feed-frame feed-frame-fit" src="${feed.url}" loading="eager" referrerpolicy="no-referrer" scrolling="no"></iframe></div>`
                         : `<iframe class="feed-frame" src="${feed.url}" loading="eager" referrerpolicy="no-referrer"></iframe>`
                 )
-                : `<img class="feed-image" src="${feed.url}" alt="${feed.label}" loading="eager">`;
+                : `<img class="feed-image" src="${initialImageSrc}" alt="${feed.label}" loading="eager" ${feed.refresh_ms ? `data-base-src="${feed.url}" data-refresh-ms="${feed.refresh_ms}"` : ""}>`;
 
             return `
                 <article class="feed-card">
@@ -859,6 +868,19 @@ function renderMachineFeeds(feeds) {
             `;
         })
         .join("");
+
+    container.querySelectorAll(".feed-image[data-refresh-ms][data-base-src]").forEach((image) => {
+        const baseSrc = image.getAttribute("data-base-src");
+        const refreshMs = Number(image.getAttribute("data-refresh-ms") || 0);
+        if (!baseSrc || refreshMs < 250) {
+            return;
+        }
+
+        const timerId = window.setInterval(() => {
+            image.src = `${baseSrc}${baseSrc.includes("?") ? "&" : "?"}ts=${Date.now()}`;
+        }, refreshMs);
+        state.feedRefreshTimers.push(timerId);
+    });
 }
 
 function renderTimeline(events) {

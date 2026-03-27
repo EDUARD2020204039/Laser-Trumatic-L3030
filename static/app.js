@@ -11,6 +11,7 @@ const state = {
     selectedMachineKey: window.appConfig.defaultMachineKey || "laser1",
     currentView: window.localStorage.getItem("currentView") || "dashboard",
     savedPeriod: window.localStorage.getItem("savedPeriod") || "all",
+    savedOperatorId: window.localStorage.getItem("savedOperatorId") || "",
     workcenterFeedback: null,
     lastStatsSnapshot: null,
     lastStatsSyncMs: 0,
@@ -57,63 +58,63 @@ function getSavedPeriodMeta(period) {
     if (normalizedPeriod === "day") {
         return {
             key: "day",
-            sectionTitle: "Ce au facut operatorii azi",
-            subtitle: "Ciclurile salvate automat la schimb de masa pentru ziua curenta.",
-            hint: `Filtrul ia ciclurile din ${todayLabel}. Maine trece automat pe ziua noua.`,
-            countLabel: "Cicluri azi",
-            reportCardText: "Randament pentru ziua curenta",
-            machineReportTitle: "Randament azi",
-            emptySummary: "Nu exista inca cicluri salvate pentru ziua curenta.",
-            emptyReports: "Raportul zilnic va aparea aici dupa primele cicluri salvate azi.",
-            emptyMachineReports: "Raportul zilnic pe utilaj va aparea aici dupa primele cicluri salvate azi.",
-            emptyRecords: "Nu exista inca cicluri salvate pentru ziua curenta."
+            sectionTitle: "Operatori si foi finalizate azi",
+            subtitle: "Fiecare foaie se salveaza la final de table change, iar randamentul zilei este media foilor finalizate azi.",
+            hint: `Filtrul ia foile finalizate in ${todayLabel}. Machine OFF nu intra in calcule, iar la fiecare foaie noua se adauga media cu cele deja salvate.`,
+            countLabel: "Foi azi",
+            reportCardText: "Media randamentelor pe foile finalizate azi",
+            machineReportTitle: "Detaliu operator azi",
+            emptySummary: "Nu exista inca foi salvate pentru ziua curenta.",
+            emptyReports: "Rezumatul operatorului apare aici dupa prima foaie finalizata.",
+            emptyMachineReports: "Explicatia de calcul apare aici dupa primele foi salvate azi.",
+            emptyRecords: "Nu exista inca foi salvate pentru ziua curenta."
         };
     }
 
     if (normalizedPeriod === "week") {
         return {
             key: "week",
-            sectionTitle: "Ce au facut operatorii saptamana aceasta",
-            subtitle: "Ciclurile salvate automat la schimb de masa pentru saptamana curenta.",
-            hint: `Filtrul ia intervalul ${formatSavedPeriodDate(weekStart)} - ${formatSavedPeriodDate(now)}. Apoi trece automat pe saptamana noua.`,
-            countLabel: "Cicluri saptamana",
-            reportCardText: "Randament pentru saptamana curenta",
-            machineReportTitle: "Randament saptamanal",
-            emptySummary: "Nu exista inca cicluri salvate pentru saptamana curenta.",
-            emptyReports: "Raportul saptamanal va aparea aici dupa primele cicluri salvate din saptamana curenta.",
-            emptyMachineReports: "Raportul saptamanal pe utilaj va aparea aici dupa primele cicluri salvate din saptamana curenta.",
-            emptyRecords: "Nu exista inca cicluri salvate pentru saptamana curenta."
+            sectionTitle: "Operatori si foi finalizate saptamana aceasta",
+            subtitle: "Media saptamanala se calculeaza din toate foile finalizate din saptamana curenta.",
+            hint: `Filtrul ia intervalul ${formatSavedPeriodDate(weekStart)} - ${formatSavedPeriodDate(now)}. Fiecare foaie noua intra in media saptamanii doar dupa ce se termina table change.`,
+            countLabel: "Foi saptamana",
+            reportCardText: "Media randamentelor pe foile finalizate saptamana aceasta",
+            machineReportTitle: "Detaliu operator saptamanal",
+            emptySummary: "Nu exista inca foi salvate pentru saptamana curenta.",
+            emptyReports: "Rezumatul operatorului apare aici dupa primele foi salvate din saptamana curenta.",
+            emptyMachineReports: "Explicatia de calcul apare aici dupa primele foi salvate din saptamana curenta.",
+            emptyRecords: "Nu exista inca foi salvate pentru saptamana curenta."
         };
     }
 
     if (normalizedPeriod === "month") {
         return {
             key: "month",
-            sectionTitle: "Ce au facut operatorii luna aceasta",
-            subtitle: "Ciclurile salvate automat la schimb de masa pentru luna curenta.",
-            hint: `Filtrul ia intervalul ${formatSavedPeriodDate(monthStart)} - ${formatSavedPeriodDate(now)}. Apoi trece automat pe luna noua.`,
-            countLabel: "Cicluri luna",
-            reportCardText: "Randament pentru luna curenta",
-            machineReportTitle: "Randament lunar",
-            emptySummary: "Nu exista inca cicluri salvate pentru luna curenta.",
-            emptyReports: "Raportul lunar va aparea aici dupa primele cicluri salvate din luna curenta.",
-            emptyMachineReports: "Raportul lunar pe utilaj va aparea aici dupa primele cicluri salvate din luna curenta.",
-            emptyRecords: "Nu exista inca cicluri salvate pentru luna curenta."
+            sectionTitle: "Operatori si foi finalizate luna aceasta",
+            subtitle: "Media lunii vine din toate foile finalizate in luna curenta, nu dintr-un singur total frumos.",
+            hint: `Filtrul ia intervalul ${formatSavedPeriodDate(monthStart)} - ${formatSavedPeriodDate(now)}. Machine OFF ramane in afara calculelor, iar fiecare foaie adauga un nou randament in media lunii.`,
+            countLabel: "Foi luna",
+            reportCardText: "Media randamentelor pe foile finalizate luna aceasta",
+            machineReportTitle: "Detaliu operator lunar",
+            emptySummary: "Nu exista inca foi salvate pentru luna curenta.",
+            emptyReports: "Rezumatul operatorului apare aici dupa primele foi salvate din luna curenta.",
+            emptyMachineReports: "Explicatia de calcul apare aici dupa primele foi salvate din luna curenta.",
+            emptyRecords: "Nu exista inca foi salvate pentru luna curenta."
         };
     }
 
     return {
         key: "all",
-        sectionTitle: "Toate ciclurile salvate",
-        subtitle: "Ciclurile salvate automat la schimb de masa din tot istoricul disponibil.",
-        hint: "Filtrul arata tot istoricul salvat local, fara limita de zi, saptamana sau luna.",
-        countLabel: "Total cicluri",
-        reportCardText: "Media randamentului din ciclurile salvate",
-        machineReportTitle: "Randament pe perioade",
+        sectionTitle: "Tot istoricul foilor salvate",
+        subtitle: "Aici vezi operatorii si foile finalizate din tot istoricul disponibil in sursa de date.",
+        hint: "Fiecare foaie este salvata la final de table change. Randamentul unei foi este Cutting sau Bending impartit la Machine ON pentru acea foaie.",
+        countLabel: "Total foi",
+        reportCardText: "Media randamentelor din toate foile salvate",
+        machineReportTitle: "Detaliu operator",
         emptySummary: "Nu exista inca date salvate in istoric.",
-        emptyReports: "Raportul de randament se va afisa aici dupa primele cicluri salvate.",
-        emptyMachineReports: "Raportul separat pe utilaj se va afisa aici dupa primele cicluri salvate.",
-        emptyRecords: "Cand apare un schimb de masa, dashboard-ul salveaza automat ciclul aici."
+        emptyReports: "Rezumatul operatorului se va afisa aici dupa primele foi salvate.",
+        emptyMachineReports: "Explicatia de calcul se va afisa aici dupa primele foi salvate.",
+        emptyRecords: "Cand se termina table change, foaia se salveaza automat aici."
     };
 }
 
@@ -235,6 +236,20 @@ function bindActions() {
         });
     }
 
+    const savedSummary = document.getElementById("saved-summary");
+    if (savedSummary) {
+        savedSummary.addEventListener("click", async (event) => {
+            const card = event.target.closest("[data-operator-id]");
+            if (!card) {
+                return;
+            }
+
+            state.savedOperatorId = card.dataset.operatorId || "";
+            window.localStorage.setItem("savedOperatorId", state.savedOperatorId);
+            await loadSavedRecords();
+        });
+    }
+
     document.querySelectorAll("[data-signal]").forEach((button) => {
         button.addEventListener("click", async () => {
             const signalName = button.dataset.signal;
@@ -301,6 +316,9 @@ async function loadDashboard(machineKey = state.selectedMachineKey) {
 async function loadSavedRecords() {
     try {
         const query = new URLSearchParams({ period: state.savedPeriod });
+        if (state.savedOperatorId) {
+            query.set("operator_id", state.savedOperatorId);
+        }
         const response = await fetch(`${window.appConfig.savedRecordsUrl}?${query.toString()}`);
         const payload = await response.json();
         if (!response.ok) {
@@ -309,9 +327,11 @@ async function loadSavedRecords() {
 
         state.savedRecords = payload;
         state.savedPeriod = payload.period || state.savedPeriod;
+        state.savedOperatorId = payload.selected_operator_id || state.savedOperatorId || "";
         state.currentView = "saved";
         window.localStorage.setItem("currentView", "saved");
         window.localStorage.setItem("savedPeriod", state.savedPeriod);
+        window.localStorage.setItem("savedOperatorId", state.savedOperatorId);
         renderSavedView(payload);
     } catch (error) {
         console.error(error);
@@ -465,10 +485,10 @@ function renderSavedView(payload) {
     syncSectionVisibility("saved");
     renderSavedHeader(payload, periodMeta);
     renderMachineSelector(state.dashboard?.machines || window.appConfig.initialMachines || []);
-    renderSavedSummary(payload.summary || [], periodMeta);
+    renderSavedSummary(payload, periodMeta);
     renderSavedFilters(currentPeriod);
-    renderSavedReports(payload.reports || [], currentPeriod, periodMeta);
-    renderSavedMachineReports(payload.reports_by_machine || [], currentPeriod, periodMeta);
+    renderSavedReports(payload, currentPeriod, periodMeta);
+    renderSavedMachineReports(payload, currentPeriod, periodMeta);
     renderSavedRecords(payload.records || [], periodMeta);
 }
 
@@ -842,12 +862,81 @@ function renderTimeline(events) {
     });
 }
 
-function renderSavedSummary(summary, periodMeta) {
+function getSavedOperatorPeriod(operatorEntry, periodKey) {
+    return operatorEntry?.[periodKey] || {
+        records_count: 0,
+        efficiency_percent: 0,
+        machine_on_label: "00:00:00",
+        cutting_label: "00:00:00",
+        idle_label: "00:00:00",
+        table_change_label: "00:00:00"
+    };
+}
+
+function getSelectedSavedOperator(payload) {
+    const operators = payload?.operators || [];
+    if (!operators.length) {
+        return null;
+    }
+
+    return operators.find((operatorEntry) => operatorEntry.operator_id === payload.selected_operator_id) || operators[0];
+}
+
+function renderSavedSummary(payload, periodMeta) {
     const container = document.getElementById("saved-summary");
     const count = document.getElementById("saved-records-count");
     const recordsCount = Number(state.savedRecords?.records_count || 0);
     count.textContent = String(recordsCount);
 
+    if (payload.data_source === "prometheus") {
+        const operators = payload.operators || [];
+        if (!operators.length) {
+            container.innerHTML = `<p class="empty-state">${periodMeta.emptySummary}</p>`;
+            return;
+        }
+
+        container.innerHTML = operators
+            .map((item) => {
+                const day = getSavedOperatorPeriod(item, "day");
+                const week = getSavedOperatorPeriod(item, "week");
+                const month = getSavedOperatorPeriod(item, "month");
+                const selectedClass = item.operator_id === payload.selected_operator_id ? "is-selected" : "";
+                return `
+                    <article
+                        class="saved-summary-card saved-operator-card ${selectedClass}"
+                        data-operator-id="${item.operator_id}"
+                        role="button"
+                        tabindex="0"
+                    >
+                        <small>Operator</small>
+                        <strong>${item.operator_name}</strong>
+                        <small>${item.employee_id ? `ID angajat ${item.employee_id}` : "ID angajat indisponibil"}</small>
+                        <p>${day.records_count} foi azi, ${week.records_count} saptamana, ${month.records_count} luna</p>
+                        <div class="saved-operator-periods">
+                            <div class="saved-operator-period">
+                                <span>Zi</span>
+                                <strong>${roundToOneDecimal(day.efficiency_percent)}%</strong>
+                                <small>${day.records_count} foi</small>
+                            </div>
+                            <div class="saved-operator-period">
+                                <span>Sapt.</span>
+                                <strong>${roundToOneDecimal(week.efficiency_percent)}%</strong>
+                                <small>${week.records_count} foi</small>
+                            </div>
+                            <div class="saved-operator-period">
+                                <span>Luna</span>
+                                <strong>${roundToOneDecimal(month.efficiency_percent)}%</strong>
+                                <small>${month.records_count} foi</small>
+                            </div>
+                        </div>
+                    </article>
+                `;
+            })
+            .join("");
+        return;
+    }
+
+    const summary = payload.summary || [];
     if (!summary.length) {
         container.innerHTML = `<p class="empty-state">${periodMeta.emptySummary}</p>`;
         return;
@@ -872,8 +961,48 @@ function renderSavedFilters(period) {
     });
 }
 
-function renderSavedReports(reports, period, periodMeta) {
+function renderSavedReports(payload, period, periodMeta) {
     const container = document.getElementById("saved-reports");
+    if (payload.data_source === "prometheus") {
+        const selectedOperator = getSelectedSavedOperator(payload);
+        if (!selectedOperator) {
+            container.innerHTML = `<p class="empty-state">${periodMeta.emptyReports}</p>`;
+            return;
+        }
+
+        const periodStats = getSavedOperatorPeriod(selectedOperator, period);
+        const activityLabel = payload.records?.[0]?.activity_label || "Cutting";
+        const changeLabel = payload.records?.[0]?.change_label || "Table change";
+        container.innerHTML = `
+            <article class="saved-report-card">
+                <small>Operator selectat</small>
+                <strong>${selectedOperator.operator_name}</strong>
+                <small>${selectedOperator.employee_id ? `ID angajat ${selectedOperator.employee_id}` : "ID angajat indisponibil"}</small>
+                <p>${periodMeta.reportCardText}</p>
+                <div class="saved-report-metrics">
+                    <span>${periodStats.records_count} foi finalizate</span>
+                    <span>Media randamentelor: ${roundToOneDecimal(periodStats.efficiency_percent)}%</span>
+                    <span>Machine ON ${periodStats.machine_on_label}</span>
+                    <span>${activityLabel} ${periodStats.cutting_label}</span>
+                    <span>Idle ${periodStats.idle_label}</span>
+                    <span>${changeLabel} ${periodStats.table_change_label}</span>
+                </div>
+            </article>
+            <article class="saved-report-card">
+                <small>Sursa</small>
+                <strong>${payload.data_source === "prometheus" ? "Prometheus" : "SQLite"}</strong>
+                <p>Datele salvate se citesc din seria istorica de foi finalizate, nu dintr-un calcul live din browser.</p>
+                <div class="saved-report-metrics">
+                    <span>Fiecare foaie se inchide dupa terminarea table change.</span>
+                    <span>Machine OFF nu intra in randamentul foii.</span>
+                    <span>Zi, saptamana si luna folosesc media foilor finalizate in perioada respectiva.</span>
+                </div>
+            </article>
+        `;
+        return;
+    }
+
+    const reports = payload.reports || [];
     const visibleReports = filterSavedReportsByPeriod(reports, period);
 
     if (!visibleReports.length) {
@@ -897,8 +1026,57 @@ function renderSavedReports(reports, period, periodMeta) {
         .join("");
 }
 
-function renderSavedMachineReports(reportsByMachine, period, periodMeta) {
+function renderSavedMachineReports(payload, period, periodMeta) {
     const container = document.getElementById("saved-machine-reports");
+    if (payload.data_source === "prometheus") {
+        const records = payload.records || [];
+        if (!records.length) {
+            container.innerHTML = `<p class="empty-state">${periodMeta.emptyMachineReports}</p>`;
+            return;
+        }
+
+        const activityLabel = records[0]?.activity_label || "Cutting";
+        const changeLabel = records[0]?.change_label || "Table change";
+        const machineMap = new Map();
+        records.forEach((record) => {
+            const existing = machineMap.get(record.machine_key) || {
+                machine_label: record.machine_label,
+                records_count: 0,
+                machine_on_seconds: 0,
+                cutting_seconds: 0,
+                idle_seconds: 0,
+                table_change_seconds: 0
+            };
+            existing.records_count += 1;
+            existing.machine_on_seconds += Number(record.machine_on_duration_seconds || 0);
+            existing.cutting_seconds += Number(record.cycle_duration_seconds || 0);
+            existing.idle_seconds += Number(record.idle_duration_seconds || 0);
+            existing.table_change_seconds += Number(record.table_change_duration_seconds || 0);
+            machineMap.set(record.machine_key, existing);
+        });
+
+        container.innerHTML = Array.from(machineMap.values())
+            .map((item) => `
+                <article class="saved-machine-report-card">
+                    <small>${item.machine_label}</small>
+                    <strong>${periodMeta.machineReportTitle}</strong>
+                    <div class="saved-machine-period-list">
+                        <div class="saved-machine-period-item">
+                            <span>Foi finalizate</span>
+                            <strong>${item.records_count}</strong>
+                            <small>Machine ON ${formatSeconds(item.machine_on_seconds)}</small>
+                            <small>${activityLabel} ${formatSeconds(item.cutting_seconds)}</small>
+                            <small>Idle ${formatSeconds(item.idle_seconds)}</small>
+                            <small>${changeLabel} ${formatSeconds(item.table_change_seconds)}</small>
+                        </div>
+                    </div>
+                </article>
+            `)
+            .join("");
+        return;
+    }
+
+    const reportsByMachine = payload.reports_by_machine || [];
     const visibleMachineReports = reportsByMachine
         .map((machineReport) => ({
             ...machineReport,
@@ -946,10 +1124,12 @@ function renderSavedRecords(records, periodMeta) {
                     <div>
                         <small>${record.machine_label}</small>
                         <strong>${record.selected_program}</strong>
+                        <small>${record.table_change_ended_at ? `Finalizat: ${formatDateTime(record.table_change_ended_at)}` : ""}</small>
                     </div>
                     <div class="saved-record-meta">
                         <small>${record.operator_name}</small>
-                        <strong>${record.cycle_duration_label}</strong>
+                        <strong>${roundToOneDecimal(record.efficiency_percent || 0)}%</strong>
+                        <small>Randament foaie</small>
                     </div>
                 </div>
                 <div class="saved-record-grid">
@@ -966,6 +1146,18 @@ function renderSavedRecords(records, periodMeta) {
                         <strong>${record.cutting_started_at ? formatDateTime(record.cutting_started_at) : "Necunoscut"}</strong>
                     </div>
                     <div>
+                        <span>Machine ON</span>
+                        <strong>${record.machine_on_duration_label || "00:00:00"}</strong>
+                    </div>
+                    <div>
+                        <span>${record.activity_label || "Cutting"}</span>
+                        <strong>${record.cycle_duration_label || "00:00:00"}</strong>
+                    </div>
+                    <div>
+                        <span>Idle</span>
+                        <strong>${record.idle_duration_label || "00:00:00"}</strong>
+                    </div>
+                    <div>
                         <span>${record.change_label || "Schimb masa"}</span>
                         <strong>${formatDateTime(record.table_change_started_at)}</strong>
                     </div>
@@ -979,7 +1171,7 @@ function renderSavedRecords(records, periodMeta) {
                     </div>
                 </div>
                 <p class="saved-record-note">
-                    Status la salvare: ${record.program_status}. Operator: ${record.operator_name}. Ciclu: ${record.cycle_duration_label}.
+                    Status la salvare: ${record.program_status}. Operator: ${record.operator_name}. Foaia a fost inchisa la final de ${record.change_label?.toLowerCase() || "table change"}.
                 </p>
             </article>
         `)

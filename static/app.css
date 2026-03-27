@@ -751,6 +751,58 @@ body.dark-mode .saved-record-card {
     margin: 0 0 8px;
 }
 
+.saved-operator-card {
+    cursor: pointer;
+    transition: border-color 0.2s ease, background-color 0.2s ease, transform 0.2s ease;
+}
+
+.saved-operator-card:hover {
+    transform: translateY(-1px);
+}
+
+.saved-operator-card.is-selected {
+    background: rgba(128, 0, 0, 0.06);
+    border-color: rgba(128, 0, 0, 0.25);
+}
+
+body.dark-mode .saved-operator-card.is-selected {
+    background: rgba(128, 223, 255, 0.08);
+    border-color: rgba(128, 223, 255, 0.35);
+}
+
+.saved-operator-periods {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+    margin-top: 14px;
+}
+
+.saved-operator-period {
+    padding-top: 10px;
+    border-top: 1px solid rgba(128, 0, 0, 0.1);
+}
+
+body.dark-mode .saved-operator-period {
+    border-top-color: #555;
+}
+
+.saved-operator-period span,
+.saved-operator-period small {
+    display: block;
+}
+
+.saved-operator-period span {
+    margin-bottom: 6px;
+    color: #7a5a5a;
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+body.dark-mode .saved-operator-period span {
+    color: #cfcfcf;
+}
+
 .saved-machine-period-list {
     display: grid;
     gap: 10px;

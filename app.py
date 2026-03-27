@@ -94,6 +94,7 @@ BACKGROUND_SYNC_ENABLED = os.getenv("BACKGROUND_SYNC_ENABLED", "1") != "0"
 BACKGROUND_SYNC_INTERVAL_SECONDS = max(int(os.getenv("BACKGROUND_SYNC_INTERVAL_SECONDS", "10")), 3)
 _background_sync_started = False
 RUNTIME_VALUE_UNCHANGED = object()
+PROMETHEUS_BASE_URL = (os.getenv("PROMETHEUS_BASE_URL", "http://localhost:9090") or "http://localhost:9090").rstrip("/")
 
 if pytesseract is not None:  # pragma: no cover - runtime environment specific
     windows_tesseract = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
@@ -1161,6 +1162,9 @@ def init_db() -> None:
                 table_change_ended_at TEXT,
                 table_change_duration_seconds INTEGER,
                 cycle_duration_seconds INTEGER,
+                machine_on_duration_seconds INTEGER,
+                idle_duration_seconds INTEGER,
+                efficiency_percent REAL,
                 source TEXT NOT NULL DEFAULT 'live-ocr',
                 snapshot_json TEXT,
                 created_at TEXT NOT NULL
@@ -1194,6 +1198,12 @@ def init_db() -> None:
             connection.execute("ALTER TABLE saved_cycles ADD COLUMN table_change_ended_at TEXT")
         if "table_change_duration_seconds" not in saved_cycle_columns:
             connection.execute("ALTER TABLE saved_cycles ADD COLUMN table_change_duration_seconds INTEGER")
+        if "machine_on_duration_seconds" not in saved_cycle_columns:
+            connection.execute("ALTER TABLE saved_cycles ADD COLUMN machine_on_duration_seconds INTEGER")
+        if "idle_duration_seconds" not in saved_cycle_columns:
+            connection.execute("ALTER TABLE saved_cycles ADD COLUMN idle_duration_seconds INTEGER")
+        if "efficiency_percent" not in saved_cycle_columns:
+            connection.execute("ALTER TABLE saved_cycles ADD COLUMN efficiency_percent REAL")
 
         machine_runtime_columns = {
             row["name"]
@@ -1273,6 +1283,7 @@ def init_db() -> None:
             )
 
         connection.commit()
+    backfill_saved_cycle_metrics()
 
 
 def get_machine_profiles() -> list[dict]:
@@ -1487,11 +1498,111 @@ def fetch_recent_events(machine_key: str, limit: int = 18) -> list[dict]:
     ]
 
 
+def calculate_saved_cycle_metrics(
+    machine_key: str,
+    cutting_started_at: str | None,
+    table_change_started_at: str | None,
+    table_change_ended_at: str | None,
+    fallback_cutting_seconds: int | None = None,
+    fallback_table_change_seconds: int | None = None,
+) -> dict[str, int | float]:
+    cycle_start_raw = cutting_started_at or table_change_started_at
+    cycle_end_raw = table_change_ended_at or table_change_started_at or cutting_started_at
+    if not cycle_start_raw or not cycle_end_raw:
+        cutting_seconds = max(int(fallback_cutting_seconds or 0), 0)
+        table_change_seconds = max(int(fallback_table_change_seconds or 0), 0)
+        machine_on_seconds = cutting_seconds + table_change_seconds
+        idle_seconds = max(machine_on_seconds - cutting_seconds - table_change_seconds, 0)
+        efficiency_percent = round((cutting_seconds / machine_on_seconds) * 100, 1) if machine_on_seconds else 0.0
+        return {
+            "machine_on_duration_seconds": machine_on_seconds,
+            "cutting_duration_seconds": cutting_seconds,
+            "table_change_duration_seconds": table_change_seconds,
+            "idle_duration_seconds": idle_seconds,
+            "efficiency_percent": efficiency_percent,
+        }
+
+    start_dt = parse_timestamp(cycle_start_raw)
+    end_dt = parse_timestamp(cycle_end_raw)
+    if end_dt < start_dt:
+        end_dt = start_dt
+
+    machine_on_seconds = calculate_active_seconds(machine_key, "machine_on", start_dt, end_dt)
+    cutting_seconds = calculate_active_seconds(machine_key, "cutting_active", start_dt, end_dt)
+    table_change_seconds = calculate_active_seconds(machine_key, "table_change", start_dt, end_dt)
+    if not table_change_seconds:
+        table_change_seconds = max(int(fallback_table_change_seconds or 0), 0)
+    if not cutting_seconds:
+        cutting_seconds = max(int(fallback_cutting_seconds or 0), 0)
+    if machine_on_seconds < cutting_seconds + table_change_seconds:
+        machine_on_seconds = cutting_seconds + table_change_seconds
+    idle_seconds = max(machine_on_seconds - cutting_seconds - table_change_seconds, 0)
+    efficiency_percent = round((cutting_seconds / machine_on_seconds) * 100, 1) if machine_on_seconds else 0.0
+    return {
+        "machine_on_duration_seconds": machine_on_seconds,
+        "cutting_duration_seconds": cutting_seconds,
+        "table_change_duration_seconds": table_change_seconds,
+        "idle_duration_seconds": idle_seconds,
+        "efficiency_percent": efficiency_percent,
+    }
+
+
+def backfill_saved_cycle_metrics() -> None:
+    with get_sqlite_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT
+                id,
+                machine_key,
+                cutting_started_at,
+                table_change_started_at,
+                table_change_ended_at,
+                cycle_duration_seconds,
+                table_change_duration_seconds,
+                machine_on_duration_seconds,
+                idle_duration_seconds,
+                efficiency_percent
+            FROM saved_cycles
+            WHERE machine_on_duration_seconds IS NULL
+               OR idle_duration_seconds IS NULL
+               OR efficiency_percent IS NULL
+            """
+        ).fetchall()
+        for row in rows:
+            metrics = calculate_saved_cycle_metrics(
+                machine_key=row["machine_key"],
+                cutting_started_at=row["cutting_started_at"],
+                table_change_started_at=row["table_change_started_at"],
+                table_change_ended_at=row["table_change_ended_at"],
+                fallback_cutting_seconds=row["cycle_duration_seconds"],
+                fallback_table_change_seconds=row["table_change_duration_seconds"],
+            )
+            connection.execute(
+                """
+                UPDATE saved_cycles
+                SET machine_on_duration_seconds = ?,
+                    idle_duration_seconds = ?,
+                    efficiency_percent = ?
+                WHERE id = ?
+                """,
+                (
+                    metrics["machine_on_duration_seconds"],
+                    metrics["idle_duration_seconds"],
+                    metrics["efficiency_percent"],
+                    row["id"],
+                ),
+            )
+        connection.commit()
+
+
 def format_saved_cycle_row(row: sqlite3.Row) -> dict:
     duration_seconds = row["cycle_duration_seconds"]
     machine_key = row["machine_key"]
     cutting_meta = resolve_signal_definition(machine_key, "cutting_active")
     table_change_meta = resolve_signal_definition(machine_key, "table_change")
+    machine_on_seconds = row["machine_on_duration_seconds"] or 0
+    idle_seconds = row["idle_duration_seconds"] or 0
+    efficiency_percent = float(row["efficiency_percent"] or 0.0)
     return {
         "id": row["id"],
         "machine_key": machine_key,
@@ -1510,6 +1621,11 @@ def format_saved_cycle_row(row: sqlite3.Row) -> dict:
         "table_change_duration_label": format_seconds(row["table_change_duration_seconds"] or 0),
         "cycle_duration_seconds": duration_seconds,
         "cycle_duration_label": format_seconds(duration_seconds or 0),
+        "machine_on_duration_seconds": machine_on_seconds,
+        "machine_on_duration_label": format_seconds(machine_on_seconds),
+        "idle_duration_seconds": idle_seconds,
+        "idle_duration_label": format_seconds(idle_seconds),
+        "efficiency_percent": efficiency_percent,
         "activity_label": cutting_meta.get("report_label", cutting_meta["label"]),
         "change_label": table_change_meta.get("report_label", table_change_meta["label"]),
         "source": row["source"],
@@ -1707,6 +1823,174 @@ def build_saved_cycles_reports_by_machine() -> list[dict]:
     return reports
 
 
+def prometheus_period_range(period: str) -> str:
+    normalized = resolve_saved_period(period)
+    return {
+        "day": "1d",
+        "week": "7d",
+        "month": "30d",
+        "all": "3650d",
+    }[normalized]
+
+
+def fetch_prometheus_vector(query: str) -> list[dict]:
+    request_url = f"{PROMETHEUS_BASE_URL}/api/v1/query?query={urllib.parse.quote(query, safe='')}"
+    request_obj = urllib.request.Request(request_url, headers={"User-Agent": "HABA-Production-Monitor/1.0"})
+    with urllib.request.urlopen(request_obj, timeout=10) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    if payload.get("status") != "success":
+        raise RuntimeError(payload.get("error") or "Prometheus query failed.")
+    result = payload.get("data", {}).get("result") or []
+    return result if isinstance(result, list) else []
+
+
+def escape_prometheus_label_matcher(value: str) -> str:
+    return str(value).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def build_prometheus_operator_summaries() -> list[dict]:
+    periods = ("day", "week", "month")
+    operator_map: dict[str, dict] = {}
+
+    for period in periods:
+        period_range = prometheus_period_range(period)
+        query_map = {
+            "efficiency_percent": f'avg by (operator_id, operator_name) (max_over_time(haba_saved_cycle_efficiency_percent[{period_range}]))',
+            "records_count": f'count by (operator_id, operator_name) (max_over_time(haba_saved_cycle_completed[{period_range}]))',
+            "machine_on_seconds": f'sum by (operator_id, operator_name) (max_over_time(haba_saved_cycle_machine_on_seconds[{period_range}]))',
+            "cutting_seconds": f'sum by (operator_id, operator_name) (max_over_time(haba_saved_cycle_cutting_seconds[{period_range}]))',
+            "idle_seconds": f'sum by (operator_id, operator_name) (max_over_time(haba_saved_cycle_idle_seconds[{period_range}]))',
+            "table_change_seconds": f'sum by (operator_id, operator_name) (max_over_time(haba_saved_cycle_table_change_seconds[{period_range}]))',
+        }
+
+        for field_name, query in query_map.items():
+            for series in fetch_prometheus_vector(query):
+                labels = series.get("metric") or {}
+                operator_name = labels.get("operator_name") or "Operator necunoscut"
+                employee_id = labels.get("operator_id") or ""
+                operator_id = employee_id or f"name:{operator_name}"
+                operator_entry = operator_map.setdefault(
+                    operator_id,
+                    {
+                        "operator_id": operator_id,
+                        "employee_id": employee_id,
+                        "operator_name": operator_name,
+                        "day": {},
+                        "week": {},
+                        "month": {},
+                    },
+                )
+                value_raw = (series.get("value") or [None, "0"])[1]
+                numeric_value = float(value_raw or 0)
+                target_period = operator_entry[period]
+                if field_name.endswith("_seconds"):
+                    target_period[field_name] = int(round(numeric_value))
+                    target_period[field_name.replace("_seconds", "_label")] = format_seconds(int(round(numeric_value)))
+                elif field_name == "records_count":
+                    target_period[field_name] = int(round(numeric_value))
+                else:
+                    target_period[field_name] = round(numeric_value, 1)
+
+    output = []
+    for operator_entry in operator_map.values():
+        for period in periods:
+            target_period = operator_entry[period]
+            target_period.setdefault("records_count", 0)
+            target_period.setdefault("efficiency_percent", 0.0)
+            for field_name in ("machine_on", "cutting", "idle", "table_change"):
+                seconds_key = f"{field_name}_seconds"
+                label_key = f"{field_name}_label"
+                target_period.setdefault(seconds_key, 0)
+                target_period.setdefault(label_key, format_seconds(0))
+        output.append(operator_entry)
+
+    output.sort(
+        key=lambda item: (
+            -int(item["day"].get("records_count", 0)),
+            -float(item["week"].get("efficiency_percent", 0.0)),
+            item["operator_name"],
+        )
+    )
+    return output
+
+
+def build_prometheus_saved_records(period: str, operator_id: str | None = None) -> list[dict]:
+    period_range = prometheus_period_range(period)
+    label_filter = ""
+    if operator_id:
+        if operator_id.startswith("name:"):
+            label_filter = f'{{operator_name="{escape_prometheus_label_matcher(operator_id[5:])}"}}'
+        else:
+            label_filter = f'{{operator_id="{escape_prometheus_label_matcher(operator_id)}"}}'
+
+    base_query = f"max_over_time(haba_saved_cycle_completed{label_filter}[{period_range}])"
+    base_records: dict[str, dict] = {}
+    for series in fetch_prometheus_vector(base_query):
+        labels = series.get("metric") or {}
+        cycle_id = labels.get("cycle_id")
+        if not cycle_id:
+            continue
+        base_records[cycle_id] = {
+            "id": int(cycle_id),
+            "machine_key": labels.get("machine_key") or "",
+            "machine_label": labels.get("machine_label") or labels.get("machine_key") or "",
+            "workcenter_id": parse_optional_int(labels.get("workcenter_id")),
+            "operator_id": labels.get("operator_id") or "",
+            "operator_name": labels.get("operator_name") or "Operator necunoscut",
+            "selected_program": labels.get("selected_program") or "Necitit",
+            "active_program": labels.get("active_program") or labels.get("selected_program") or "Necitit",
+            "material": labels.get("material") or "Necitit",
+            "program_status": labels.get("program_status") or "Salvat in Prometheus",
+            "cutting_started_at": labels.get("cutting_started_at") or None,
+            "table_change_started_at": labels.get("table_change_started_at") or labels.get("completed_at") or None,
+            "table_change_ended_at": labels.get("completed_at") or None,
+            "source": labels.get("source") or "prometheus",
+            "created_at": labels.get("completed_at") or "",
+        }
+
+    metric_map = {
+        "machine_on_duration_seconds": "haba_saved_cycle_machine_on_seconds",
+        "cycle_duration_seconds": "haba_saved_cycle_cutting_seconds",
+        "idle_duration_seconds": "haba_saved_cycle_idle_seconds",
+        "table_change_duration_seconds": "haba_saved_cycle_table_change_seconds",
+        "efficiency_percent": "haba_saved_cycle_efficiency_percent",
+    }
+    for field_name, metric_name in metric_map.items():
+        query = f"max_over_time({metric_name}{label_filter}[{period_range}])"
+        for series in fetch_prometheus_vector(query):
+            labels = series.get("metric") or {}
+            cycle_id = labels.get("cycle_id")
+            if not cycle_id or cycle_id not in base_records:
+                continue
+            numeric_value = float((series.get("value") or [None, "0"])[1] or 0)
+            if field_name.endswith("_seconds"):
+                base_records[cycle_id][field_name] = int(round(numeric_value))
+                base_records[cycle_id][field_name.replace("_seconds", "_label")] = format_seconds(int(round(numeric_value)))
+            else:
+                base_records[cycle_id][field_name] = round(numeric_value, 1)
+
+    records = []
+    for record in base_records.values():
+        machine_key = record["machine_key"]
+        cutting_meta = resolve_signal_definition(machine_key or DEFAULT_MACHINE_KEY, "cutting_active")
+        table_change_meta = resolve_signal_definition(machine_key or DEFAULT_MACHINE_KEY, "table_change")
+        record.setdefault("machine_on_duration_seconds", 0)
+        record.setdefault("machine_on_duration_label", format_seconds(0))
+        record.setdefault("cycle_duration_seconds", 0)
+        record.setdefault("cycle_duration_label", format_seconds(0))
+        record.setdefault("idle_duration_seconds", 0)
+        record.setdefault("idle_duration_label", format_seconds(0))
+        record.setdefault("table_change_duration_seconds", 0)
+        record.setdefault("table_change_duration_label", format_seconds(0))
+        record.setdefault("efficiency_percent", 0.0)
+        record["activity_label"] = cutting_meta.get("report_label", cutting_meta["label"])
+        record["change_label"] = table_change_meta.get("report_label", table_change_meta["label"])
+        records.append(record)
+
+    records.sort(key=lambda item: item.get("table_change_ended_at") or item.get("created_at") or "", reverse=True)
+    return records
+
+
 def resolve_saved_period(period: str | None) -> str:
     candidate = (period or "all").strip().lower()
     if candidate not in {"all", "day", "week", "month"}:
@@ -1734,16 +2018,39 @@ def fetch_saved_cycles_for_period(machine_key: str | None, period: str) -> list[
 
 def build_saved_cycles_payload(machine_key: str | None = None, period: str = "all") -> dict:
     normalized_period = resolve_saved_period(period)
+    operator_id = (request.args.get("operator_id") or "").strip() or None
+    try:
+        operators = build_prometheus_operator_summaries()
+        selected_operator_id = operator_id or (operators[0]["operator_id"] if operators else None)
+        records = build_prometheus_saved_records(normalized_period, operator_id=selected_operator_id)
+        if operators:
+            return {
+                "view": "saved",
+                "selected_machine_key": machine_key,
+                "period": normalized_period,
+                "operators": operators,
+                "selected_operator_id": selected_operator_id,
+                "records": records,
+                "records_count": len(records),
+                "data_source": "prometheus",
+                "updated_at": now_local().isoformat(timespec="seconds"),
+            }
+    except Exception:
+        pass
+
     records = fetch_saved_cycles_for_period(machine_key=machine_key, period=normalized_period)
     return {
         "view": "saved",
         "selected_machine_key": machine_key,
         "period": normalized_period,
+        "operators": [],
+        "selected_operator_id": operator_id,
         "records": records,
         "summary": summarize_saved_cycles(records),
         "reports": build_saved_cycles_reports(machine_key),
         "reports_by_machine": build_saved_cycles_reports_by_machine(),
         "records_count": len(records),
+        "data_source": "sqlite-fallback",
         "updated_at": now_local().isoformat(timespec="seconds"),
     }
 
@@ -1915,6 +2222,14 @@ def finalize_pending_cycle(machine_key: str, current_snapshot: dict) -> None:
             int((table_change_started_at - parse_timestamp(cutting_started_at_raw)).total_seconds()),
             0,
         )
+    cycle_metrics = calculate_saved_cycle_metrics(
+        machine_key=machine_key,
+        cutting_started_at=cutting_started_at_raw,
+        table_change_started_at=pending_cycle.get("table_change_started_at"),
+        table_change_ended_at=table_change_ended_at.isoformat(timespec="seconds"),
+        fallback_cutting_seconds=cycle_duration_seconds,
+        fallback_table_change_seconds=table_change_duration_seconds,
+    )
 
     recent_cutoff_iso = datetime.fromtimestamp(table_change_ended_at.timestamp() - 45).isoformat(timespec="seconds")
     with get_sqlite_connection() as connection:
@@ -1951,11 +2266,14 @@ def finalize_pending_cycle(machine_key: str, current_snapshot: dict) -> None:
                     table_change_ended_at,
                     table_change_duration_seconds,
                     cycle_duration_seconds,
+                    machine_on_duration_seconds,
+                    idle_duration_seconds,
+                    efficiency_percent,
                     source,
                     snapshot_json,
                     created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     machine_key,
@@ -1971,6 +2289,9 @@ def finalize_pending_cycle(machine_key: str, current_snapshot: dict) -> None:
                     table_change_ended_at.isoformat(timespec="seconds"),
                     table_change_duration_seconds,
                     cycle_duration_seconds,
+                    cycle_metrics["machine_on_duration_seconds"],
+                    cycle_metrics["idle_duration_seconds"],
+                    cycle_metrics["efficiency_percent"],
                     pending_cycle.get("source", "live-ocr"),
                     json.dumps(
                         {
@@ -2022,6 +2343,14 @@ def save_cycle_on_program_change(
             int((change_detected_at - parse_timestamp(cutting_started_at_raw)).total_seconds()),
             0,
         )
+    cycle_metrics = calculate_saved_cycle_metrics(
+        machine_key=machine_key,
+        cutting_started_at=cutting_started_at_raw,
+        table_change_started_at=change_detected_at.isoformat(timespec="seconds"),
+        table_change_ended_at=change_detected_at.isoformat(timespec="seconds"),
+        fallback_cutting_seconds=cycle_duration_seconds,
+        fallback_table_change_seconds=0,
+    )
 
     recent_cutoff_iso = datetime.fromtimestamp(change_detected_at.timestamp() - 45).isoformat(timespec="seconds")
     with get_sqlite_connection() as connection:
@@ -2058,11 +2387,14 @@ def save_cycle_on_program_change(
                     table_change_ended_at,
                     table_change_duration_seconds,
                     cycle_duration_seconds,
+                    machine_on_duration_seconds,
+                    idle_duration_seconds,
+                    efficiency_percent,
                     source,
                     snapshot_json,
                     created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     machine_key,
@@ -2078,6 +2410,9 @@ def save_cycle_on_program_change(
                     change_detected_at.isoformat(timespec="seconds"),
                     0,
                     cycle_duration_seconds,
+                    cycle_metrics["machine_on_duration_seconds"],
+                    cycle_metrics["idle_duration_seconds"],
+                    cycle_metrics["efficiency_percent"],
                     previous_snapshot.get("source", "live-ocr"),
                     json.dumps(
                         {
@@ -2275,6 +2610,18 @@ def build_prometheus_metrics() -> str:
         "# TYPE haba_machine_saved_cycles_total gauge",
         "# HELP haba_machine_workcenter_id Configured workcenter id per machine.",
         "# TYPE haba_machine_workcenter_id gauge",
+        "# HELP haba_saved_cycle_completed Completed saved cycles exposed as one time series per cycle.",
+        "# TYPE haba_saved_cycle_completed gauge",
+        "# HELP haba_saved_cycle_machine_on_seconds Machine ON seconds for a completed cycle.",
+        "# TYPE haba_saved_cycle_machine_on_seconds gauge",
+        "# HELP haba_saved_cycle_cutting_seconds Cutting or bending seconds for a completed cycle.",
+        "# TYPE haba_saved_cycle_cutting_seconds gauge",
+        "# HELP haba_saved_cycle_idle_seconds Idle seconds for a completed cycle.",
+        "# TYPE haba_saved_cycle_idle_seconds gauge",
+        "# HELP haba_saved_cycle_table_change_seconds Table change seconds for a completed cycle.",
+        "# TYPE haba_saved_cycle_table_change_seconds gauge",
+        "# HELP haba_saved_cycle_efficiency_percent Efficiency percent for a completed cycle.",
+        "# TYPE haba_saved_cycle_efficiency_percent gauge",
     ]
 
     for machine_profile in get_machine_profiles():
@@ -2336,6 +2683,55 @@ def build_prometheus_metrics() -> str:
                 int(workcenter_id),
                 base_labels,
             )
+
+    for record in fetch_saved_cycles_all(limit=5000):
+        cycle_labels = {
+            "cycle_id": str(record["id"]),
+            "machine_key": record["machine_key"],
+            "machine_label": record["machine_label"],
+            "workcenter_id": str(record["workcenter_id"] or ""),
+            "operator_id": str(record["operator_id"] or ""),
+            "operator_name": record["operator_name"],
+            "selected_program": record["selected_program"],
+            "active_program": record["active_program"],
+            "material": record["material"],
+            "program_status": record["program_status"],
+            "cutting_started_at": record["cutting_started_at"] or "",
+            "table_change_started_at": record["table_change_started_at"] or "",
+            "completed_at": record["table_change_ended_at"] or record["created_at"] or "",
+            "source": record["source"] or "",
+        }
+        append_prometheus_metric(lines, "haba_saved_cycle_completed", 1, cycle_labels)
+        append_prometheus_metric(
+            lines,
+            "haba_saved_cycle_machine_on_seconds",
+            int(record["machine_on_duration_seconds"] or 0),
+            cycle_labels,
+        )
+        append_prometheus_metric(
+            lines,
+            "haba_saved_cycle_cutting_seconds",
+            int(record["cycle_duration_seconds"] or 0),
+            cycle_labels,
+        )
+        append_prometheus_metric(
+            lines,
+            "haba_saved_cycle_idle_seconds",
+            int(record["idle_duration_seconds"] or 0),
+            cycle_labels,
+        )
+        append_prometheus_metric(
+            lines,
+            "haba_saved_cycle_table_change_seconds",
+            int(record["table_change_duration_seconds"] or 0),
+            cycle_labels,
+        )
+        append_prometheus_metric(
+            lines,
+            "haba_saved_cycle_efficiency_percent",
+            float(record["efficiency_percent"] or 0),
+            cycle_labels,
+        )
 
     lines.append("")
     return "\n".join(lines)

@@ -61,6 +61,9 @@ Aplicatia porneste implicit pe `http://localhost:3030`.
 - daca rulezi aplicatia in Docker pe un server public, endpointurile de tip Tailscale sau hostname intern trebuie sa fie accesibile si din container; altfel utilajul ramine `OFF`
 - `BACKGROUND_SYNC_ENABLED=1` porneste pollerul din fundal care urmareste utilajele chiar daca nu ai pagina deschisa
 - `BACKGROUND_SYNC_INTERVAL_SECONDS=10` controleaza la cite secunde se face sincronizarea live si salvarea automata in SQLite
+- `PROMETHEUS_BASE_URL=http://localhost:9090` spune dashboard-ului de unde sa citeasca istoricul foilor salvate din Prometheus
+- pagina `Date salvate` incearca mai intii sa reconstruiasca operatorii si foile din Prometheus; daca Prometheus nu raspunde sau nu are inca seriile salvate, cade temporar pe SQLite
+- pentru persistenta reala dupa update, Prometheus trebuie sa aiba propriul director de date persistent si o retenție suficient de mare
 
 ## Docker pentru Unraid
 

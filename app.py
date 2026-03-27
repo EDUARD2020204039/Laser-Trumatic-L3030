@@ -504,10 +504,10 @@ def build_machine_feeds(machine_key: str) -> list[dict]:
         return [
             {
                 "key": "camera",
-                "label": "HMI",
                 "mode": camera_mode,
                 "url": camera_url,
-                "description": "Fluxul live principal al utilajului abkant.",
+                "open_url": camera_url,
+                "display_url": urllib.parse.urlsplit(camera_url).netloc or camera_url,
                 "refresh_ms": None,
             }
         ]
@@ -515,18 +515,18 @@ def build_machine_feeds(machine_key: str) -> list[dict]:
     feeds = [
         {
             "key": "camera",
-            "label": "Camera utilaj",
             "mode": camera_mode,
             "url": camera_url,
-            "description": "Camera IP dedicata supravegherii utilajului.",
+            "open_url": resolve_machine_camera_feed_url(machine_key),
+            "display_url": urllib.parse.urlsplit(resolve_machine_camera_feed_url(machine_key)).netloc or resolve_machine_camera_feed_url(machine_key),
             "refresh_ms": camera_refresh_ms,
         },
         {
             "key": "hmi",
-            "label": "HMI",
             "mode": "page",
             "url": hmi_url,
-            "description": "Interfata operatorului, pentru vizualizare directa in dashboard.",
+            "open_url": hmi_url,
+            "display_url": urllib.parse.urlsplit(hmi_url).netloc or hmi_url,
             "refresh_ms": None,
         },
     ]

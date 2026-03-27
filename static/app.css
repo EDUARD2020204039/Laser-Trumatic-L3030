@@ -488,14 +488,14 @@ body.dark-mode .feed-card {
 
 .feed-card-head {
     display: flex;
-    justify-content: space-between;
+    justify-content: flex-end;
     gap: 16px;
     align-items: flex-start;
     margin-bottom: 12px;
 }
 
 .feed-card-head small {
-    display: block;
+    display: none;
     margin-bottom: 6px;
     color: #7a5a5a;
     font-size: 12px;
@@ -508,12 +508,14 @@ body.dark-mode .feed-card-head small {
 }
 
 .feed-card-head strong {
-    display: block;
+    display: none;
     font-size: 18px;
 }
 
 .feed-link {
     white-space: nowrap;
+    font-size: 18px;
+    font-weight: 700;
 }
 
 .feed-viewport {

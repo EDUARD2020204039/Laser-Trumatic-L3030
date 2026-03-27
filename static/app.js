@@ -813,10 +813,10 @@ function renderMachineFeeds(feeds) {
         .filter((feed) => feed.url)
         .map((feed) => ({
             key: feed.key,
-            label: feed.label,
             mode: feed.mode,
             url: feed.url,
-            description: feed.description,
+            open_url: feed.open_url || feed.url,
+            display_url: feed.display_url || feed.url,
             refresh_ms: feed.refresh_ms || null
         }));
     const signature = JSON.stringify(renderedFeeds);
@@ -850,16 +850,12 @@ function renderMachineFeeds(feeds) {
                         ? `<div class="feed-fit-shell"><iframe class="feed-frame feed-frame-fit" src="${feed.url}" loading="eager" referrerpolicy="no-referrer" scrolling="no"></iframe></div>`
                         : `<iframe class="feed-frame" src="${feed.url}" loading="eager" referrerpolicy="no-referrer"></iframe>`
                 )
-                : `<img class="feed-image" src="${initialImageSrc}" alt="${feed.label}" loading="eager" ${feed.refresh_ms ? `data-base-src="${feed.url}" data-refresh-ms="${feed.refresh_ms}"` : ""}>`;
+                : `<img class="feed-image" src="${initialImageSrc}" alt="${feed.display_url}" loading="eager" ${feed.refresh_ms ? `data-base-src="${feed.url}" data-refresh-ms="${feed.refresh_ms}"` : ""}>`;
 
             return `
                 <article class="feed-card">
                     <div class="feed-card-head">
-                        <div>
-                            <small>${feed.label}</small>
-                            <strong>${feed.description}</strong>
-                        </div>
-                        <a class="feed-link" href="${feed.url}" target="_blank" rel="noopener noreferrer">Deschide</a>
+                        <a class="feed-link" href="${feed.open_url}" target="_blank" rel="noopener noreferrer">${feed.display_url}</a>
                     </div>
                     <div class="feed-viewport ${isFitPage ? "is-fit-page" : ""}">
                         ${body}

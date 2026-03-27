@@ -873,6 +873,25 @@ function getSavedOperatorPeriod(operatorEntry, periodKey) {
     };
 }
 
+function isAbkantOnlyOperator(operatorEntry) {
+    const machines = operatorEntry?.machines || [];
+    return machines.length > 0 && machines.every((machineLabel) => machineLabel === "Abkant");
+}
+
+function getSavedUnitLabels(operatorEntry) {
+    if (isAbkantOnlyOperator(operatorEntry)) {
+        return {
+            plural: "piese",
+            singular: "piesa"
+        };
+    }
+
+    return {
+        plural: "foi",
+        singular: "foaie"
+    };
+}
+
 function getSelectedSavedOperator(payload) {
     const operators = payload?.operators || [];
     if (!operators.length) {
@@ -896,6 +915,7 @@ function renderSavedSummary(payload, periodMeta) {
                 const day = getSavedOperatorPeriod(item, "day");
                 const week = getSavedOperatorPeriod(item, "week");
                 const month = getSavedOperatorPeriod(item, "month");
+                const unitLabels = getSavedUnitLabels(item);
                 const selectedClass = item.operator_id === payload.selected_operator_id ? "is-selected" : "";
                 return `
                     <article
@@ -907,22 +927,22 @@ function renderSavedSummary(payload, periodMeta) {
                         <small>Operator</small>
                         <strong>${item.operator_name}</strong>
                         <small>${item.employee_id ? `ID angajat ${item.employee_id}` : "ID angajat indisponibil"}</small>
-                        <p>${day.records_count} foi azi, ${week.records_count} saptamana, ${month.records_count} luna</p>
+                        <p>${day.records_count} ${unitLabels.plural} azi, ${week.records_count} saptamana, ${month.records_count} luna</p>
                         <div class="saved-operator-periods">
                             <div class="saved-operator-period">
                                 <span>Zi</span>
                                 <strong>${roundToOneDecimal(day.efficiency_percent)}%</strong>
-                                <small>${day.records_count} foi</small>
+                                <small>${day.records_count} ${unitLabels.plural}</small>
                             </div>
                             <div class="saved-operator-period">
                                 <span>Sapt.</span>
                                 <strong>${roundToOneDecimal(week.efficiency_percent)}%</strong>
-                                <small>${week.records_count} foi</small>
+                                <small>${week.records_count} ${unitLabels.plural}</small>
                             </div>
                             <div class="saved-operator-period">
                                 <span>Luna</span>
                                 <strong>${roundToOneDecimal(month.efficiency_percent)}%</strong>
-                                <small>${month.records_count} foi</small>
+                                <small>${month.records_count} ${unitLabels.plural}</small>
                             </div>
                         </div>
                     </article>
@@ -967,6 +987,7 @@ function renderSavedReports(payload, period, periodMeta) {
         }
 
         const periodStats = getSavedOperatorPeriod(selectedOperator, period);
+        const unitLabels = getSavedUnitLabels(selectedOperator);
         const activityLabel = payload.records?.[0]?.activity_label || "Cutting";
         const changeLabel = payload.records?.[0]?.change_label || "Table change";
         container.innerHTML = `
@@ -976,7 +997,7 @@ function renderSavedReports(payload, period, periodMeta) {
                 <small>${selectedOperator.employee_id ? `ID angajat ${selectedOperator.employee_id}` : "ID angajat indisponibil"}</small>
                 <p>${periodMeta.reportCardText}</p>
                 <div class="saved-report-metrics">
-                    <span>${periodStats.records_count} foi finalizate</span>
+                    <span>${periodStats.records_count} ${unitLabels.plural} finalizate</span>
                     <span>Media randamentelor: ${roundToOneDecimal(periodStats.efficiency_percent)}%</span>
                     <span>Machine ON ${periodStats.machine_on_label}</span>
                     <span>${activityLabel} ${periodStats.cutting_label}</span>
@@ -987,11 +1008,11 @@ function renderSavedReports(payload, period, periodMeta) {
             <article class="saved-report-card">
                 <small>Sursa</small>
                 <strong>${payload.data_source === "prometheus" ? "Prometheus" : "SQLite"}</strong>
-                <p>Datele salvate se citesc din seria istorica de foi finalizate, nu dintr-un calcul live din browser.</p>
+                <p>Datele salvate se citesc din seria istorica de ${unitLabels.plural} finalizate, nu dintr-un calcul live din browser.</p>
                 <div class="saved-report-metrics">
-                    <span>Fiecare foaie se inchide dupa terminarea table change.</span>
-                    <span>Machine OFF nu intra in randamentul foii.</span>
-                    <span>Zi, saptamana si luna folosesc media foilor finalizate in perioada respectiva.</span>
+                    <span>Fiecare ${unitLabels.singular} se inchide dupa terminarea table change.</span>
+                    <span>Machine OFF nu intra in randamentul ${unitLabels.singular}.</span>
+                    <span>Zi, saptamana si luna folosesc media ${unitLabels.plural} finalizate in perioada respectiva.</span>
                 </div>
             </article>
         `;
@@ -1031,6 +1052,8 @@ function renderSavedMachineReports(payload, period, periodMeta) {
             return;
         }
 
+        const selectedOperator = getSelectedSavedOperator(payload);
+        const unitLabels = getSavedUnitLabels(selectedOperator);
         const activityLabel = records[0]?.activity_label || "Cutting";
         const changeLabel = records[0]?.change_label || "Table change";
         const machineMap = new Map();
@@ -1058,7 +1081,7 @@ function renderSavedMachineReports(payload, period, periodMeta) {
                     <strong>${periodMeta.machineReportTitle}</strong>
                     <div class="saved-machine-period-list">
                         <div class="saved-machine-period-item">
-                            <span>Foi finalizate</span>
+                            <span>${unitLabels.plural.charAt(0).toUpperCase() + unitLabels.plural.slice(1)} finalizate</span>
                             <strong>${item.records_count}</strong>
                             <small>Machine ON ${formatSeconds(item.machine_on_seconds)}</small>
                             <small>${activityLabel} ${formatSeconds(item.cutting_seconds)}</small>
@@ -1125,7 +1148,7 @@ function renderSavedRecords(records, periodMeta) {
                     <div class="saved-record-meta">
                         <small>${record.operator_name}</small>
                         <strong>${roundToOneDecimal(record.efficiency_percent || 0)}%</strong>
-                        <small>Randament foaie</small>
+                        <small>${record.machine_key === "abkant" ? "Randament piesa" : "Randament foaie"}</small>
                     </div>
                 </div>
                 <div class="saved-record-grid">

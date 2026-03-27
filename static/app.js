@@ -888,12 +888,8 @@ function renderSavedSummary(payload, periodMeta) {
     const recordsCount = Number(state.savedRecords?.records_count || 0);
     count.textContent = String(recordsCount);
 
-    if (payload.data_source === "prometheus") {
-        const operators = payload.operators || [];
-        if (!operators.length) {
-            container.innerHTML = `<p class="empty-state">${periodMeta.emptySummary}</p>`;
-            return;
-        }
+    const operators = payload.operators || [];
+    if (operators.length) {
 
         container.innerHTML = operators
             .map((item) => {
@@ -963,7 +959,7 @@ function renderSavedFilters(period) {
 
 function renderSavedReports(payload, period, periodMeta) {
     const container = document.getElementById("saved-reports");
-    if (payload.data_source === "prometheus") {
+    if ((payload.operators || []).length) {
         const selectedOperator = getSelectedSavedOperator(payload);
         if (!selectedOperator) {
             container.innerHTML = `<p class="empty-state">${periodMeta.emptyReports}</p>`;
@@ -1028,7 +1024,7 @@ function renderSavedReports(payload, period, periodMeta) {
 
 function renderSavedMachineReports(payload, period, periodMeta) {
     const container = document.getElementById("saved-machine-reports");
-    if (payload.data_source === "prometheus") {
+    if ((payload.operators || []).length) {
         const records = payload.records || [];
         if (!records.length) {
             container.innerHTML = `<p class="empty-state">${periodMeta.emptyMachineReports}</p>`;

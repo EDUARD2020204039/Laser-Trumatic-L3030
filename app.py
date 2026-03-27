@@ -1991,6 +1991,156 @@ def build_prometheus_saved_records(period: str, operator_id: str | None = None) 
     return records
 
 
+def build_empty_operator_period_bucket() -> dict:
+    return {
+        "records_count": 0,
+        "efficiency_percent": 0.0,
+        "machine_on_seconds": 0,
+        "machine_on_label": format_seconds(0),
+        "cutting_seconds": 0,
+        "cutting_label": format_seconds(0),
+        "idle_seconds": 0,
+        "idle_label": format_seconds(0),
+        "table_change_seconds": 0,
+        "table_change_label": format_seconds(0),
+    }
+
+
+def build_operator_entry(operator_id: str, employee_id: str, operator_name: str) -> dict:
+    return {
+        "operator_id": operator_id,
+        "employee_id": employee_id,
+        "operator_name": operator_name or "Operator necunoscut",
+        "machines": set(),
+        "day": build_empty_operator_period_bucket(),
+        "week": build_empty_operator_period_bucket(),
+        "month": build_empty_operator_period_bucket(),
+    }
+
+
+def build_workcenter_operator_summaries() -> list[dict]:
+    operator_map: dict[str, dict] = {}
+    for machine_profile in get_machine_profiles():
+        operator_snapshot = fetch_current_operator(machine_profile.get("workcenter_id"))
+        for operator in operator_snapshot.get("operators", []):
+            employee_id = str(operator.get("employee_id") or "").strip()
+            operator_name = (operator.get("full_name") or "Operator necunoscut").strip()
+            operator_id = employee_id or f"name:{operator_name}"
+            operator_entry = operator_map.setdefault(
+                operator_id,
+                build_operator_entry(operator_id, employee_id, operator_name),
+            )
+            operator_entry["machines"].add(machine_profile["label"])
+
+    output = []
+    for operator_entry in operator_map.values():
+        operator_entry["machines"] = sorted(operator_entry["machines"])
+        output.append(operator_entry)
+
+    output.sort(key=lambda item: item["operator_name"])
+    return output
+
+
+def merge_operator_seed_entries(base_entries: list[dict], seed_entries: list[dict]) -> list[dict]:
+    merged: dict[str, dict] = {}
+    for source_entries in (base_entries, seed_entries):
+        for entry in source_entries:
+            operator_id = entry["operator_id"]
+            target = merged.setdefault(
+                operator_id,
+                build_operator_entry(
+                    operator_id,
+                    entry.get("employee_id", ""),
+                    entry.get("operator_name", "Operator necunoscut"),
+                ),
+            )
+            if entry.get("employee_id") and not target.get("employee_id"):
+                target["employee_id"] = entry["employee_id"]
+            target["machines"].update(entry.get("machines") or [])
+    return list(merged.values())
+
+
+def apply_records_to_operator_period(operator_map: dict[str, dict], period_key: str, records: list[dict]) -> None:
+    grouped: dict[str, list[dict]] = {}
+    for record in records:
+        operator_name = record.get("operator_name") or "Operator necunoscut"
+        employee_id = str(record.get("operator_id") or "").strip()
+        operator_id = employee_id or f"name:{operator_name}"
+        grouped.setdefault(operator_id, []).append(record)
+
+        operator_entry = operator_map.setdefault(
+            operator_id,
+            build_operator_entry(operator_id, employee_id, operator_name),
+        )
+        operator_entry["machines"].add(record.get("machine_label") or record.get("machine_key") or "")
+
+    for operator_id, operator_records in grouped.items():
+        operator_entry = operator_map[operator_id]
+        period_bucket = operator_entry[period_key]
+        efficiencies = [float(record.get("efficiency_percent") or 0.0) for record in operator_records]
+        machine_on_seconds = sum(int(record.get("machine_on_duration_seconds") or 0) for record in operator_records)
+        cutting_seconds = sum(int(record.get("cycle_duration_seconds") or 0) for record in operator_records)
+        idle_seconds = sum(int(record.get("idle_duration_seconds") or 0) for record in operator_records)
+        table_change_seconds = sum(int(record.get("table_change_duration_seconds") or 0) for record in operator_records)
+        period_bucket.update(
+            {
+                "records_count": len(operator_records),
+                "efficiency_percent": round(sum(efficiencies) / len(efficiencies), 1) if efficiencies else 0.0,
+                "machine_on_seconds": machine_on_seconds,
+                "machine_on_label": format_seconds(machine_on_seconds),
+                "cutting_seconds": cutting_seconds,
+                "cutting_label": format_seconds(cutting_seconds),
+                "idle_seconds": idle_seconds,
+                "idle_label": format_seconds(idle_seconds),
+                "table_change_seconds": table_change_seconds,
+                "table_change_label": format_seconds(table_change_seconds),
+            }
+        )
+
+
+def build_sqlite_operator_summaries(machine_key: str | None = None) -> list[dict]:
+    now = now_local()
+    day_records = fetch_saved_cycles_between(datetime.combine(date.today(), time.min), now, machine_key=machine_key)
+    week_start = datetime.combine(date.today(), time.min) - timedelta(days=date.today().weekday())
+    week_records = fetch_saved_cycles_between(week_start, now, machine_key=machine_key)
+    month_start = datetime.combine(date.today().replace(day=1), time.min)
+    month_records = fetch_saved_cycles_between(month_start, now, machine_key=machine_key)
+
+    operator_entries = merge_operator_seed_entries([], build_workcenter_operator_summaries())
+    operator_map = {entry["operator_id"]: entry for entry in operator_entries}
+    apply_records_to_operator_period(operator_map, "day", day_records)
+    apply_records_to_operator_period(operator_map, "week", week_records)
+    apply_records_to_operator_period(operator_map, "month", month_records)
+
+    output = []
+    for operator_entry in operator_map.values():
+        operator_entry["machines"] = sorted(machine for machine in operator_entry["machines"] if machine)
+        output.append(operator_entry)
+
+    output.sort(
+        key=lambda item: (
+            -int(item["day"].get("records_count", 0)),
+            -float(item["week"].get("efficiency_percent", 0.0)),
+            item["operator_name"],
+        )
+    )
+    return output
+
+
+def filter_records_by_operator(records: list[dict], operator_id: str | None) -> list[dict]:
+    if not operator_id:
+        return records
+
+    filtered = []
+    for record in records:
+        record_operator_id = str(record.get("operator_id") or "").strip()
+        record_operator_name = record.get("operator_name") or "Operator necunoscut"
+        resolved_operator_id = record_operator_id or f"name:{record_operator_name}"
+        if resolved_operator_id == operator_id:
+            filtered.append(record)
+    return filtered
+
+
 def resolve_saved_period(period: str | None) -> str:
     candidate = (period or "all").strip().lower()
     if candidate not in {"all", "day", "week", "month"}:
@@ -2039,17 +2189,20 @@ def build_saved_cycles_payload(machine_key: str | None = None, period: str = "al
         pass
 
     records = fetch_saved_cycles_for_period(machine_key=machine_key, period=normalized_period)
+    operators = build_sqlite_operator_summaries(machine_key=machine_key)
+    selected_operator_id = operator_id or (operators[0]["operator_id"] if operators else None)
+    filtered_records = filter_records_by_operator(records, selected_operator_id)
     return {
         "view": "saved",
         "selected_machine_key": machine_key,
         "period": normalized_period,
-        "operators": [],
-        "selected_operator_id": operator_id,
-        "records": records,
+        "operators": operators,
+        "selected_operator_id": selected_operator_id,
+        "records": filtered_records,
         "summary": summarize_saved_cycles(records),
         "reports": build_saved_cycles_reports(machine_key),
         "reports_by_machine": build_saved_cycles_reports_by_machine(),
-        "records_count": len(records),
+        "records_count": len(filtered_records),
         "data_source": "sqlite-fallback",
         "updated_at": now_local().isoformat(timespec="seconds"),
     }

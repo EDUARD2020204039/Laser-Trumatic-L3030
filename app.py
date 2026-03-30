@@ -2190,6 +2190,20 @@ def build_operator_entry(operator_id: str, employee_id: str, operator_name: str)
     }
 
 
+def clone_operator_entry(entry: dict) -> dict:
+    cloned = build_operator_entry(
+        entry.get("operator_id", ""),
+        entry.get("employee_id", ""),
+        entry.get("operator_name", UNKNOWN_OPERATOR_LABEL),
+    )
+    cloned["machines"] = set(entry.get("machines") or [])
+    for period_key in ("day", "week", "month"):
+        source_bucket = entry.get(period_key) or {}
+        target_bucket = cloned[period_key]
+        target_bucket.update(source_bucket)
+    return cloned
+
+
 def build_workcenter_operator_summaries() -> list[dict]:
     operator_map: dict[str, dict] = {}
     for machine_profile in get_machine_profiles():
@@ -2218,17 +2232,27 @@ def merge_operator_seed_entries(base_entries: list[dict], seed_entries: list[dic
     for source_entries in (base_entries, seed_entries):
         for entry in source_entries:
             operator_id = entry["operator_id"]
-            target = merged.setdefault(
-                operator_id,
-                build_operator_entry(
-                    operator_id,
-                    entry.get("employee_id", ""),
-                    entry.get("operator_name", UNKNOWN_OPERATOR_LABEL),
-                ),
-            )
+            target = merged.setdefault(operator_id, clone_operator_entry(entry))
             if entry.get("employee_id") and not target.get("employee_id"):
                 target["employee_id"] = entry["employee_id"]
+            if entry.get("operator_name") and target.get("operator_name") == UNKNOWN_OPERATOR_LABEL:
+                target["operator_name"] = entry["operator_name"]
             target["machines"].update(entry.get("machines") or [])
+            for period_key in ("day", "week", "month"):
+                target_bucket = target[period_key]
+                source_bucket = entry.get(period_key) or {}
+                for key, value in source_bucket.items():
+                    if key.endswith("_label"):
+                        base_key = key.replace("_label", "_seconds")
+                        if source_bucket.get(base_key, 0) or not target_bucket.get(key):
+                            target_bucket[key] = value
+                        continue
+                    if key == "efficiency_percent":
+                        if source_bucket.get("records_count", 0) or not target_bucket.get("records_count", 0):
+                            target_bucket[key] = value
+                        continue
+                    if source_bucket.get(key, 0) or not target_bucket.get(key, 0):
+                        target_bucket[key] = value
     return list(merged.values())
 
 
@@ -2360,7 +2384,10 @@ def build_saved_cycles_payload(machine_key: str | None = None, period: str = "al
     normalized_period = resolve_saved_period(period)
     operator_id = (request.args.get("operator_id") or "").strip() or None
     try:
-        operators = build_prometheus_operator_summaries()
+        operators = merge_operator_seed_entries(
+            build_prometheus_operator_summaries(),
+            build_workcenter_operator_summaries(),
+        )
         selected_operator_id = resolve_selected_operator_id(operator_id, operators)
         records = build_prometheus_saved_records(normalized_period, operator_id=selected_operator_id)
         if operators:

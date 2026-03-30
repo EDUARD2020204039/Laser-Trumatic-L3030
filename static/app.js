@@ -66,10 +66,10 @@ function getSavedPeriodMeta(period) {
         return {
             key: "day",
             sectionTitle: "Operatori si foi finalizate azi",
-            subtitle: "Fiecare foaie se salveaza la final de table change, iar randamentul zilei este media foilor finalizate azi.",
-            hint: `Filtrul ia foile finalizate in ${todayLabel}. Machine OFF nu intra in calcule, iar la fiecare foaie noua se adauga media cu cele deja salvate.`,
+            subtitle: "Fiecare foaie se salveaza la final de table change, iar randamentul zilei este calculat cumulat din Cutting sau Bending raportat la Machine ON.",
+            hint: `Filtrul ia foile finalizate in ${todayLabel}. Machine OFF nu intra in calcule, iar randamentul se calculeaza din totalul timpilor acumulati azi.`,
             countLabel: "Foi azi",
-            reportCardText: "Media randamentelor pe foile finalizate azi",
+            reportCardText: "Randament real cumulat pe foile finalizate azi",
             machineReportTitle: "Detaliu operator azi",
             emptySummary: "Nu exista inca foi salvate pentru ziua curenta.",
             emptyReports: "Rezumatul operatorului apare aici dupa prima foaie finalizata.",
@@ -82,10 +82,10 @@ function getSavedPeriodMeta(period) {
         return {
             key: "week",
             sectionTitle: "Operatori si foi finalizate saptamana aceasta",
-            subtitle: "Media saptamanala se calculeaza din toate foile finalizate din saptamana curenta.",
-            hint: `Filtrul ia intervalul ${formatSavedPeriodDate(weekStart)} - ${formatSavedPeriodDate(now)}. Fiecare foaie noua intra in media saptamanii doar dupa ce se termina table change.`,
+            subtitle: "Randamentul saptamanii se calculeaza cumulat din toate foile finalizate in saptamana curenta.",
+            hint: `Filtrul ia intervalul ${formatSavedPeriodDate(weekStart)} - ${formatSavedPeriodDate(now)}. Fiecare foaie noua adauga timpii ei la totalul real al saptamanii.`,
             countLabel: "Foi saptamana",
-            reportCardText: "Media randamentelor pe foile finalizate saptamana aceasta",
+            reportCardText: "Randament real cumulat pe foile finalizate saptamana aceasta",
             machineReportTitle: "Detaliu operator saptamanal",
             emptySummary: "Nu exista inca foi salvate pentru saptamana curenta.",
             emptyReports: "Rezumatul operatorului apare aici dupa primele foi salvate din saptamana curenta.",
@@ -98,10 +98,10 @@ function getSavedPeriodMeta(period) {
         return {
             key: "month",
             sectionTitle: "Operatori si foi finalizate luna aceasta",
-            subtitle: "Media lunii vine din toate foile finalizate in luna curenta, nu dintr-un singur total frumos.",
-            hint: `Filtrul ia intervalul ${formatSavedPeriodDate(monthStart)} - ${formatSavedPeriodDate(now)}. Machine OFF ramane in afara calculelor, iar fiecare foaie adauga un nou randament in media lunii.`,
+            subtitle: "Randamentul lunii vine din totalul timpilor acumulati pe toate foile finalizate in luna curenta.",
+            hint: `Filtrul ia intervalul ${formatSavedPeriodDate(monthStart)} - ${formatSavedPeriodDate(now)}. Machine OFF ramane in afara calculelor, iar randamentul este calculat din total Cutting sau Bending raportat la total Machine ON.`,
             countLabel: "Foi luna",
-            reportCardText: "Media randamentelor pe foile finalizate luna aceasta",
+            reportCardText: "Randament real cumulat pe foile finalizate luna aceasta",
             machineReportTitle: "Detaliu operator lunar",
             emptySummary: "Nu exista inca foi salvate pentru luna curenta.",
             emptyReports: "Rezumatul operatorului apare aici dupa primele foi salvate din luna curenta.",
@@ -114,9 +114,9 @@ function getSavedPeriodMeta(period) {
         key: "all",
         sectionTitle: "Tot istoricul foilor salvate",
         subtitle: "Aici vezi operatorii si foile finalizate din tot istoricul disponibil in sursa de date.",
-        hint: "Fiecare foaie este salvata la final de table change. Randamentul unei foi este Cutting sau Bending impartit la Machine ON pentru acea foaie.",
+        hint: "Fiecare foaie este salvata la final de table change. Randamentul afisat aici este calculat cumulat din total Cutting sau Bending impartit la total Machine ON.",
         countLabel: "Total foi",
-        reportCardText: "Media randamentelor din toate foile salvate",
+        reportCardText: "Randament real cumulat din toate foile salvate",
         machineReportTitle: "Detaliu operator",
         emptySummary: "Nu exista inca date salvate in istoric.",
         emptyReports: "Rezumatul operatorului se va afisa aici dupa primele foi salvate.",
@@ -1178,7 +1178,7 @@ function renderSavedReports(payload, period, periodMeta) {
                 <p>${periodMeta.reportCardText}</p>
                 <div class="saved-report-metrics">
                     <span>${periodStats.records_count} ${unitLabels.plural} finalizate</span>
-                    <span>Media randamentelor: ${roundToOneDecimal(periodStats.efficiency_percent)}%</span>
+                    <span>Randament real cumulat: ${roundToOneDecimal(periodStats.efficiency_percent)}%</span>
                     <span>Machine ON ${periodStats.machine_on_label}</span>
                     <span>${activityLabel} ${periodStats.cutting_label}</span>
                     <span>Idle ${periodStats.idle_label}</span>

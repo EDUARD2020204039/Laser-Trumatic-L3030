@@ -2025,7 +2025,6 @@ def build_prometheus_operator_summaries() -> list[dict]:
     for period in periods:
         period_range = prometheus_period_range(period)
         query_map = {
-            "efficiency_percent": f'avg by (operator_id, operator_name) (max_over_time(haba_saved_cycle_efficiency_percent[{period_range}]))',
             "records_count": f'count by (operator_id, operator_name) (max_over_time(haba_saved_cycle_completed[{period_range}]))',
             "machine_on_seconds": f'sum by (operator_id, operator_name) (max_over_time(haba_saved_cycle_machine_on_seconds[{period_range}]))',
             "cutting_seconds": f'sum by (operator_id, operator_name) (max_over_time(haba_saved_cycle_cutting_seconds[{period_range}]))',
@@ -2059,20 +2058,21 @@ def build_prometheus_operator_summaries() -> list[dict]:
                     target_period[field_name.replace("_seconds", "_label")] = format_seconds(int(round(numeric_value)))
                 elif field_name == "records_count":
                     target_period[field_name] = int(round(numeric_value))
-                else:
-                    target_period[field_name] = round(numeric_value, 1)
 
     output = []
     for operator_entry in operator_map.values():
         for period in periods:
             target_period = operator_entry[period]
             target_period.setdefault("records_count", 0)
-            target_period.setdefault("efficiency_percent", 0.0)
             for field_name in ("machine_on", "cutting", "idle", "table_change"):
                 seconds_key = f"{field_name}_seconds"
                 label_key = f"{field_name}_label"
                 target_period.setdefault(seconds_key, 0)
                 target_period.setdefault(label_key, format_seconds(0))
+            target_period["efficiency_percent"] = calculate_operator_efficiency_percent(
+                int(target_period.get("cutting_seconds", 0) or 0),
+                int(target_period.get("machine_on_seconds", 0) or 0),
+            )
         operator_entry["machines"] = sorted(operator_entry.get("machines") or [])
         output.append(operator_entry)
 
@@ -2176,6 +2176,12 @@ def build_empty_operator_period_bucket() -> dict:
         "table_change_seconds": 0,
         "table_change_label": format_seconds(0),
     }
+
+
+def calculate_operator_efficiency_percent(cutting_seconds: int, machine_on_seconds: int) -> float:
+    if machine_on_seconds <= 0:
+        return 0.0
+    return round((cutting_seconds / machine_on_seconds) * 100, 1)
 
 
 def build_operator_entry(operator_id: str, employee_id: str, operator_name: str) -> dict:
@@ -2290,7 +2296,6 @@ def apply_records_to_operator_period(operator_map: dict[str, dict], period_key: 
     for operator_id, operator_records in grouped.items():
         operator_entry = operator_map[operator_id]
         period_bucket = operator_entry[period_key]
-        efficiencies = [float(record.get("efficiency_percent") or 0.0) for record in operator_records]
         machine_on_seconds = sum(int(record.get("machine_on_duration_seconds") or 0) for record in operator_records)
         cutting_seconds = sum(int(record.get("cycle_duration_seconds") or 0) for record in operator_records)
         idle_seconds = sum(int(record.get("idle_duration_seconds") or 0) for record in operator_records)
@@ -2298,7 +2303,7 @@ def apply_records_to_operator_period(operator_map: dict[str, dict], period_key: 
         period_bucket.update(
             {
                 "records_count": len(operator_records),
-                "efficiency_percent": round(sum(efficiencies) / len(efficiencies), 1) if efficiencies else 0.0,
+                "efficiency_percent": calculate_operator_efficiency_percent(cutting_seconds, machine_on_seconds),
                 "machine_on_seconds": machine_on_seconds,
                 "machine_on_label": format_seconds(machine_on_seconds),
                 "cutting_seconds": cutting_seconds,

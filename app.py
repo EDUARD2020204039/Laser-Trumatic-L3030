@@ -13,7 +13,7 @@ from datetime import date, datetime, time, timedelta
 from difflib import SequenceMatcher
 from pathlib import Path
 
-from flask import Flask, Response, jsonify, render_template, request
+from flask import Flask, Response, has_request_context, jsonify, render_template, request
 from dotenv import load_dotenv
 
 try:
@@ -1946,15 +1946,49 @@ def prometheus_period_range(period: str) -> str:
     }[normalized]
 
 
+def build_prometheus_base_url_candidates() -> list[str]:
+    candidates: list[str] = []
+
+    def append_candidate(url: str | None) -> None:
+        normalized = (url or "").strip().rstrip("/")
+        if normalized and normalized not in candidates:
+            candidates.append(normalized)
+
+    append_candidate(PROMETHEUS_BASE_URL)
+
+    if has_request_context():
+        request_host = (request.host or "").strip()
+        host_name = request_host.split(":", 1)[0].strip()
+        if host_name:
+            append_candidate(f"http://{host_name}:9090")
+            append_candidate(f"https://{host_name}:9090")
+
+    append_candidate("http://localhost:9090")
+    append_candidate("http://127.0.0.1:9090")
+    return candidates
+
+
 def fetch_prometheus_vector(query: str) -> list[dict]:
-    request_url = f"{PROMETHEUS_BASE_URL}/api/v1/query?query={urllib.parse.quote(query, safe='')}"
-    request_obj = urllib.request.Request(request_url, headers={"User-Agent": "HABA-Production-Monitor/1.0"})
-    with urllib.request.urlopen(request_obj, timeout=10) as response:
-        payload = json.loads(response.read().decode("utf-8"))
-    if payload.get("status") != "success":
-        raise RuntimeError(payload.get("error") or "Prometheus query failed.")
-    result = payload.get("data", {}).get("result") or []
-    return result if isinstance(result, list) else []
+    last_error: Exception | None = None
+    encoded_query = urllib.parse.quote(query, safe="")
+
+    for base_url in build_prometheus_base_url_candidates():
+        request_url = f"{base_url}/api/v1/query?query={encoded_query}"
+        request_obj = urllib.request.Request(
+            request_url,
+            headers={"User-Agent": "HABA-Production-Monitor/1.0"},
+        )
+        try:
+            with urllib.request.urlopen(request_obj, timeout=10) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            if payload.get("status") != "success":
+                raise RuntimeError(payload.get("error") or "Prometheus query failed.")
+            result = payload.get("data", {}).get("result") or []
+            return result if isinstance(result, list) else []
+        except Exception as exc:
+            last_error = exc
+
+    raise RuntimeError(f"Prometheus query failed for all configured endpoints: {last_error}")
 
 
 def escape_prometheus_label_matcher(value: str) -> str:

@@ -94,10 +94,12 @@ BACKGROUND_SYNC_ENABLED = os.getenv("BACKGROUND_SYNC_ENABLED", "1") != "0"
 BACKGROUND_SYNC_INTERVAL_SECONDS = max(int(os.getenv("BACKGROUND_SYNC_INTERVAL_SECONDS", "3")), 1)
 SNAPSHOT_FRESHNESS_SECONDS = max(int(os.getenv("SNAPSHOT_FRESHNESS_SECONDS", "3")), 1)
 ABKANT_IDLE_STAGNATION_SECONDS = max(int(os.getenv("ABKANT_IDLE_STAGNATION_SECONDS", "600")), 60)
+OPERATOR_CACHE_SECONDS = max(int(os.getenv("OPERATOR_CACHE_SECONDS", "20")), 3)
 _background_sync_started = False
 RUNTIME_VALUE_UNCHANGED = object()
 PROMETHEUS_BASE_URL = (os.getenv("PROMETHEUS_BASE_URL", "http://localhost:9090") or "http://localhost:9090").rstrip("/")
 UNKNOWN_OPERATOR_LABEL = "Fara operator la salvare"
+_operator_snapshot_cache: dict[int, dict] = {}
 
 if pytesseract is not None:  # pragma: no cover - runtime environment specific
     windows_tesseract = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
@@ -1474,6 +1476,10 @@ def fetch_current_operator(workcenter_id: int | None) -> dict:
     if workcenter_id is None:
         return payload
 
+    cached_snapshot = _operator_snapshot_cache.get(workcenter_id)
+    if cached_snapshot and (time_module.time() - cached_snapshot["cached_at"]) < OPERATOR_CACHE_SECONDS:
+        return json.loads(json.dumps(cached_snapshot["payload"], ensure_ascii=False))
+
     try:
         with get_pontaj_connection() as connection:
             cursor = connection.cursor()
@@ -1567,6 +1573,10 @@ def fetch_current_operator(workcenter_id: int | None) -> dict:
         payload["message"] = "Nu exista operator activ pe acest workcenter. Afisez operatorii asociati istoric."
     elif not merged_operators:
         payload["message"] = "Nu exista operatori cunoscuti pentru acest workcenter."
+    _operator_snapshot_cache[workcenter_id] = {
+        "cached_at": time_module.time(),
+        "payload": payload,
+    }
     return payload
 
 
@@ -1955,6 +1965,29 @@ def build_prometheus_operator_summaries() -> list[dict]:
     periods = ("day", "week", "month")
     operator_map: dict[str, dict] = {}
 
+    for series in fetch_prometheus_vector(
+        'count by (operator_id, operator_name, machine_label) (max_over_time(haba_saved_cycle_completed[3650d]))'
+    ):
+        labels = series.get("metric") or {}
+        operator_name = labels.get("operator_name") or UNKNOWN_OPERATOR_LABEL
+        employee_id = labels.get("operator_id") or ""
+        operator_id = employee_id or f"name:{operator_name}"
+        operator_entry = operator_map.setdefault(
+            operator_id,
+            {
+                "operator_id": operator_id,
+                "employee_id": employee_id,
+                "operator_name": operator_name,
+                "machines": set(),
+                "day": {},
+                "week": {},
+                "month": {},
+            },
+        )
+        machine_label = labels.get("machine_label") or ""
+        if machine_label:
+            operator_entry["machines"].add(machine_label)
+
     for period in periods:
         period_range = prometheus_period_range(period)
         query_map = {
@@ -1978,6 +2011,7 @@ def build_prometheus_operator_summaries() -> list[dict]:
                         "operator_id": operator_id,
                         "employee_id": employee_id,
                         "operator_name": operator_name,
+                        "machines": set(),
                         "day": {},
                         "week": {},
                         "month": {},
@@ -2005,6 +2039,7 @@ def build_prometheus_operator_summaries() -> list[dict]:
                 label_key = f"{field_name}_label"
                 target_period.setdefault(seconds_key, 0)
                 target_period.setdefault(label_key, format_seconds(0))
+        operator_entry["machines"] = sorted(operator_entry.get("machines") or [])
         output.append(operator_entry)
 
     output.sort(

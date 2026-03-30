@@ -13,6 +13,7 @@ const state = {
     savedPeriod: window.localStorage.getItem("savedPeriod") || "all",
     savedOperatorId: window.localStorage.getItem("savedOperatorId") || "",
     workcenterFeedback: null,
+    lastSavedRefreshMs: 0,
     lastStatsSnapshot: null,
     lastStatsSyncMs: 0,
     renderedFeedsSignature: "",
@@ -143,6 +144,10 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     window.setInterval(() => {
         if (state.currentView === "saved") {
+            const now = Date.now();
+            if (now - state.lastSavedRefreshMs < 15000) {
+                return;
+            }
             loadSavedRecords();
             return;
         }
@@ -328,6 +333,7 @@ async function loadSavedRecords() {
         state.savedRecords = payload;
         state.savedPeriod = payload.period || state.savedPeriod;
         state.savedOperatorId = payload.selected_operator_id || state.savedOperatorId || "";
+        state.lastSavedRefreshMs = Date.now();
         state.currentView = "saved";
         window.localStorage.setItem("currentView", "saved");
         window.localStorage.setItem("savedPeriod", state.savedPeriod);
@@ -510,7 +516,7 @@ function renderMachineSelector(machines) {
     const machineButtons = machines
         .map((machine) => `
             <button
-                class="machine-tab ${machine.is_selected ? "is-selected" : ""}"
+                class="machine-tab ${state.currentView === "dashboard" && machine.key === state.selectedMachineKey ? "is-selected" : ""}"
                 data-machine-key="${machine.key}"
                 data-view="dashboard"
                 type="button"
@@ -951,6 +957,7 @@ function renderSavedSummary(payload, periodMeta) {
                         <small>Operator</small>
                         <strong>${item.operator_name}</strong>
                         <small>${item.employee_id ? `ID angajat ${item.employee_id}` : "ID angajat indisponibil"}</small>
+                        <small>${item.machines?.length ? `Utilaj: ${item.machines.join(", ")}` : "Utilaj: necunoscut"}</small>
                         <p>${day.records_count} ${unitLabels.plural} azi, ${week.records_count} saptamana, ${month.records_count} luna</p>
                         <div class="saved-operator-periods">
                             <div class="saved-operator-period">
@@ -1019,6 +1026,7 @@ function renderSavedReports(payload, period, periodMeta) {
                 <small>Operator selectat</small>
                 <strong>${selectedOperator.operator_name}</strong>
                 <small>${selectedOperator.employee_id ? `ID angajat ${selectedOperator.employee_id}` : "ID angajat indisponibil"}</small>
+                <small>${selectedOperator.machines?.length ? `Utilaj: ${selectedOperator.machines.join(", ")}` : "Utilaj: necunoscut"}</small>
                 <p>${periodMeta.reportCardText}</p>
                 <div class="saved-report-metrics">
                     <span>${periodStats.records_count} ${unitLabels.plural} finalizate</span>

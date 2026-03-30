@@ -91,7 +91,9 @@ DEFAULT_MACHINE_KEY = "laser1"
 MANUAL_SOURCE_PREFIX = "manual"
 OCR_AVAILABLE = cv2 is not None and np is not None and pytesseract is not None
 BACKGROUND_SYNC_ENABLED = os.getenv("BACKGROUND_SYNC_ENABLED", "1") != "0"
-BACKGROUND_SYNC_INTERVAL_SECONDS = max(int(os.getenv("BACKGROUND_SYNC_INTERVAL_SECONDS", "10")), 3)
+BACKGROUND_SYNC_INTERVAL_SECONDS = max(int(os.getenv("BACKGROUND_SYNC_INTERVAL_SECONDS", "3")), 1)
+SNAPSHOT_FRESHNESS_SECONDS = max(int(os.getenv("SNAPSHOT_FRESHNESS_SECONDS", "3")), 1)
+ABKANT_IDLE_STAGNATION_SECONDS = max(int(os.getenv("ABKANT_IDLE_STAGNATION_SECONDS", "600")), 60)
 _background_sync_started = False
 RUNTIME_VALUE_UNCHANGED = object()
 PROMETHEUS_BASE_URL = (os.getenv("PROMETHEUS_BASE_URL", "http://localhost:9090") or "http://localhost:9090").rstrip("/")
@@ -343,6 +345,7 @@ MACHINE_STATE_OVERRIDES = {
 }
 
 LASER_OCR_ZONES = {
+    "top_banner": (0, 40, 1280, 110),
     "right_panel": (620, 170, 620, 550),
     "left_panel": (0, 170, 620, 260),
 }
@@ -807,6 +810,31 @@ def extract_material(text: str) -> str:
     return ""
 
 
+def detect_laser_warning(image) -> str:
+    if not OCR_AVAILABLE or image is None:
+        return ""
+
+    x, y, width, height = LASER_OCR_ZONES["top_banner"]
+    crop = image[y : y + height, x : x + width]
+    if crop.size == 0:
+        return ""
+
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    yellow_mask = cv2.inRange(hsv, np.array([10, 70, 120]), np.array([40, 255, 255]))
+    yellow_ratio = float(cv2.countNonZero(yellow_mask)) / float(yellow_mask.size)
+    if yellow_ratio < 0.08:
+        return ""
+
+    warning_text = read_ocr_block(image, LASER_OCR_ZONES["top_banner"], psm=6)
+    if not warning_text:
+        return ""
+
+    normalized_warning = clean_ocr_text(warning_text)
+    if len(normalized_warning) < 6:
+        return ""
+    return normalized_warning
+
+
 def get_abkant_pg_connection_settings() -> dict[str, str | int]:
     return {
         "host": os.getenv("ABKANT_PG_HOST", "192.168.2.130"),
@@ -847,13 +875,24 @@ def fetch_abkant_postgres_snapshot() -> dict | None:
 
             cursor.execute(
                 """
-                SELECT datacolectare, programidentificat, numar_bucati, nr_bucati
+                SELECT datacolectare, programidentificat, numar_bucati, faraschimbare, nr_bucati
                 FROM raportare_abkant
                 ORDER BY id DESC
                 LIMIT 1
                 """
             )
             latest_row = cursor.fetchone()
+
+            cursor.execute(
+                """
+                SELECT datacolectare
+                FROM raportare_abkant
+                WHERE faraschimbare = TRUE
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            )
+            last_changed_row = cursor.fetchone()
             cursor.close()
     except Exception as exc:
         return {
@@ -866,8 +905,14 @@ def fetch_abkant_postgres_snapshot() -> dict | None:
     machine_on = bool(parameter_row[0]) if parameter_row is not None else False
     active_program = (latest_row[1] or "").strip() if latest_row else ""
     pieces_text = (latest_row[2] or "").strip() if latest_row and latest_row[2] is not None else ""
-    produced_pieces_raw = latest_row[3] if latest_row and latest_row[3] is not None else None
+    produced_pieces_raw = latest_row[4] if latest_row and latest_row[4] is not None else None
     collected_at = latest_row[0].isoformat(sep=" ", timespec="seconds") if latest_row and latest_row[0] else None
+    last_changed_at = last_changed_row[0] if last_changed_row and last_changed_row[0] else (latest_row[0] if latest_row and latest_row[0] else None)
+    stagnation_seconds = (
+        max(int((now_local() - last_changed_at.replace(tzinfo=None) if getattr(last_changed_at, "tzinfo", None) else now_local() - last_changed_at).total_seconds()), 0)
+        if last_changed_at
+        else 0
+    )
 
     produced_pieces = None
     if produced_pieces_raw is not None:
@@ -907,9 +952,8 @@ def fetch_abkant_postgres_snapshot() -> dict | None:
     idle = bool(
         machine_on
         and active_program
-        and has_piece_counters
-        and pieces_done == 0
-        and (total_pieces or 0) > 0
+        and not bend_change
+        and stagnation_seconds >= ABKANT_IDLE_STAGNATION_SECONDS
     )
     bending_active = bool(
         machine_on
@@ -922,6 +966,8 @@ def fetch_abkant_postgres_snapshot() -> dict | None:
 
     if bend_change:
         program_status = "Bend change"
+    elif idle:
+        program_status = "Idle"
     elif bending_active:
         program_status = "Bending active"
     elif machine_on:
@@ -934,6 +980,7 @@ def fetch_abkant_postgres_snapshot() -> dict | None:
         "connected": True,
         "source": "postgres-fallback",
         "endpoint": get_abkant_pg_connection_settings()["host"],
+        "captured_at": now_local().isoformat(timespec="seconds"),
         "machine_mode": "abkant",
         "selected_program": active_program or "Necitit",
         "active_program": active_program or "Necitit",
@@ -942,6 +989,7 @@ def fetch_abkant_postgres_snapshot() -> dict | None:
         "pieces_label": pieces_label or "n/a",
         "produced_pieces": produced_pieces,
         "total_pieces": total_pieces,
+        "stagnation_seconds": stagnation_seconds,
         "derived_signals": {
             "machine_on": machine_on,
             "cutting_active": bending_active,
@@ -950,7 +998,8 @@ def fetch_abkant_postgres_snapshot() -> dict | None:
         },
         "message": (
             f"Abkant citit din PostgreSQL. Ultima colectare: {collected_at or 'necunoscuta'}. "
-            f"Program: {active_program or 'necunoscut'}. Piese: {pieces_label or 'n/a'}."
+            f"Program: {active_program or 'necunoscut'}. Piese: {pieces_label or 'n/a'}. "
+            f"Fara schimbare de {format_seconds(stagnation_seconds)}."
         ),
     }
 
@@ -997,6 +1046,7 @@ def analyze_laser_live_snapshot(machine_key: str) -> dict | None:
     active_program = extract_section_token(right_panel_text, "Active program", "NC blocks")
     material = extract_material(left_panel_text)
     program_status = extract_program_status(*right_panel_variants)
+    warning_message = detect_laser_warning(image)
 
     normalized_status = program_status.upper()
     normalized_active_program = active_program.upper()
@@ -1010,17 +1060,22 @@ def analyze_laser_live_snapshot(machine_key: str) -> dict | None:
         "connected": True,
         "source": "live-ocr",
         "endpoint": endpoint,
+        "captured_at": now_local().isoformat(timespec="seconds"),
         "selected_program": selected_program or "Necitit",
         "active_program": active_program or "Necitit",
         "material": material or "Necitit",
         "program_status": program_status or "Necitit",
+        "warning_message": warning_message,
         "derived_signals": {
             "machine_on": machine_on,
             "cutting_active": cutting_active,
             "table_change": table_change,
             "idle": idle,
         },
-        "message": "Stare derivata din OCR pe panourile din stanga si dreapta ale ecranului laser.",
+        "message": (
+            "Stare derivata din OCR pe panourile din stanga si dreapta ale ecranului laser."
+            + (f" Banner galben detectat: {warning_message}." if warning_message else "")
+        ),
     }
 
 
@@ -1036,6 +1091,7 @@ def analyze_abkant_live_snapshot(machine_key: str) -> dict | None:
         "connected": reachable,
         "source": "feed-script",
         "endpoint": endpoint,
+        "captured_at": now_local().isoformat(timespec="seconds"),
         "machine_mode": "abkant",
         "selected_program": "n/a",
         "active_program": "Abkant/ProgramActiv",
@@ -1436,35 +1492,81 @@ def fetch_current_operator(workcenter_id: int | None) -> dict:
                 """,
                 (workcenter_id,),
             )
-            rows = cursor.fetchall()
+            active_rows = cursor.fetchall()
+
+            cursor.execute(
+                """
+                SELECT TOP 25
+                    A.ID,
+                    A.Nume,
+                    A.Prenume,
+                    MAX(CAST(P.Data AS datetime) + CAST(P.OraCheckIn AS datetime)) AS UltimulPontaj
+                FROM PontajWorkCenter P
+                INNER JOIN Angajati A ON P.ID = A.ID
+                WHERE P.WorkCenterID = ?
+                GROUP BY A.ID, A.Nume, A.Prenume
+                ORDER BY UltimulPontaj DESC
+                """,
+                (workcenter_id,),
+            )
+            related_rows = cursor.fetchall()
             cursor.close()
     except Exception as exc:  # pragma: no cover - depends on networked SQL Server
         payload["status"] = "error"
         payload["message"] = str(exc)
         return payload
 
-    operators = []
-    for row in rows:
+    active_operators = []
+    for row in active_rows:
         first_name = (row[1] or "").strip()
         last_name = (row[2] or "").strip()
         full_name = f"{first_name} {last_name}".strip()
         check_in = None
         if row[3] is not None and row[4] is not None:
             check_in = f"{row[3]} {row[4]}"
-        operators.append(
+        active_operators.append(
             {
                 "employee_id": str(row[0]),
                 "full_name": full_name or f"Angajat {row[0]}",
                 "check_in": check_in,
+                "is_active": True,
+                "last_seen": check_in,
             }
         )
 
+    related_operators = []
+    for row in related_rows:
+        first_name = (row[1] or "").strip()
+        last_name = (row[2] or "").strip()
+        full_name = f"{first_name} {last_name}".strip()
+        last_seen = row[3].isoformat(sep=" ", timespec="seconds") if row[3] is not None else None
+        related_operators.append(
+            {
+                "employee_id": str(row[0]),
+                "full_name": full_name or f"Angajat {row[0]}",
+                "check_in": None,
+                "is_active": False,
+                "last_seen": last_seen,
+            }
+        )
+
+    merged_operators: list[dict] = []
+    seen_employee_ids: set[str] = set()
+    for operator in active_operators + related_operators:
+        employee_id = operator["employee_id"]
+        if employee_id in seen_employee_ids:
+            continue
+        seen_employee_ids.add(employee_id)
+        merged_operators.append(operator)
+
     payload["status"] = "connected"
     payload["message"] = "Pontaj online."
-    payload["operators"] = operators
-    payload["primary_operator"] = operators[0] if operators else None
-    if not operators:
-        payload["message"] = "Nu exista operator activ pe acest workcenter."
+    payload["operators"] = merged_operators
+    payload["primary_operator"] = active_operators[0] if active_operators else None
+    if not active_operators and merged_operators:
+        payload["message"] = "Nu exista operator activ pe acest workcenter. Afisez operatorii asociati istoric."
+    elif not merged_operators:
+        payload["message"] = "Nu exista operatori cunoscuti pentru acest workcenter."
     return payload
 
 
@@ -3111,6 +3213,22 @@ def snapshot_differs_from_current_signals(
     return False
 
 
+def snapshot_is_stale(snapshot: dict | None, max_age_seconds: int = SNAPSHOT_FRESHNESS_SECONDS) -> bool:
+    if not snapshot:
+        return True
+
+    captured_at_raw = snapshot.get("captured_at")
+    if not captured_at_raw:
+        return True
+
+    try:
+        captured_at = parse_timestamp(captured_at_raw)
+    except Exception:
+        return True
+
+    return (now_local() - captured_at).total_seconds() >= max_age_seconds
+
+
 def build_dashboard_payload(machine_key: str = DEFAULT_MACHINE_KEY) -> dict:
     machine_key = ensure_machine_key(machine_key)
     machine_profile = get_machine_profile(machine_key)
@@ -3118,7 +3236,11 @@ def build_dashboard_payload(machine_key: str = DEFAULT_MACHINE_KEY) -> dict:
         runtime = get_machine_runtime(machine_key)
         live_extraction = runtime.get("last_snapshot")
         current_signals = fetch_current_signals(machine_key)
-        if live_extraction is None or snapshot_differs_from_current_signals(live_extraction, current_signals):
+        if (
+            live_extraction is None
+            or snapshot_is_stale(live_extraction)
+            or snapshot_differs_from_current_signals(live_extraction, current_signals)
+        ):
             live_extraction = sync_machine_events_from_live_snapshot(machine_key)
             current_signals = fetch_current_signals(machine_key)
     else:

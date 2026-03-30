@@ -147,7 +147,7 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
         }
         loadDashboard(state.selectedMachineKey);
-    }, 10000);
+    }, 3000);
 });
 
 function initThemeToggle() {
@@ -625,18 +625,28 @@ function renderOperator(operatorSnapshot) {
                 <small>${operator.check_in ? `Check-in: ${operator.check_in}` : "Check-in necunoscut"}</small>
             </div>
         `;
+    } else if (operatorSnapshot.operators?.length) {
+        const operator = operatorSnapshot.operators[0];
+        primaryContainer.innerHTML = `
+            <div class="operator-primary-item">
+                <small>Ultimul operator cunoscut pe workcenter</small>
+                <strong>${operator.full_name}</strong>
+                <p>ID angajat: ${operator.employee_id}</p>
+                <small>${operator.last_seen ? `Ultimul pontaj: ${operator.last_seen}` : "Ultimul pontaj necunoscut"}</small>
+            </div>
+        `;
     } else {
         primaryContainer.innerHTML = `
             <p class="empty-state">Nu exista operator activ pentru workcenterul configurat.</p>
         `;
     }
 
-    operatorSnapshot.operators.slice(1).forEach((operator) => {
+    operatorSnapshot.operators.slice(operatorSnapshot.primary_operator ? 1 : 0).forEach((operator) => {
         const pill = document.createElement("div");
         pill.className = "operator-pill";
         pill.innerHTML = `
             <p>${operator.full_name}</p>
-            <small>ID ${operator.employee_id}</small>
+            <small>ID ${operator.employee_id}${operator.is_active ? " | activ acum" : operator.last_seen ? ` | ultim pontaj ${operator.last_seen}` : ""}</small>
         `;
         listContainer.appendChild(pill);
     });
@@ -1021,11 +1031,12 @@ function renderSavedReports(payload, period, periodMeta) {
             </article>
             <article class="saved-report-card">
                 <small>Sursa</small>
-                <strong>${payload.data_source === "prometheus" ? "Prometheus" : "SQLite"}</strong>
+                <strong>${payload.data_source === "prometheus" ? "Prometheus" : "Istoric salvat"}</strong>
                 <p>Datele salvate se citesc din seria istorica de ${unitLabels.plural} finalizate, nu dintr-un calcul live din browser.</p>
                 <div class="saved-report-metrics">
                     <span>Fiecare ${unitLabels.singular} se inchide dupa terminarea table change.</span>
                     <span>Machine OFF nu intra in randamentul ${unitLabels.singular}.</span>
+                    <span>${payload.data_source === "prometheus" ? "Prometheus raspunde direct pentru istoric." : "Exportul Prometheus ramane activ; istoricul afisat vine din cache-ul salvat al aplicatiei."}</span>
                     <span>Zi, saptamana si luna folosesc media ${unitLabels.plural} finalizate in perioada respectiva.</span>
                 </div>
             </article>

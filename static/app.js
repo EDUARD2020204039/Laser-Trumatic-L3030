@@ -892,6 +892,20 @@ function getSavedUnitLabels(operatorEntry) {
     };
 }
 
+function getSavedUnitLabelsForMachine(machineKey) {
+    if (machineKey === "abkant") {
+        return {
+            plural: "piese",
+            singular: "piesa"
+        };
+    }
+
+    return {
+        plural: "foi",
+        singular: "foaie"
+    };
+}
+
 function getSelectedSavedOperator(payload) {
     const operators = payload?.operators || [];
     if (!operators.length) {
@@ -1136,19 +1150,91 @@ function renderSavedRecords(records, periodMeta) {
         return;
     }
 
-    container.innerHTML = records
+    const groupedRecords = new Map();
+    records.forEach((record) => {
+        const groupKey = `${record.machine_key}::${record.selected_program}`;
+        const unitLabels = getSavedUnitLabelsForMachine(record.machine_key);
+        const existing = groupedRecords.get(groupKey) || {
+            id: record.id,
+            machine_key: record.machine_key,
+            machine_label: record.machine_label,
+            selected_program: record.selected_program,
+            active_programs: new Set(),
+            materials: new Set(),
+            operators: new Set(),
+            activity_label: record.activity_label,
+            change_label: record.change_label,
+            records_count: 0,
+            machine_on_duration_seconds: 0,
+            cycle_duration_seconds: 0,
+            idle_duration_seconds: 0,
+            table_change_duration_seconds: 0,
+            cutting_started_at: null,
+            table_change_started_at: null,
+            table_change_ended_at: null,
+            program_statuses: new Set(),
+            unitLabels
+        };
+
+        existing.records_count += 1;
+        existing.machine_on_duration_seconds += Number(record.machine_on_duration_seconds || 0);
+        existing.cycle_duration_seconds += Number(record.cycle_duration_seconds || 0);
+        existing.idle_duration_seconds += Number(record.idle_duration_seconds || 0);
+        existing.table_change_duration_seconds += Number(record.table_change_duration_seconds || 0);
+        existing.active_programs.add(record.active_program || "Necitit");
+        existing.materials.add(record.material || "Necitit");
+        existing.operators.add(record.operator_name || "Fara operator la salvare");
+        existing.program_statuses.add(record.program_status || "Necitit");
+
+        if (record.cutting_started_at && (!existing.cutting_started_at || new Date(record.cutting_started_at) < new Date(existing.cutting_started_at))) {
+            existing.cutting_started_at = record.cutting_started_at;
+        }
+
+        if (record.table_change_started_at && (!existing.table_change_started_at || new Date(record.table_change_started_at) < new Date(existing.table_change_started_at))) {
+            existing.table_change_started_at = record.table_change_started_at;
+        }
+
+        const currentEnd = record.table_change_ended_at || record.created_at;
+        if (currentEnd && (!existing.table_change_ended_at || new Date(currentEnd) > new Date(existing.table_change_ended_at))) {
+            existing.table_change_ended_at = currentEnd;
+        }
+
+        groupedRecords.set(groupKey, existing);
+    });
+
+    const aggregatedRecords = Array.from(groupedRecords.values())
+        .map((record) => {
+            const efficiencyPercent = record.machine_on_duration_seconds > 0
+                ? roundToOneDecimal((record.cycle_duration_seconds / record.machine_on_duration_seconds) * 100)
+                : 0;
+            return {
+                ...record,
+                operator_name: record.operators.size === 1 ? Array.from(record.operators)[0] : "Mai multi operatori",
+                active_program: record.active_programs.size === 1 ? Array.from(record.active_programs)[0] : "Mixt",
+                material: record.materials.size === 1 ? Array.from(record.materials)[0] : "Mixt",
+                program_status: record.program_statuses.size === 1 ? Array.from(record.program_statuses)[0] : "Status mixt",
+                efficiency_percent: efficiencyPercent,
+                machine_on_duration_label: formatSeconds(record.machine_on_duration_seconds),
+                cycle_duration_label: formatSeconds(record.cycle_duration_seconds),
+                idle_duration_label: formatSeconds(record.idle_duration_seconds),
+                table_change_duration_label: formatSeconds(record.table_change_duration_seconds)
+            };
+        })
+        .sort((left, right) => new Date(right.table_change_ended_at || 0) - new Date(left.table_change_ended_at || 0));
+
+    container.innerHTML = aggregatedRecords
         .map((record) => `
             <article class="saved-record-card">
                 <div class="saved-record-top">
                     <div>
                         <small>${record.machine_label}</small>
                         <strong>${record.selected_program}</strong>
-                        <small>${record.table_change_ended_at ? `Finalizat: ${formatDateTime(record.table_change_ended_at)}` : ""}</small>
+                        <small>${record.records_count} ${record.unitLabels.plural} pe acelasi program</small>
                     </div>
                     <div class="saved-record-meta">
                         <small>${record.operator_name}</small>
                         <strong>${roundToOneDecimal(record.efficiency_percent || 0)}%</strong>
-                        <small>${record.machine_key === "abkant" ? "Randament piesa" : "Randament foaie"}</small>
+                        <small>Randament program</small>
                     </div>
                 </div>
                 <div class="saved-record-grid">
@@ -1177,11 +1263,11 @@ function renderSavedRecords(records, periodMeta) {
                         <strong>${record.idle_duration_label || "00:00:00"}</strong>
                     </div>
                     <div>
-                        <span>${record.change_label || "Schimb masa"}</span>
-                        <strong>${formatDateTime(record.table_change_started_at)}</strong>
+                        <span>Primul ${record.change_label?.toLowerCase() || "schimb masa"}</span>
+                        <strong>${record.table_change_started_at ? formatDateTime(record.table_change_started_at) : "Necunoscut"}</strong>
                     </div>
                     <div>
-                        <span>Final ${record.change_label?.toLowerCase() || "schimb masa"}</span>
+                        <span>Ultimul ${record.change_label?.toLowerCase() || "schimb masa"}</span>
                         <strong>${record.table_change_ended_at ? formatDateTime(record.table_change_ended_at) : "In lucru"}</strong>
                     </div>
                     <div>
@@ -1190,7 +1276,7 @@ function renderSavedRecords(records, periodMeta) {
                     </div>
                 </div>
                 <p class="saved-record-note">
-                    Status la salvare: ${record.program_status}. Operator: ${record.operator_name}. Foaia a fost inchisa la final de ${record.change_label?.toLowerCase() || "table change"}.
+                    Status la salvare: ${record.program_status}. Operator: ${record.operator_name}. Agregat din ${record.records_count} ${record.unitLabels.plural} pentru programul ${record.selected_program}.
                 </p>
             </article>
         `)

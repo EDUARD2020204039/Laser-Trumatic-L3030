@@ -95,6 +95,7 @@ BACKGROUND_SYNC_INTERVAL_SECONDS = max(int(os.getenv("BACKGROUND_SYNC_INTERVAL_S
 _background_sync_started = False
 RUNTIME_VALUE_UNCHANGED = object()
 PROMETHEUS_BASE_URL = (os.getenv("PROMETHEUS_BASE_URL", "http://localhost:9090") or "http://localhost:9090").rstrip("/")
+UNKNOWN_OPERATOR_LABEL = "Fara operator la salvare"
 
 if pytesseract is not None:  # pragma: no cover - runtime environment specific
     windows_tesseract = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
@@ -1609,7 +1610,7 @@ def format_saved_cycle_row(row: sqlite3.Row) -> dict:
         "machine_label": MACHINE_DEFINITIONS.get(machine_key, {}).get("label", machine_key),
         "workcenter_id": row["workcenter_id"],
         "operator_id": row["operator_id"],
-        "operator_name": row["operator_name"] or "Operator necunoscut",
+        "operator_name": row["operator_name"] or UNKNOWN_OPERATOR_LABEL,
         "selected_program": row["selected_program"] or "Necitit",
         "active_program": row["active_program"] or "Necitit",
         "material": row["material"] or "Necitit",
@@ -1866,7 +1867,7 @@ def build_prometheus_operator_summaries() -> list[dict]:
         for field_name, query in query_map.items():
             for series in fetch_prometheus_vector(query):
                 labels = series.get("metric") or {}
-                operator_name = labels.get("operator_name") or "Operator necunoscut"
+                operator_name = labels.get("operator_name") or UNKNOWN_OPERATOR_LABEL
                 employee_id = labels.get("operator_id") or ""
                 operator_id = employee_id or f"name:{operator_name}"
                 operator_entry = operator_map.setdefault(
@@ -1936,7 +1937,7 @@ def build_prometheus_saved_records(period: str, operator_id: str | None = None) 
             "machine_label": labels.get("machine_label") or labels.get("machine_key") or "",
             "workcenter_id": parse_optional_int(labels.get("workcenter_id")),
             "operator_id": labels.get("operator_id") or "",
-            "operator_name": labels.get("operator_name") or "Operator necunoscut",
+            "operator_name": labels.get("operator_name") or UNKNOWN_OPERATOR_LABEL,
             "selected_program": labels.get("selected_program") or "Necitit",
             "active_program": labels.get("active_program") or labels.get("selected_program") or "Necitit",
             "material": labels.get("material") or "Necitit",
@@ -2010,7 +2011,7 @@ def build_operator_entry(operator_id: str, employee_id: str, operator_name: str)
     return {
         "operator_id": operator_id,
         "employee_id": employee_id,
-        "operator_name": operator_name or "Operator necunoscut",
+        "operator_name": operator_name or UNKNOWN_OPERATOR_LABEL,
         "machines": set(),
         "day": build_empty_operator_period_bucket(),
         "week": build_empty_operator_period_bucket(),
@@ -2024,7 +2025,7 @@ def build_workcenter_operator_summaries() -> list[dict]:
         operator_snapshot = fetch_current_operator(machine_profile.get("workcenter_id"))
         for operator in operator_snapshot.get("operators", []):
             employee_id = str(operator.get("employee_id") or "").strip()
-            operator_name = (operator.get("full_name") or "Operator necunoscut").strip()
+            operator_name = (operator.get("full_name") or UNKNOWN_OPERATOR_LABEL).strip()
             operator_id = employee_id or f"name:{operator_name}"
             operator_entry = operator_map.setdefault(
                 operator_id,
@@ -2051,7 +2052,7 @@ def merge_operator_seed_entries(base_entries: list[dict], seed_entries: list[dic
                 build_operator_entry(
                     operator_id,
                     entry.get("employee_id", ""),
-                    entry.get("operator_name", "Operator necunoscut"),
+                    entry.get("operator_name", UNKNOWN_OPERATOR_LABEL),
                 ),
             )
             if entry.get("employee_id") and not target.get("employee_id"):
@@ -2063,7 +2064,7 @@ def merge_operator_seed_entries(base_entries: list[dict], seed_entries: list[dic
 def apply_records_to_operator_period(operator_map: dict[str, dict], period_key: str, records: list[dict]) -> None:
     grouped: dict[str, list[dict]] = {}
     for record in records:
-        operator_name = record.get("operator_name") or "Operator necunoscut"
+        operator_name = record.get("operator_name") or UNKNOWN_OPERATOR_LABEL
         employee_id = str(record.get("operator_id") or "").strip()
         operator_id = employee_id or f"name:{operator_name}"
         grouped.setdefault(operator_id, []).append(record)
@@ -2134,7 +2135,7 @@ def filter_records_by_operator(records: list[dict], operator_id: str | None) -> 
     filtered = []
     for record in records:
         record_operator_id = str(record.get("operator_id") or "").strip()
-        record_operator_name = record.get("operator_name") or "Operator necunoscut"
+        record_operator_name = record.get("operator_name") or UNKNOWN_OPERATOR_LABEL
         resolved_operator_id = record_operator_id or f"name:{record_operator_name}"
         if resolved_operator_id == operator_id:
             filtered.append(record)

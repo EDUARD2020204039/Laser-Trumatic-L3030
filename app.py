@@ -2256,6 +2256,23 @@ def merge_operator_seed_entries(base_entries: list[dict], seed_entries: list[dic
     return list(merged.values())
 
 
+def finalize_operator_entries(operator_entries: list[dict]) -> list[dict]:
+    output: list[dict] = []
+    for entry in operator_entries:
+        normalized_entry = clone_operator_entry(entry)
+        normalized_entry["machines"] = sorted(machine for machine in normalized_entry["machines"] if machine)
+        output.append(normalized_entry)
+
+    output.sort(
+        key=lambda item: (
+            -int(item["day"].get("records_count", 0)),
+            -float(item["week"].get("efficiency_percent", 0.0)),
+            item["operator_name"],
+        )
+    )
+    return output
+
+
 def apply_records_to_operator_period(operator_map: dict[str, dict], period_key: str, records: list[dict]) -> None:
     grouped: dict[str, list[dict]] = {}
     for record in records:
@@ -2384,9 +2401,11 @@ def build_saved_cycles_payload(machine_key: str | None = None, period: str = "al
     normalized_period = resolve_saved_period(period)
     operator_id = (request.args.get("operator_id") or "").strip() or None
     try:
-        operators = merge_operator_seed_entries(
-            build_prometheus_operator_summaries(),
-            build_workcenter_operator_summaries(),
+        operators = finalize_operator_entries(
+            merge_operator_seed_entries(
+                build_prometheus_operator_summaries(),
+                build_workcenter_operator_summaries(),
+            )
         )
         selected_operator_id = resolve_selected_operator_id(operator_id, operators)
         records = build_prometheus_saved_records(normalized_period, operator_id=selected_operator_id)

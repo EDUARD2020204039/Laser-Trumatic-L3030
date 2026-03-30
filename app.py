@@ -2279,6 +2279,24 @@ def filter_records_by_operator(records: list[dict], operator_id: str | None) -> 
     return filtered
 
 
+def resolve_selected_operator_id(
+    requested_operator_id: str | None,
+    operators: list[dict],
+) -> str | None:
+    if not operators:
+        return None
+
+    if requested_operator_id:
+        available_operator_ids = {
+            str(entry.get("operator_id") or "").strip()
+            for entry in operators
+        }
+        if requested_operator_id in available_operator_ids:
+            return requested_operator_id
+
+    return operators[0]["operator_id"]
+
+
 def resolve_saved_period(period: str | None) -> str:
     candidate = (period or "all").strip().lower()
     if candidate not in {"all", "day", "week", "month"}:
@@ -2309,7 +2327,7 @@ def build_saved_cycles_payload(machine_key: str | None = None, period: str = "al
     operator_id = (request.args.get("operator_id") or "").strip() or None
     try:
         operators = build_prometheus_operator_summaries()
-        selected_operator_id = operator_id or (operators[0]["operator_id"] if operators else None)
+        selected_operator_id = resolve_selected_operator_id(operator_id, operators)
         records = build_prometheus_saved_records(normalized_period, operator_id=selected_operator_id)
         if operators:
             return {
@@ -2328,7 +2346,7 @@ def build_saved_cycles_payload(machine_key: str | None = None, period: str = "al
 
     records = fetch_saved_cycles_for_period(machine_key=machine_key, period=normalized_period)
     operators = build_sqlite_operator_summaries(machine_key=machine_key)
-    selected_operator_id = operator_id or (operators[0]["operator_id"] if operators else None)
+    selected_operator_id = resolve_selected_operator_id(operator_id, operators)
     filtered_records = filter_records_by_operator(records, selected_operator_id)
     return {
         "view": "saved",

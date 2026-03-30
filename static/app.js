@@ -137,9 +137,12 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     bindActions();
+    renderMachineSelector(window.appConfig.initialMachines || []);
     if (state.currentView === "saved") {
+        prepareSavedViewLoadingState();
         loadSavedRecords();
     } else {
+        syncSectionVisibility("dashboard");
         loadDashboard(state.selectedMachineKey);
     }
     window.setInterval(() => {
@@ -185,6 +188,24 @@ function initThemeToggle() {
             window.localStorage.setItem("theme", "dark");
         }
     });
+}
+
+function prepareSavedViewLoadingState() {
+    const periodMeta = getSavedPeriodMeta(state.savedPeriod);
+    syncSectionVisibility("saved");
+    renderSavedHeader(
+        {
+            period: state.savedPeriod,
+            records_count: 0,
+            data_source: "loading"
+        },
+        periodMeta
+    );
+    renderSavedFilters(state.savedPeriod);
+    document.getElementById("saved-summary").innerHTML = `<p class="empty-state">Se incarca operatorii si istoricul salvat...</p>`;
+    document.getElementById("saved-reports").innerHTML = `<p class="empty-state">Se pregateste raportul pentru perioada selectata...</p>`;
+    document.getElementById("saved-machine-reports").innerHTML = `<p class="empty-state">Se pregateste detaliul pe utilaj...</p>`;
+    document.getElementById("saved-record-list").innerHTML = `<p class="empty-state">Se incarca istoricul ${periodMeta.countLabel.toLowerCase()}...</p>`;
 }
 
 function bindActions() {
@@ -332,12 +353,16 @@ async function loadSavedRecords() {
 
         state.savedRecords = payload;
         state.savedPeriod = payload.period || state.savedPeriod;
-        state.savedOperatorId = payload.selected_operator_id || state.savedOperatorId || "";
+        state.savedOperatorId = payload.selected_operator_id || "";
         state.lastSavedRefreshMs = Date.now();
         state.currentView = "saved";
         window.localStorage.setItem("currentView", "saved");
         window.localStorage.setItem("savedPeriod", state.savedPeriod);
-        window.localStorage.setItem("savedOperatorId", state.savedOperatorId);
+        if (state.savedOperatorId) {
+            window.localStorage.setItem("savedOperatorId", state.savedOperatorId);
+        } else {
+            window.localStorage.removeItem("savedOperatorId");
+        }
         renderSavedView(payload);
     } catch (error) {
         console.error(error);

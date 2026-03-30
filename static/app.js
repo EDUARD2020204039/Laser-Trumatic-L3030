@@ -16,6 +16,12 @@ const state = {
     lastSavedRefreshMs: 0,
     lastStatsSnapshot: null,
     lastStatsSyncMs: 0,
+    dashboardRequestId: 0,
+    savedRequestId: 0,
+    dashboardFetchInFlight: false,
+    savedFetchInFlight: false,
+    dashboardAbortController: null,
+    savedAbortController: null,
     renderedFeedsSignature: "",
     liveExtractionLayoutKey: "",
     feedRefreshTimers: []
@@ -138,6 +144,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
     bindActions();
     renderMachineSelector(window.appConfig.initialMachines || []);
+    window.setInterval(() => {
+        tickLiveStats();
+    }, 1000);
     if (state.currentView === "saved") {
         prepareSavedViewLoadingState();
         loadSavedRecords();
@@ -148,10 +157,13 @@ document.addEventListener("DOMContentLoaded", () => {
     window.setInterval(() => {
         if (state.currentView === "saved") {
             const now = Date.now();
-            if (now - state.lastSavedRefreshMs < 15000) {
+            if (state.savedFetchInFlight || now - state.lastSavedRefreshMs < 15000) {
                 return;
             }
             loadSavedRecords();
+            return;
+        }
+        if (state.dashboardFetchInFlight) {
             return;
         }
         loadDashboard(state.selectedMachineKey);
@@ -317,14 +329,26 @@ function bindActions() {
 
 async function loadDashboard(machineKey = state.selectedMachineKey) {
     const targetMachineKey = machineKey || state.selectedMachineKey;
+    const requestId = state.dashboardRequestId + 1;
+    state.dashboardRequestId = requestId;
+
+    if (state.dashboardAbortController) {
+        state.dashboardAbortController.abort();
+    }
+    state.dashboardAbortController = new AbortController();
+    state.dashboardFetchInFlight = true;
 
     try {
         const response = await fetch(
-            `${window.appConfig.dashboardUrl}?machine=${encodeURIComponent(targetMachineKey)}`
+            `${window.appConfig.dashboardUrl}?machine=${encodeURIComponent(targetMachineKey)}`,
+            { signal: state.dashboardAbortController.signal }
         );
         const payload = await response.json();
         if (!response.ok) {
             throw new Error(payload.message || "Nu am putut incarca dashboard-ul.");
+        }
+        if (requestId !== state.dashboardRequestId) {
+            return;
         }
 
         state.dashboard = payload;
@@ -334,21 +358,44 @@ async function loadDashboard(machineKey = state.selectedMachineKey) {
         state.currentView = "dashboard";
         renderDashboard(payload);
     } catch (error) {
+        if (error.name === "AbortError") {
+            return;
+        }
         console.error(error);
         setWorkcenterFeedback(error.message, "error");
+    } finally {
+        if (requestId === state.dashboardRequestId) {
+            state.dashboardFetchInFlight = false;
+            state.dashboardAbortController = null;
+        }
     }
 }
 
 async function loadSavedRecords() {
+    const requestId = state.savedRequestId + 1;
+    state.savedRequestId = requestId;
+
+    if (state.savedAbortController) {
+        state.savedAbortController.abort();
+    }
+    state.savedAbortController = new AbortController();
+    state.savedFetchInFlight = true;
+
     try {
         const query = new URLSearchParams({ period: state.savedPeriod });
         if (state.savedOperatorId) {
             query.set("operator_id", state.savedOperatorId);
         }
-        const response = await fetch(`${window.appConfig.savedRecordsUrl}?${query.toString()}`);
+        const response = await fetch(
+            `${window.appConfig.savedRecordsUrl}?${query.toString()}`,
+            { signal: state.savedAbortController.signal }
+        );
         const payload = await response.json();
         if (!response.ok) {
             throw new Error(payload.message || "Nu am putut incarca datele salvate.");
+        }
+        if (requestId !== state.savedRequestId) {
+            return;
         }
 
         state.savedRecords = payload;
@@ -365,8 +412,16 @@ async function loadSavedRecords() {
         }
         renderSavedView(payload);
     } catch (error) {
+        if (error.name === "AbortError") {
+            return;
+        }
         console.error(error);
         window.alert(error.message);
+    } finally {
+        if (requestId === state.savedRequestId) {
+            state.savedFetchInFlight = false;
+            state.savedAbortController = null;
+        }
     }
 }
 
@@ -684,19 +739,87 @@ function renderOperator(operatorSnapshot) {
 }
 
 function renderStats(stats) {
+    state.lastStatsSnapshot = {
+        machine_on_seconds: Number(stats.machine_on_seconds || 0),
+        cutting_seconds: Number(stats.cutting_seconds || 0),
+        table_change_seconds: Number(stats.table_change_seconds || 0),
+        idle_seconds: Number(stats.idle_seconds || 0),
+        production_window_started_at: stats.production_window_started_at || null,
+        randament_percent: Number(stats.randament_percent || 0),
+        availability_percent: Number(stats.availability_percent || 0),
+        cutting_metric_label: stats.cutting_metric_label || "Cutting",
+        table_change_metric_label: stats.table_change_metric_label || "Table change",
+        signals: {
+            machine_on: Boolean(state.dashboard?.current_signals?.machine_on?.active),
+            cutting_active: Boolean(state.dashboard?.current_signals?.cutting_active?.active),
+            table_change: Boolean(state.dashboard?.current_signals?.table_change?.active),
+            idle: Boolean(state.dashboard?.current_signals?.idle?.active),
+        },
+        machine_key: state.dashboard?.machine?.key || state.selectedMachineKey
+    };
+    state.lastStatsSyncMs = Date.now();
+    updateStatsDisplay(computeDisplayedStats());
+}
+
+function computeDisplayedStats() {
+    if (!state.lastStatsSnapshot) {
+        return null;
+    }
+
+    const snapshot = state.lastStatsSnapshot;
+    const elapsedSeconds = Math.max(Math.floor((Date.now() - state.lastStatsSyncMs) / 1000), 0);
+    const machineOnSeconds = snapshot.machine_on_seconds + (snapshot.signals.machine_on ? elapsedSeconds : 0);
+    const cuttingSeconds = snapshot.cutting_seconds + (snapshot.signals.cutting_active ? elapsedSeconds : 0);
+    const tableChangeSeconds = snapshot.table_change_seconds + (snapshot.signals.table_change ? elapsedSeconds : 0);
+    const idleSeconds = snapshot.idle_seconds + (snapshot.signals.idle ? elapsedSeconds : 0);
+    const productionWindowSeconds = snapshot.production_window_started_at
+        ? Math.max(Math.floor((Date.now() - new Date(snapshot.production_window_started_at).getTime()) / 1000), 0)
+        : machineOnSeconds + idleSeconds + tableChangeSeconds;
+    const randamentPercent = machineOnSeconds > 0
+        ? roundToOneDecimal((cuttingSeconds / machineOnSeconds) * 100)
+        : 0;
+    const availabilityPrefix = snapshot.machine_key === "abkant"
+        ? "Disponibilitate indoire/masina_pornita"
+        : "Disponibilitate taiere/masina_pornita";
+
+    return {
+        machineOnSeconds,
+        cuttingSeconds,
+        tableChangeSeconds,
+        idleSeconds,
+        productionWindowSeconds,
+        randamentPercent,
+        availabilityLabel: `${availabilityPrefix} ${randamentPercent}%`,
+        cuttingMetricLabel: snapshot.cutting_metric_label,
+        tableChangeMetricLabel: snapshot.table_change_metric_label
+    };
+}
+
+function updateStatsDisplay(displayedStats) {
+    if (!displayedStats) {
+        return;
+    }
+
     document.getElementById("metric-label-machine-on").textContent = "Machine ON";
-    document.getElementById("metric-label-cutting").textContent = stats.cutting_metric_label || "Cutting";
-    document.getElementById("metric-label-table-change").textContent = stats.table_change_metric_label || "Table change";
+    document.getElementById("metric-label-cutting").textContent = displayedStats.cuttingMetricLabel || "Cutting";
+    document.getElementById("metric-label-table-change").textContent = displayedStats.tableChangeMetricLabel || "Table change";
     document.getElementById("metric-label-idle").textContent = "Idle";
-    document.getElementById("metric-randament").textContent = `${stats.randament_percent}%`;
-    document.getElementById("metric-availability").textContent =
-        stats.availability_label || `Disponibilitate taiere/masina_pornita ${stats.availability_percent}%`;
-    document.getElementById("metric-window").textContent = stats.production_window_label;
-    document.getElementById("metric-machine-on").textContent = stats.machine_on_label;
-    document.getElementById("metric-cutting").textContent = stats.cutting_label;
-    document.getElementById("metric-table-change").textContent = stats.table_change_label;
-    document.getElementById("metric-idle").textContent = stats.idle_label;
-    document.getElementById("utilization-fill").style.width = `${Math.min(stats.randament_percent, 100)}%`;
+    document.getElementById("metric-randament").textContent = `${displayedStats.randamentPercent}%`;
+    document.getElementById("metric-availability").textContent = displayedStats.availabilityLabel;
+    document.getElementById("metric-window").textContent = formatSeconds(displayedStats.productionWindowSeconds);
+    document.getElementById("metric-machine-on").textContent = formatSeconds(displayedStats.machineOnSeconds);
+    document.getElementById("metric-cutting").textContent = formatSeconds(displayedStats.cuttingSeconds);
+    document.getElementById("metric-table-change").textContent = formatSeconds(displayedStats.tableChangeSeconds);
+    document.getElementById("metric-idle").textContent = formatSeconds(displayedStats.idleSeconds);
+    document.getElementById("utilization-fill").style.width = `${Math.min(displayedStats.randamentPercent, 100)}%`;
+}
+
+function tickLiveStats() {
+    if (state.currentView !== "dashboard" || !state.lastStatsSnapshot) {
+        return;
+    }
+
+    updateStatsDisplay(computeDisplayedStats());
 }
 
 function renderSource(realDataSource) {

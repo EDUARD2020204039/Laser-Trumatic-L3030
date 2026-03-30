@@ -67,6 +67,43 @@ Aplicatia porneste implicit pe `http://localhost:3030`.
 - pagina `Date salvate` incearca mai intii sa reconstruiasca operatorii si foile din Prometheus; daca Prometheus nu raspunde sau nu are inca seriile salvate, cade temporar pe SQLite
 - pentru persistenta reala dupa update, Prometheus trebuie sa aiba propriul director de date persistent si o retenție suficient de mare
 
+## Grafana
+
+Repo-ul include un dashboard Grafana gata de import:
+
+- `grafana/dashboards/haba_production_monitor.json`
+
+Dashboard-ul are tabele pentru:
+
+- `Laser1` pe operator si pe program
+- `Abkant` pe operator si pe program
+- ferestre `zi / saptamana / luna`
+- randament real cumulat, nu media simpla pe foi
+
+Import manual:
+
+1. deschizi Grafana
+2. `Dashboards` -> `New` -> `Import`
+3. alegi fisierul `grafana/dashboards/haba_production_monitor.json`
+4. selectezi datasource-ul Prometheus
+
+Provisioning automat:
+
+- datasource sample: `grafana/provisioning/datasources/prometheus.yml`
+- dashboard provisioning: `grafana/provisioning/dashboards/dashboard.yml`
+
+Pentru containerul Grafana, montezi:
+
+- `grafana/provisioning/datasources` -> `/etc/grafana/provisioning/datasources`
+- `grafana/provisioning/dashboards` -> `/etc/grafana/provisioning/dashboards`
+- `grafana/dashboards` -> `/var/lib/grafana/dashboards`
+
+Si setezi variabila:
+
+```env
+GRAFANA_PROMETHEUS_URL=http://192.168.2.23:9090
+```
+
 ## Docker pentru Unraid
 
 Build local:

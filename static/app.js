@@ -34,7 +34,7 @@ const savedPeriodReportLabelMap = {
 };
 
 function getMachineOnMetricLabel(machineKey) {
-    return "Feed activ";
+    return "Timp activ azi";
 }
 
 function getAvailabilityPrefix(machineKey) {
@@ -230,10 +230,14 @@ function prepareSavedViewLoadingState() {
     document.getElementById("saved-record-list").innerHTML = `<p class="empty-state">Se incarca istoricul ${periodMeta.countLabel.toLowerCase()}...</p>`;
 }
 
+function renderMachineSelectorImmediate() {
+    renderMachineSelector(state.dashboard?.machines || window.appConfig.initialMachines || []);
+}
+
 function bindActions() {
     const machineSelector = document.getElementById("machine-selector");
     if (machineSelector) {
-        machineSelector.addEventListener("click", async (event) => {
+        machineSelector.addEventListener("click", (event) => {
             const button = event.target.closest("[data-machine-key], [data-view]");
             if (!button) {
                 return;
@@ -243,14 +247,19 @@ function bindActions() {
             const nextView = button.dataset.view || "dashboard";
 
             if (nextView === "saved") {
+                if (state.dashboardAbortController) {
+                    state.dashboardAbortController.abort();
+                }
                 if (state.currentView === "saved") {
-                    await loadSavedRecords();
+                    loadSavedRecords();
                     return;
                 }
 
                 state.currentView = "saved";
                 window.localStorage.setItem("currentView", state.currentView);
-                await loadSavedRecords();
+                renderMachineSelectorImmediate();
+                prepareSavedViewLoadingState();
+                loadSavedRecords();
                 return;
             }
 
@@ -258,15 +267,22 @@ function bindActions() {
                 return;
             }
 
+            if (state.savedAbortController) {
+                state.savedAbortController.abort();
+            }
             if (nextMachineKey === state.selectedMachineKey && state.currentView === "dashboard") {
-                await loadDashboard(nextMachineKey);
+                loadDashboard(nextMachineKey);
                 return;
             }
 
+            state.selectedMachineKey = nextMachineKey;
             state.currentView = "dashboard";
             window.localStorage.setItem("currentView", state.currentView);
+            window.localStorage.setItem("selectedMachineKey", nextMachineKey);
             state.workcenterFeedback = null;
-            await loadDashboard(nextMachineKey);
+            renderMachineSelectorImmediate();
+            syncSectionVisibility("dashboard");
+            loadDashboard(nextMachineKey);
         });
     }
 
@@ -754,6 +770,7 @@ function renderStats(stats) {
         cutting_seconds: Number(stats.cutting_seconds || 0),
         table_change_seconds: Number(stats.table_change_seconds || 0),
         idle_seconds: Number(stats.idle_seconds || 0),
+        machine_on_changed_at: state.dashboard?.current_signals?.machine_on?.changed_at || null,
         production_window_started_at: stats.production_window_started_at || null,
         randament_percent: Number(stats.randament_percent || 0),
         availability_percent: Number(stats.availability_percent || 0),
@@ -782,9 +799,9 @@ function computeDisplayedStats() {
     const cuttingSeconds = snapshot.cutting_seconds + (snapshot.signals.cutting_active ? elapsedSeconds : 0);
     const tableChangeSeconds = snapshot.table_change_seconds + (snapshot.signals.table_change ? elapsedSeconds : 0);
     const idleSeconds = snapshot.idle_seconds + (snapshot.signals.idle ? elapsedSeconds : 0);
-    const productionWindowSeconds = snapshot.production_window_started_at
-        ? Math.max(Math.floor((Date.now() - new Date(snapshot.production_window_started_at).getTime()) / 1000), 0)
-        : machineOnSeconds + idleSeconds + tableChangeSeconds;
+    const sessionWindowSeconds = snapshot.signals.machine_on && snapshot.machine_on_changed_at
+        ? Math.max(Math.floor((Date.now() - new Date(snapshot.machine_on_changed_at).getTime()) / 1000), 0)
+        : 0;
     const randamentPercent = machineOnSeconds > 0
         ? roundToOneDecimal((cuttingSeconds / machineOnSeconds) * 100)
         : 0;
@@ -795,7 +812,7 @@ function computeDisplayedStats() {
         cuttingSeconds,
         tableChangeSeconds,
         idleSeconds,
-        productionWindowSeconds,
+        sessionWindowSeconds,
         randamentPercent,
         availabilityLabel: `${availabilityPrefix} ${randamentPercent}%`,
         cuttingMetricLabel: snapshot.cutting_metric_label,
@@ -809,17 +826,17 @@ function updateStatsDisplay(displayedStats) {
     }
 
     document.getElementById("metric-label-machine-on").textContent = getMachineOnMetricLabel(state.lastStatsSnapshot?.machine_key);
+    document.getElementById("metric-window-label").textContent = "Machine ON";
     document.getElementById("metric-label-cutting").textContent = displayedStats.cuttingMetricLabel || "Cutting";
     document.getElementById("metric-label-table-change").textContent = displayedStats.tableChangeMetricLabel || "Table change";
     document.getElementById("metric-label-idle").textContent = "Idle";
     document.getElementById("metric-randament").textContent = `${displayedStats.randamentPercent}%`;
     document.getElementById("metric-availability").textContent = displayedStats.availabilityLabel;
-    document.getElementById("metric-window").textContent = formatSeconds(displayedStats.productionWindowSeconds);
+    document.getElementById("metric-window").textContent = formatSeconds(displayedStats.sessionWindowSeconds);
     document.getElementById("metric-machine-on").textContent = formatSeconds(displayedStats.machineOnSeconds);
     document.getElementById("metric-cutting").textContent = formatSeconds(displayedStats.cuttingSeconds);
     document.getElementById("metric-table-change").textContent = formatSeconds(displayedStats.tableChangeSeconds);
     document.getElementById("metric-idle").textContent = formatSeconds(displayedStats.idleSeconds);
-    document.getElementById("utilization-fill").style.width = `${Math.min(displayedStats.randamentPercent, 100)}%`;
 }
 
 function tickLiveStats() {

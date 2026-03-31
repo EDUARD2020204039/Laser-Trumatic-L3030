@@ -230,14 +230,10 @@ function prepareSavedViewLoadingState() {
     document.getElementById("saved-record-list").innerHTML = `<p class="empty-state">Se incarca istoricul ${periodMeta.countLabel.toLowerCase()}...</p>`;
 }
 
-function renderMachineSelectorImmediate() {
-    renderMachineSelector(state.dashboard?.machines || window.appConfig.initialMachines || []);
-}
-
 function bindActions() {
     const machineSelector = document.getElementById("machine-selector");
     if (machineSelector) {
-        machineSelector.addEventListener("click", (event) => {
+        machineSelector.addEventListener("click", async (event) => {
             const button = event.target.closest("[data-machine-key], [data-view]");
             if (!button) {
                 return;
@@ -247,19 +243,14 @@ function bindActions() {
             const nextView = button.dataset.view || "dashboard";
 
             if (nextView === "saved") {
-                if (state.dashboardAbortController) {
-                    state.dashboardAbortController.abort();
-                }
                 if (state.currentView === "saved") {
-                    loadSavedRecords();
+                    await loadSavedRecords();
                     return;
                 }
 
                 state.currentView = "saved";
                 window.localStorage.setItem("currentView", state.currentView);
-                renderMachineSelectorImmediate();
-                prepareSavedViewLoadingState();
-                loadSavedRecords();
+                await loadSavedRecords();
                 return;
             }
 
@@ -267,22 +258,15 @@ function bindActions() {
                 return;
             }
 
-            if (state.savedAbortController) {
-                state.savedAbortController.abort();
-            }
             if (nextMachineKey === state.selectedMachineKey && state.currentView === "dashboard") {
-                loadDashboard(nextMachineKey);
+                await loadDashboard(nextMachineKey);
                 return;
             }
 
-            state.selectedMachineKey = nextMachineKey;
             state.currentView = "dashboard";
             window.localStorage.setItem("currentView", state.currentView);
-            window.localStorage.setItem("selectedMachineKey", nextMachineKey);
             state.workcenterFeedback = null;
-            renderMachineSelectorImmediate();
-            syncSectionVisibility("dashboard");
-            loadDashboard(nextMachineKey);
+            await loadDashboard(nextMachineKey);
         });
     }
 

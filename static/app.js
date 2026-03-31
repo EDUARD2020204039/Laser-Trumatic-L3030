@@ -33,6 +33,16 @@ const savedPeriodReportLabelMap = {
     month: "Lunar"
 };
 
+function getMachineOnMetricLabel(machineKey) {
+    return machineKey === "abkant" ? "Feed activ" : "Machine ON";
+}
+
+function getAvailabilityPrefix(machineKey) {
+    return machineKey === "abkant"
+        ? "Disponibilitate indoire/feed_activ"
+        : "Disponibilitate taiere/masina_pornita";
+}
+
 function getSignalButtonLabel(signalName, signal) {
     if (signal?.active && signal?.button_on_label) {
         return signal.button_on_label;
@@ -66,8 +76,8 @@ function getSavedPeriodMeta(period) {
         return {
             key: "day",
             sectionTitle: "Operatori si foi finalizate azi",
-            subtitle: "Fiecare foaie se salveaza la final de table change, iar randamentul zilei este calculat cumulat din Cutting sau Bending raportat la Machine ON.",
-            hint: `Filtrul ia foile finalizate in ${todayLabel}. Machine OFF nu intra in calcule, iar randamentul se calculeaza din totalul timpilor acumulati azi.`,
+            subtitle: "Fiecare foaie se salveaza la final de table change, iar randamentul zilei este calculat cumulat din Cutting sau Bending raportat la timpul activ acumulat azi.",
+            hint: `Filtrul ia foile finalizate in ${todayLabel}. Intervalul este strict 00:00 -> acum pentru ziua curenta.`,
             countLabel: "Foi azi",
             reportCardText: "Randament real cumulat pe foile finalizate azi",
             machineReportTitle: "Detaliu operator azi",
@@ -99,7 +109,7 @@ function getSavedPeriodMeta(period) {
             key: "month",
             sectionTitle: "Operatori si foi finalizate luna aceasta",
             subtitle: "Randamentul lunii vine din totalul timpilor acumulati pe toate foile finalizate in luna curenta.",
-            hint: `Filtrul ia intervalul ${formatSavedPeriodDate(monthStart)} - ${formatSavedPeriodDate(now)}. Machine OFF ramane in afara calculelor, iar randamentul este calculat din total Cutting sau Bending raportat la total Machine ON.`,
+            hint: `Filtrul ia intervalul ${formatSavedPeriodDate(monthStart)} - ${formatSavedPeriodDate(now)}. Randamentul este calculat din total Cutting sau Bending raportat la totalul timpilor activi.`,
             countLabel: "Foi luna",
             reportCardText: "Randament real cumulat pe foile finalizate luna aceasta",
             machineReportTitle: "Detaliu operator lunar",
@@ -114,7 +124,7 @@ function getSavedPeriodMeta(period) {
         key: "all",
         sectionTitle: "Tot istoricul foilor salvate",
         subtitle: "Aici vezi operatorii si foile finalizate din tot istoricul disponibil in sursa de date.",
-        hint: "Fiecare foaie este salvata la final de table change. Randamentul afisat aici este calculat cumulat din total Cutting sau Bending impartit la total Machine ON.",
+        hint: "Fiecare foaie este salvata la final de table change. Randamentul afisat aici este calculat cumulat din total Cutting sau Bending impartit la totalul timpilor activi.",
         countLabel: "Total foi",
         reportCardText: "Randament real cumulat din toate foile salvate",
         machineReportTitle: "Detaliu operator",
@@ -778,9 +788,7 @@ function computeDisplayedStats() {
     const randamentPercent = machineOnSeconds > 0
         ? roundToOneDecimal((cuttingSeconds / machineOnSeconds) * 100)
         : 0;
-    const availabilityPrefix = snapshot.machine_key === "abkant"
-        ? "Disponibilitate indoire/masina_pornita"
-        : "Disponibilitate taiere/masina_pornita";
+    const availabilityPrefix = getAvailabilityPrefix(snapshot.machine_key);
 
     return {
         machineOnSeconds,
@@ -800,7 +808,7 @@ function updateStatsDisplay(displayedStats) {
         return;
     }
 
-    document.getElementById("metric-label-machine-on").textContent = "Machine ON";
+    document.getElementById("metric-label-machine-on").textContent = getMachineOnMetricLabel(state.lastStatsSnapshot?.machine_key);
     document.getElementById("metric-label-cutting").textContent = displayedStats.cuttingMetricLabel || "Cutting";
     document.getElementById("metric-label-table-change").textContent = displayedStats.tableChangeMetricLabel || "Table change";
     document.getElementById("metric-label-idle").textContent = "Idle";
@@ -873,7 +881,7 @@ function renderLiveExtraction(snapshot) {
             { slot: "total", label: "Piese de indoit", value: snapshot.total_pieces ?? "Necunoscut" },
             { slot: "produced", label: "Piese indoite", value: snapshot.produced_pieces ?? 0 },
             { slot: "progress", label: "Progres", value: snapshot.pieces_label || "n/a" },
-            { slot: "machine_on", label: "Machine ON", value: signals.machine_on ? "DA" : "NU" },
+            { slot: "machine_on", label: "Feed activ", value: signals.machine_on ? "DA" : "NU" },
             { slot: "bending", label: "Bending", value: signals.cutting_active ? "DA" : "NU" },
             { slot: "setup_change", label: "Setup change", value: signals.table_change ? "DA" : "NU" },
             { slot: "status", label: "Status program", value: snapshot.program_status || "Necitit" }
@@ -1181,7 +1189,7 @@ function renderSavedReports(payload, period, periodMeta) {
                 <div class="saved-report-metrics">
                     <span>${periodStats.records_count} ${unitLabels.plural} finalizate</span>
                     <span>Randament real cumulat: ${roundToOneDecimal(periodStats.efficiency_percent)}%</span>
-                    <span>Machine ON ${periodStats.machine_on_label}</span>
+                    <span>Timp activ ${periodStats.machine_on_label}</span>
                     <span>${activityLabel} ${periodStats.cutting_label}</span>
                     <span>Idle ${periodStats.idle_label}</span>
                     <span>${changeLabel} ${periodStats.table_change_label}</span>
@@ -1193,7 +1201,7 @@ function renderSavedReports(payload, period, periodMeta) {
                 <p>Datele salvate se citesc din seria istorica de ${unitLabels.plural} finalizate, nu dintr-un calcul live din browser.</p>
                 <div class="saved-report-metrics">
                     <span>Fiecare ${unitLabels.singular} se inchide dupa terminarea table change.</span>
-                    <span>Machine OFF nu intra in randamentul ${unitLabels.singular}.</span>
+                    <span>Timpul in afara feedului activ nu intra in randamentul ${unitLabels.singular}.</span>
                     <span>${payload.data_source === "prometheus" ? "Prometheus raspunde direct pentru istoric." : "Exportul Prometheus ramane activ; istoricul afisat vine din cache-ul salvat al aplicatiei."}</span>
                     <span>Zi, saptamana si luna folosesc media ${unitLabels.plural} finalizate in perioada respectiva.</span>
                 </div>
@@ -1266,7 +1274,7 @@ function renderSavedMachineReports(payload, period, periodMeta) {
                         <div class="saved-machine-period-item">
                             <span>${unitLabels.plural.charAt(0).toUpperCase() + unitLabels.plural.slice(1)} finalizate</span>
                             <strong>${item.records_count}</strong>
-                            <small>Machine ON ${formatSeconds(item.machine_on_seconds)}</small>
+                            <small>Timp activ ${formatSeconds(item.machine_on_seconds)}</small>
                             <small>${activityLabel} ${formatSeconds(item.cutting_seconds)}</small>
                             <small>Idle ${formatSeconds(item.idle_seconds)}</small>
                             <small>${changeLabel} ${formatSeconds(item.table_change_seconds)}</small>
@@ -1420,7 +1428,7 @@ function renderSavedRecords(records, periodMeta) {
                         <strong>${record.cutting_started_at ? formatDateTime(record.cutting_started_at) : "Necunoscut"}</strong>
                     </div>
                     <div>
-                        <span>Machine ON</span>
+                        <span>Timp activ</span>
                         <strong>${record.machine_on_duration_label || "00:00:00"}</strong>
                     </div>
                     <div>

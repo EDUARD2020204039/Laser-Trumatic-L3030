@@ -235,16 +235,16 @@ REAL_DATA_FEEDS = {
             {"label": "Active program", "value": "Abkant/ProgramActiv"},
             {"label": "Program valid", "value": "Abkant/StareProgramIdentificat"},
             {"label": "Nr bucati", "value": "OCR numar_bucati / nr_bucati"},
-            {"label": "Machine ON", "value": "camera accesibila + rpiabkantworking"},
+            {"label": "Feed activ", "value": "camera accesibila + rpiabkantworking"},
             {"label": "Bending", "value": "program activ + progres piese sub total"},
             {"label": "Setup change", "value": "upper/lower se schimba pina porneste urmatoarea indoire"},
             {"label": "Idle", "value": "program neschimbat / fara progres bucati"},
         ],
         "derivation_rules": [
-            {"label": "Machine ON", "value": "DA cand captura merge si parametrul rpiabkantworking ramane TRUE"},
+            {"label": "Feed activ", "value": "DA cand captura merge si parametrul rpiabkantworking ramane TRUE"},
             {"label": "Bending", "value": "DA cand exista program activ si numarul de piese produse nu a ajuns la total"},
             {"label": "Setup change", "value": "DA de la prima schimbare detectata la Upper/Lower pina cind indoirea porneste cu noul setup"},
-            {"label": "Idle", "value": "Poate fi derivat cand masina este ON dar programul / numarul de bucati nu avanseaza"},
+            {"label": "Idle", "value": "Poate fi derivat cand feedul este activ dar programul / numarul de bucati nu avanseaza"},
         ],
         "details": [
             "Camera OCR: 100.126.29.52:8081",
@@ -287,6 +287,14 @@ SIGNAL_DEFINITIONS = {
 
 MACHINE_SIGNAL_OVERRIDES = {
     "abkant": {
+        "machine_on": {
+            "label": "Feed activ",
+            "description": "Bridge-ul OCR si parametrul rpiabkantworking raspund pentru Abkant.",
+            "button_on_label": "Marcheaza feed inactiv",
+            "button_off_label": "Marcheaza feed activ",
+            "metric_label": "Feed activ",
+            "report_label": "Feed activ",
+        },
         "cutting_active": {
             "label": "Bending",
             "description": "Abkantul indoaie activ piesele programului curent.",
@@ -331,9 +339,13 @@ STATE_DEFINITIONS = {
 
 MACHINE_STATE_OVERRIDES = {
     "abkant": {
+        "off": {
+            "label": "Feed indisponibil",
+            "description": "Nu mai vine snapshot valid din feed-ul Abkant.",
+        },
         "ready": {
             "label": "Pregatit",
-            "description": "Abkantul este pornit, dar nu indoaie activ.",
+            "description": "Feedul Abkant este activ, dar programul nu indoaie acum.",
         },
         "cutting": {
             "label": "In indoire",
@@ -1028,7 +1040,7 @@ def fetch_abkant_postgres_snapshot() -> dict | None:
     elif machine_on:
         program_status = "Pregatit"
     else:
-        program_status = "Oprit"
+        program_status = "Feed indisponibil"
 
     return {
         "available": True,
@@ -1169,7 +1181,7 @@ def analyze_abkant_live_snapshot(machine_key: str) -> dict | None:
             "idle": False,
         },
         "message": (
-            "Abkant foloseste momentan feedul din script, dar nu avem inca semnal live sigur pentru Machine ON."
+            "Abkant foloseste momentan feedul din script, dar nu avem inca un semnal live separat pentru utilaj; aici tratam doar disponibilitatea feedului."
             if reachable
             else "Feedul abkant nu este accesibil din dashboard."
         ),
@@ -3037,10 +3049,7 @@ def format_seconds(total_seconds: int) -> str:
 def build_today_stats(machine_key: str) -> dict:
     now = now_local()
     start_of_day = datetime.combine(date.today(), time.min)
-    runtime = get_machine_runtime(machine_key)
-    stats_anchor = runtime.get("stats_anchor") or {}
-    stats_anchor_started_at = parse_timestamp(stats_anchor.get("started_at")) if stats_anchor.get("started_at") else None
-    stats_window_start = max(start_of_day, stats_anchor_started_at) if stats_anchor_started_at else start_of_day
+    stats_window_start = start_of_day
     elapsed_seconds = max(int((now - stats_window_start).total_seconds()), 1)
     machine_on_seconds = calculate_active_seconds(machine_key, "machine_on", stats_window_start, now)
     cutting_seconds = calculate_active_seconds(machine_key, "cutting_active", stats_window_start, now)
@@ -3051,7 +3060,7 @@ def build_today_stats(machine_key: str) -> dict:
     cutting_meta = resolve_signal_definition(machine_key, "cutting_active")
     table_change_meta = resolve_signal_definition(machine_key, "table_change")
     availability_prefix = (
-        "Disponibilitate indoire/masina_pornita"
+        "Disponibilitate indoire/feed_activ"
         if machine_key == "abkant"
         else "Disponibilitate taiere/masina_pornita"
     )

@@ -868,12 +868,14 @@ function renderLiveExtraction(snapshot) {
     const cells = currentMachineKey === "abkant"
         ? [
             { slot: "program", label: "Program curent", value: snapshot.active_program || "Necitit" },
+            { slot: "upper_tool", label: "Upper", value: snapshot.upper_tool || "n/a" },
+            { slot: "lower_tool", label: "Lower", value: snapshot.lower_tool || "n/a" },
             { slot: "total", label: "Piese de indoit", value: snapshot.total_pieces ?? "Necunoscut" },
             { slot: "produced", label: "Piese indoite", value: snapshot.produced_pieces ?? 0 },
             { slot: "progress", label: "Progres", value: snapshot.pieces_label || "n/a" },
             { slot: "machine_on", label: "Machine ON", value: signals.machine_on ? "DA" : "NU" },
             { slot: "bending", label: "Bending", value: signals.cutting_active ? "DA" : "NU" },
-            { slot: "bend_change", label: "Bend change", value: signals.table_change ? "DA" : "NU" },
+            { slot: "setup_change", label: "Setup change", value: signals.table_change ? "DA" : "NU" },
             { slot: "status", label: "Status program", value: snapshot.program_status || "Necitit" }
         ]
         : [

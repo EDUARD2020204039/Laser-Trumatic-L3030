@@ -68,6 +68,8 @@ angle=360
 NumeProgramPunct=Punct(23,220,300,inaltime=50)
 NrBucPunct=Punct(340,210,200,inaltime=70)
 ActualPunct=Punct(660, 270, 200, inaltime=50)
+UpperToolPunct=Punct(150,55,430,inaltime=55)
+LowerToolPunct=Punct(150,105,430,inaltime=55)
 #print(NumeProgramPunct.PunctX)
 my_token="1260858483:AAFmQBXz1Fsg_JqESNmIv9OtcmozFQ7WUbg"
 my_chat_id="-1001284842892"
@@ -90,6 +92,8 @@ class DateIdentificate:
         self.NrBuc=""
         self.NrBucProdus=0
         self.NrBucTotal=0
+        self.UpperTool=""
+        self.LowerTool=""
         self.Activ=""
         self.EsteActivat=False
         self.EsteSchimbat=False
@@ -106,8 +110,8 @@ class DateIdentificate:
             # Make sure we don't get IndexError if there's no second part
             self.NrBucTotal = parts[1] if len(parts) > 1 else "0"
             
-    def ComparaCuUltimaInregistrare(self,denumireVeche: str,nrbucvechi: str):
-        if  self.DenumireProgram!=denumireVeche or self.NrBuc!=nrbucvechi:
+    def ComparaCuUltimaInregistrare(self,denumireVeche: str,nrbucvechi: str, upperVeche: str="", lowerVeche: str=""):
+        if  self.DenumireProgram!=denumireVeche or self.NrBuc!=nrbucvechi or self.UpperTool!=upperVeche or self.LowerTool!=lowerVeche:
             logging.info("Program schimbat!")
             print("Program neschimbat" )
             self.EsteSchimbat=True
@@ -150,6 +154,38 @@ def is_blank_screenshot(image_path):
         return True  # Blank screen
     else:
         return False  # Not a blank screen
+
+
+def normalize_tool_name(raw_text):
+    cleaned = raw_text.strip().upper().replace("\n", " ").replace("\r", " ")
+    cleaned = " ".join(cleaned.split())
+    cleaned = cleaned.replace("|", "I")
+    cleaned = "".join(ch for ch in cleaned if ch.isalnum() or ch in {" ", "/", "-", "_"})
+    return cleaned
+
+
+def read_tool_name(image, area, filename):
+    cropped = image[area.PunctY:area.PunctYFinal, area.PunctX:area.PunctXFinal]
+    cv2.imwrite(filename, cropped)
+    tool_name = pytesseract.image_to_string(
+        cropped,
+        config='--psm 7 --oem 3 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/-_ '
+    )
+    tool_name = normalize_tool_name(tool_name)
+    logging.info("Tool OCR %s -> %s", filename, tool_name)
+    return tool_name
+
+
+def ensure_abkant_report_columns(server):
+    for sql in (
+        "ALTER TABLE raportare_abkant ADD COLUMN IF NOT EXISTS upper_tool TEXT",
+        "ALTER TABLE raportare_abkant ADD COLUMN IF NOT EXISTS lower_tool TEXT",
+    ):
+        try:
+            server.RunStatement(sql)
+        except Exception as ex:
+            logging.info("Nu am putut extinde raportare_abkant cu SQL %s din cauza %s", sql, ex)
+
 
 def IdentificareProgram(NumeVechi) :
     global lastBDID,DenumireIdentificata
@@ -211,6 +247,8 @@ def IdentificareProgram(NumeVechi) :
         exit(10)
     DateIdentificare=DateIdentificate()
     DateIdentificare.EsteActivat=True
+    DateIdentificare.UpperTool = read_tool_name(orig, UpperToolPunct, "/tmp/save_me_upper.jpg")
+    DateIdentificare.LowerTool = read_tool_name(orig, LowerToolPunct, "/tmp/save_me_lower.jpg")
 ### Analiza NrBuc
     start_time = time.time()
 
@@ -276,6 +314,10 @@ def IdentificareProgram(NumeVechi) :
     img_marcat = cv2.rectangle (img_marcat, (ActualPunct.PunctX, ActualPunct.PunctY), (ActualPunct.PunctXFinal, ActualPunct.PunctYFinal), (255, 255, 0), 4)
     img_marcat = cv2.rectangle(img_marcat, (NrBucPunct.PunctX, NrBucPunct.PunctY),
                                (NrBucPunct.PunctXFinal, NrBucPunct.PunctYFinal), (255, 255, 0), 4)
+    img_marcat = cv2.rectangle(img_marcat, (UpperToolPunct.PunctX, UpperToolPunct.PunctY),
+                               (UpperToolPunct.PunctXFinal, UpperToolPunct.PunctYFinal), (255, 255, 0), 4)
+    img_marcat = cv2.rectangle(img_marcat, (LowerToolPunct.PunctX, LowerToolPunct.PunctY),
+                               (LowerToolPunct.PunctXFinal, LowerToolPunct.PunctYFinal), (255, 255, 0), 4)
     cv2.imwrite ("/tmp/aici-snapshots_marcat2.jpg", img_marcat)
     if(NumeVechi!=DenumireIdentificata): #NumeVechi!=DenumireIdentificata
         print("Nu e aceeasi chestie")
@@ -299,12 +341,18 @@ def IdentificareProgram(NumeVechi) :
     except:
         logging.error("Se pare ca e serverul de BD neconectat. Ies")
         return
+    ensure_abkant_report_columns(PostgresOEE)
     #TODO verifica daca e schimbat
     try:
         sql = f"SELECT * FROM raportare_abkant ORDER BY id DESC LIMIT 1"
         if (last_row:=PostgresOEE.RunOneStatement(sql)):
             print(f'Ultimul program: {last_row[2]} cu nrBuc {last_row[3]}')
-            DateIdentificare.ComparaCuUltimaInregistrare(denumireVeche=last_row[2],nrbucvechi=last_row[3])
+            DateIdentificare.ComparaCuUltimaInregistrare(
+                denumireVeche=last_row[2],
+                nrbucvechi=last_row[3],
+                upperVeche=last_row[6] if len(last_row) > 6 and last_row[6] else "",
+                lowerVeche=last_row[7] if len(last_row) > 7 and last_row[7] else "",
+            )
             #TODO: compara last_row[1]
             print("Am rulat comparatia")
         else:
@@ -315,7 +363,7 @@ def IdentificareProgram(NumeVechi) :
 
     # scriem
     try:
-        sql = f"Insert into raportare_abkant (datacolectare,programidentificat,numar_bucati,faraschimbare,nr_bucati) values ('{datetime.fromtimestamp(time.time()).strftime('%Y-%m-%d %H:%M:%S.%f')}','{DateIdentificare.DenumireProgram}','{DateIdentificare.NrBuc}',{DateIdentificare.EsteSchimbat},{DateIdentificare.NrBucProdus})"
+        sql = f"Insert into raportare_abkant (datacolectare,programidentificat,numar_bucati,faraschimbare,nr_bucati,upper_tool,lower_tool) values ('{datetime.fromtimestamp(time.time()).strftime('%Y-%m-%d %H:%M:%S.%f')}','{DateIdentificare.DenumireProgram}','{DateIdentificare.NrBuc}',{DateIdentificare.EsteSchimbat},{DateIdentificare.NrBucProdus},'{DateIdentificare.UpperTool}','{DateIdentificare.LowerTool}')"
         # sa ma uit pe screen daca e Running # vezi /opt/oee/tests/OCR.py
         if (PostgresOEE.RunStatement(sql)):
             print("Am rulat")

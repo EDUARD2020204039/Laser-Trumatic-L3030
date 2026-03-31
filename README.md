@@ -76,9 +76,10 @@ Repo-ul include un dashboard Grafana gata de import:
 Dashboard-ul are tabele pentru:
 
 - `Laser1` pe operator si pe program
-- `Abkant` pe operator si pe program
+- `Abkant` pe operator si pe program, inclusiv `Setup-uri`
 - ferestre `zi / saptamana / luna`
 - randament real cumulat, nu media simpla pe foi
+- pentru `Abkant`, timpul de `Setup change` este derivat din schimbarea sculelor `Upper/Lower`
 
 Import manual:
 

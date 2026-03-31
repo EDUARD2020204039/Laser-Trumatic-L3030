@@ -237,20 +237,20 @@ REAL_DATA_FEEDS = {
             {"label": "Nr bucati", "value": "OCR numar_bucati / nr_bucati"},
             {"label": "Machine ON", "value": "camera accesibila + rpiabkantworking"},
             {"label": "Bending", "value": "program activ + progres piese sub total"},
-            {"label": "Bend change", "value": "program terminat; asteptam urmatorul program"},
+            {"label": "Setup change", "value": "upper/lower se schimba pina porneste urmatoarea indoire"},
             {"label": "Idle", "value": "program neschimbat / fara progres bucati"},
         ],
         "derivation_rules": [
             {"label": "Machine ON", "value": "DA cand captura merge si parametrul rpiabkantworking ramane TRUE"},
             {"label": "Bending", "value": "DA cand exista program activ si numarul de piese produse nu a ajuns la total"},
-            {"label": "Bend change", "value": "DA cand programul activ si-a terminat toate piesele si asteapta urmatorul program"},
+            {"label": "Setup change", "value": "DA de la prima schimbare detectata la Upper/Lower pina cind indoirea porneste cu noul setup"},
             {"label": "Idle", "value": "Poate fi derivat cand masina este ON dar programul / numarul de bucati nu avanseaza"},
         ],
         "details": [
             "Camera OCR: 100.126.29.52:8081",
             "MQTT topics observate: Abkant/StareProgramIdentificat, Abkant/ProgramActiv",
             "Tabela observata: raportare_abkant",
-            "Scriptul urmareste programul activ si numarul de bucati",
+            "Scriptul urmareste programul activ, numarul de bucati si setup-ul Upper/Lower",
         ],
     },
 }
@@ -296,12 +296,12 @@ MACHINE_SIGNAL_OVERRIDES = {
             "report_label": "Indoire",
         },
         "table_change": {
-            "label": "Bend change",
-            "description": "Programul curent este terminat si se asteapta urmatorul program.",
+            "label": "Setup change",
+            "description": "Abkantul schimba sculele Upper/Lower si pregateste urmatorul setup.",
             "button_on_label": "Opreste schimbarea",
             "button_off_label": "Porneste schimbarea",
-            "metric_label": "Bend change",
-            "report_label": "Bend change",
+            "metric_label": "Setup change",
+            "report_label": "Setup change",
         },
     }
 }
@@ -340,8 +340,8 @@ MACHINE_STATE_OVERRIDES = {
             "description": "Programul curent este in curs de indoire.",
         },
         "table_change": {
-            "label": "Bend change",
-            "description": "Programul curent este terminat si se pregateste urmatoarea indoire.",
+            "label": "Setup change",
+            "description": "Abkantul schimba sculele Upper/Lower si pregateste urmatoarea indoire.",
         },
     }
 }
@@ -861,6 +861,63 @@ def get_abkant_pg_connection():
     )
 
 
+def normalize_abkant_tool_value(value: str | None) -> str:
+    normalized = re.sub(r"\s+", " ", str(value or "").strip().upper())
+    normalized = re.sub(r"[^A-Z0-9/_\\\- ]", "", normalized)
+    if normalized in {"", "NECITIT", "N/A", "NA"}:
+        return ""
+    return normalized
+
+
+def build_abkant_tool_signature_from_values(upper_tool: str | None, lower_tool: str | None) -> str:
+    normalized_upper = normalize_abkant_tool_value(upper_tool)
+    normalized_lower = normalize_abkant_tool_value(lower_tool)
+    if not normalized_upper and not normalized_lower:
+        return ""
+    return f"{normalized_upper} || {normalized_lower}"
+
+
+def resolve_abkant_tool_signature(snapshot: dict | None) -> str:
+    if not snapshot:
+        return ""
+    signature = normalize_context_token(snapshot.get("setup_signature"))
+    if signature:
+        return signature
+    return build_abkant_tool_signature_from_values(
+        snapshot.get("upper_tool"),
+        snapshot.get("lower_tool"),
+    )
+
+
+def abkant_tool_signature_changed(previous_snapshot: dict | None, current_snapshot: dict | None) -> bool:
+    previous_signature = resolve_abkant_tool_signature(previous_snapshot)
+    current_signature = resolve_abkant_tool_signature(current_snapshot)
+    return bool(previous_signature and current_signature and previous_signature != current_signature)
+
+
+def fetch_abkant_latest_report_row(cursor):
+    try:
+        cursor.execute(
+            """
+            SELECT datacolectare, programidentificat, numar_bucati, faraschimbare, nr_bucati, upper_tool, lower_tool
+            FROM raportare_abkant
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        )
+        return cursor.fetchone()
+    except Exception:
+        cursor.execute(
+            """
+            SELECT datacolectare, programidentificat, numar_bucati, faraschimbare, nr_bucati
+            FROM raportare_abkant
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        )
+        return cursor.fetchone()
+
+
 def fetch_abkant_postgres_snapshot() -> dict | None:
     try:
         with get_abkant_pg_connection() as connection:
@@ -875,15 +932,7 @@ def fetch_abkant_postgres_snapshot() -> dict | None:
             )
             parameter_row = cursor.fetchone()
 
-            cursor.execute(
-                """
-                SELECT datacolectare, programidentificat, numar_bucati, faraschimbare, nr_bucati
-                FROM raportare_abkant
-                ORDER BY id DESC
-                LIMIT 1
-                """
-            )
-            latest_row = cursor.fetchone()
+            latest_row = fetch_abkant_latest_report_row(cursor)
 
             cursor.execute(
                 """
@@ -908,6 +957,9 @@ def fetch_abkant_postgres_snapshot() -> dict | None:
     active_program = (latest_row[1] or "").strip() if latest_row else ""
     pieces_text = (latest_row[2] or "").strip() if latest_row and latest_row[2] is not None else ""
     produced_pieces_raw = latest_row[4] if latest_row and latest_row[4] is not None else None
+    upper_tool = normalize_abkant_tool_value(latest_row[5] if latest_row and len(latest_row) > 5 else None)
+    lower_tool = normalize_abkant_tool_value(latest_row[6] if latest_row and len(latest_row) > 6 else None)
+    setup_signature = build_abkant_tool_signature_from_values(upper_tool, lower_tool)
     collected_at = latest_row[0].isoformat(sep=" ", timespec="seconds") if latest_row and latest_row[0] else None
     last_changed_at = last_changed_row[0] if last_changed_row and last_changed_row[0] else (latest_row[0] if latest_row and latest_row[0] else None)
     stagnation_seconds = (
@@ -944,30 +996,31 @@ def fetch_abkant_postgres_snapshot() -> dict | None:
     )
     pieces_done = pieces_done_from_text if pieces_done_from_text is not None else produced_pieces
     has_piece_counters = pieces_done is not None and total_pieces is not None
-    bend_change = bool(
+    legacy_setup_change = bool(
         machine_on
         and active_program
         and has_piece_counters
         and pieces_done == 0
         and total_pieces == 0
     )
+    setup_change = legacy_setup_change
     idle = bool(
         machine_on
         and active_program
-        and not bend_change
+        and not setup_change
         and stagnation_seconds >= ABKANT_IDLE_STAGNATION_SECONDS
     )
     bending_active = bool(
         machine_on
         and active_program
         and (
-            (has_piece_counters and not bend_change and not idle)
+            (has_piece_counters and not setup_change and not idle)
             or not has_piece_counters
         )
     )
 
-    if bend_change:
-        program_status = "Bend change"
+    if setup_change:
+        program_status = "Setup change"
     elif idle:
         program_status = "Idle"
     elif bending_active:
@@ -992,15 +1045,19 @@ def fetch_abkant_postgres_snapshot() -> dict | None:
         "produced_pieces": produced_pieces,
         "total_pieces": total_pieces,
         "stagnation_seconds": stagnation_seconds,
+        "upper_tool": upper_tool or "n/a",
+        "lower_tool": lower_tool or "n/a",
+        "setup_signature": setup_signature or "",
         "derived_signals": {
             "machine_on": machine_on,
             "cutting_active": bending_active,
-            "table_change": bend_change,
+            "table_change": setup_change,
             "idle": idle,
         },
         "message": (
             f"Abkant citit din PostgreSQL. Ultima colectare: {collected_at or 'necunoscuta'}. "
             f"Program: {active_program or 'necunoscut'}. Piese: {pieces_label or 'n/a'}. "
+            f"Upper: {upper_tool or 'n/a'}. Lower: {lower_tool or 'n/a'}. "
             f"Fara schimbare de {format_seconds(stagnation_seconds)}."
         ),
     }
@@ -1102,6 +1159,9 @@ def analyze_abkant_live_snapshot(machine_key: str) -> dict | None:
         "pieces_label": "n/a",
         "produced_pieces": 0,
         "total_pieces": None,
+        "upper_tool": "n/a",
+        "lower_tool": "n/a",
+        "setup_signature": "",
         "derived_signals": {
             "machine_on": False,
             "cutting_active": False,
@@ -1216,6 +1276,10 @@ def init_db() -> None:
                 active_program TEXT,
                 material TEXT,
                 program_status TEXT,
+                upper_tool TEXT,
+                lower_tool TEXT,
+                setup_signature TEXT,
+                setup_changed INTEGER NOT NULL DEFAULT 0,
                 cutting_started_at TEXT,
                 table_change_started_at TEXT NOT NULL,
                 table_change_ended_at TEXT,
@@ -1257,6 +1321,14 @@ def init_db() -> None:
             connection.execute("ALTER TABLE saved_cycles ADD COLUMN table_change_ended_at TEXT")
         if "table_change_duration_seconds" not in saved_cycle_columns:
             connection.execute("ALTER TABLE saved_cycles ADD COLUMN table_change_duration_seconds INTEGER")
+        if "upper_tool" not in saved_cycle_columns:
+            connection.execute("ALTER TABLE saved_cycles ADD COLUMN upper_tool TEXT")
+        if "lower_tool" not in saved_cycle_columns:
+            connection.execute("ALTER TABLE saved_cycles ADD COLUMN lower_tool TEXT")
+        if "setup_signature" not in saved_cycle_columns:
+            connection.execute("ALTER TABLE saved_cycles ADD COLUMN setup_signature TEXT")
+        if "setup_changed" not in saved_cycle_columns:
+            connection.execute("ALTER TABLE saved_cycles ADD COLUMN setup_changed INTEGER NOT NULL DEFAULT 0")
         if "machine_on_duration_seconds" not in saved_cycle_columns:
             connection.execute("ALTER TABLE saved_cycles ADD COLUMN machine_on_duration_seconds INTEGER")
         if "idle_duration_seconds" not in saved_cycle_columns:
@@ -1727,6 +1799,10 @@ def format_saved_cycle_row(row: sqlite3.Row) -> dict:
         "active_program": row["active_program"] or "Necitit",
         "material": row["material"] or "Necitit",
         "program_status": row["program_status"] or "Necitit",
+        "upper_tool": row["upper_tool"] or "n/a",
+        "lower_tool": row["lower_tool"] or "n/a",
+        "setup_signature": row["setup_signature"] or "",
+        "setup_changed": bool(row["setup_changed"]),
         "cutting_started_at": row["cutting_started_at"],
         "table_change_started_at": row["table_change_started_at"],
         "table_change_ended_at": row["table_change_ended_at"],
@@ -2026,6 +2102,7 @@ def build_prometheus_operator_summaries() -> list[dict]:
         period_range = prometheus_period_range(period)
         query_map = {
             "records_count": f'count by (operator_id, operator_name) (max_over_time(haba_saved_cycle_completed[{period_range}]))',
+            "setup_count": f'sum by (operator_id, operator_name) (max_over_time(haba_saved_cycle_setup_changed[{period_range}]))',
             "machine_on_seconds": f'sum by (operator_id, operator_name) (max_over_time(haba_saved_cycle_machine_on_seconds[{period_range}]))',
             "cutting_seconds": f'sum by (operator_id, operator_name) (max_over_time(haba_saved_cycle_cutting_seconds[{period_range}]))',
             "idle_seconds": f'sum by (operator_id, operator_name) (max_over_time(haba_saved_cycle_idle_seconds[{period_range}]))',
@@ -2056,7 +2133,7 @@ def build_prometheus_operator_summaries() -> list[dict]:
                 if field_name.endswith("_seconds"):
                     target_period[field_name] = int(round(numeric_value))
                     target_period[field_name.replace("_seconds", "_label")] = format_seconds(int(round(numeric_value)))
-                elif field_name == "records_count":
+                elif field_name in {"records_count", "setup_count"}:
                     target_period[field_name] = int(round(numeric_value))
 
     output = []
@@ -2064,6 +2141,7 @@ def build_prometheus_operator_summaries() -> list[dict]:
         for period in periods:
             target_period = operator_entry[period]
             target_period.setdefault("records_count", 0)
+            target_period.setdefault("setup_count", 0)
             for field_name in ("machine_on", "cutting", "idle", "table_change"):
                 seconds_key = f"{field_name}_seconds"
                 label_key = f"{field_name}_label"
@@ -2113,6 +2191,10 @@ def build_prometheus_saved_records(period: str, operator_id: str | None = None) 
             "active_program": labels.get("active_program") or labels.get("selected_program") or "Necitit",
             "material": labels.get("material") or "Necitit",
             "program_status": labels.get("program_status") or "Salvat in Prometheus",
+            "upper_tool": labels.get("upper_tool") or "n/a",
+            "lower_tool": labels.get("lower_tool") or "n/a",
+            "setup_signature": labels.get("setup_signature") or "",
+            "setup_changed": to_bool(labels.get("setup_changed", "false")) if labels.get("setup_changed") is not None else False,
             "cutting_started_at": labels.get("cutting_started_at") or None,
             "table_change_started_at": labels.get("table_change_started_at") or labels.get("completed_at") or None,
             "table_change_ended_at": labels.get("completed_at") or None,
@@ -2126,6 +2208,7 @@ def build_prometheus_saved_records(period: str, operator_id: str | None = None) 
         "idle_duration_seconds": "haba_saved_cycle_idle_seconds",
         "table_change_duration_seconds": "haba_saved_cycle_table_change_seconds",
         "efficiency_percent": "haba_saved_cycle_efficiency_percent",
+        "setup_changed": "haba_saved_cycle_setup_changed",
     }
     for field_name, metric_name in metric_map.items():
         query = f"max_over_time({metric_name}{label_filter}[{period_range}])"
@@ -2138,6 +2221,8 @@ def build_prometheus_saved_records(period: str, operator_id: str | None = None) 
             if field_name.endswith("_seconds"):
                 base_records[cycle_id][field_name] = int(round(numeric_value))
                 base_records[cycle_id][field_name.replace("_seconds", "_label")] = format_seconds(int(round(numeric_value)))
+            elif field_name == "setup_changed":
+                base_records[cycle_id][field_name] = bool(round(numeric_value))
             else:
                 base_records[cycle_id][field_name] = round(numeric_value, 1)
 
@@ -2155,6 +2240,7 @@ def build_prometheus_saved_records(period: str, operator_id: str | None = None) 
         record.setdefault("table_change_duration_seconds", 0)
         record.setdefault("table_change_duration_label", format_seconds(0))
         record.setdefault("efficiency_percent", 0.0)
+        record.setdefault("setup_changed", False)
         record["activity_label"] = cutting_meta.get("report_label", cutting_meta["label"])
         record["change_label"] = table_change_meta.get("report_label", table_change_meta["label"])
         records.append(record)
@@ -2166,6 +2252,7 @@ def build_prometheus_saved_records(period: str, operator_id: str | None = None) 
 def build_empty_operator_period_bucket() -> dict:
     return {
         "records_count": 0,
+        "setup_count": 0,
         "efficiency_percent": 0.0,
         "machine_on_seconds": 0,
         "machine_on_label": format_seconds(0),
@@ -2303,6 +2390,7 @@ def apply_records_to_operator_period(operator_map: dict[str, dict], period_key: 
         period_bucket.update(
             {
                 "records_count": len(operator_records),
+                "setup_count": sum(1 for record in operator_records if bool(record.get("setup_changed"))),
                 "efficiency_percent": calculate_operator_efficiency_percent(cutting_seconds, machine_on_seconds),
                 "machine_on_seconds": machine_on_seconds,
                 "machine_on_label": format_seconds(machine_on_seconds),
@@ -2458,21 +2546,23 @@ def normalize_context_token(value: str | None) -> str:
 
 def resolve_snapshot_context(snapshot: dict | None) -> dict[str, str]:
     if not snapshot:
-        return {"program": "", "material": ""}
+        return {"program": "", "material": "", "setup_signature": ""}
 
     selected_program = normalize_context_token(snapshot.get("selected_program"))
     active_program = normalize_context_token(snapshot.get("active_program"))
     material = normalize_context_token(snapshot.get("material"))
+    setup_signature = normalize_context_token(resolve_abkant_tool_signature(snapshot))
     return {
         "program": selected_program or active_program,
         "material": material,
+        "setup_signature": setup_signature,
     }
 
 
 def context_requires_stats_reset(previous_snapshot: dict | None, current_snapshot: dict | None) -> bool:
     previous_context = resolve_snapshot_context(previous_snapshot)
     current_context = resolve_snapshot_context(current_snapshot)
-    if not (current_context["program"] or current_context["material"]):
+    if not (current_context["program"] or current_context["material"] or current_context["setup_signature"]):
         return False
     previous_signals = (previous_snapshot or {}).get("derived_signals") or {}
     current_signals = (current_snapshot or {}).get("derived_signals") or {}
@@ -2587,6 +2677,10 @@ def open_pending_cycle(
         "active_program": snapshot.get("active_program"),
         "material": snapshot.get("material"),
         "program_status": snapshot.get("program_status"),
+        "upper_tool": snapshot.get("upper_tool"),
+        "lower_tool": snapshot.get("lower_tool"),
+        "setup_signature": resolve_abkant_tool_signature(snapshot),
+        "setup_changed": bool(snapshot.get("setup_changed")),
         "cutting_started_at": current_signals["cutting_active"]["changed_at"] if current_signals["cutting_active"]["active"] else None,
         "table_change_started_at": now_local().isoformat(timespec="seconds"),
         "source": snapshot.get("source", "live-ocr"),
@@ -2655,6 +2749,10 @@ def finalize_pending_cycle(machine_key: str, current_snapshot: dict) -> None:
                     active_program,
                     material,
                     program_status,
+                    upper_tool,
+                    lower_tool,
+                    setup_signature,
+                    setup_changed,
                     cutting_started_at,
                     table_change_started_at,
                     table_change_ended_at,
@@ -2678,6 +2776,10 @@ def finalize_pending_cycle(machine_key: str, current_snapshot: dict) -> None:
                     pending_cycle.get("active_program"),
                     pending_cycle.get("material"),
                     pending_cycle.get("program_status"),
+                    pending_cycle.get("upper_tool"),
+                    pending_cycle.get("lower_tool"),
+                    pending_cycle.get("setup_signature"),
+                    1 if pending_cycle.get("setup_changed") else 0,
                     pending_cycle.get("cutting_started_at"),
                     pending_cycle.get("table_change_started_at"),
                     table_change_ended_at.isoformat(timespec="seconds"),
@@ -2723,6 +2825,12 @@ def save_cycle_on_program_change(
     previous_program = resolve_snapshot_program(previous_snapshot)
     current_program = resolve_snapshot_program(current_snapshot)
     if not previous_program or not current_program or previous_program == current_program:
+        return
+
+    if machine_key == "abkant" and (
+        resolve_abkant_tool_signature(previous_snapshot)
+        or resolve_abkant_tool_signature(current_snapshot)
+    ):
         return
 
     if not bool(previous_snapshot.get("derived_signals", {}).get("cutting_active")):
@@ -2776,6 +2884,10 @@ def save_cycle_on_program_change(
                     active_program,
                     material,
                     program_status,
+                    upper_tool,
+                    lower_tool,
+                    setup_signature,
+                    setup_changed,
                     cutting_started_at,
                     table_change_started_at,
                     table_change_ended_at,
@@ -2799,6 +2911,10 @@ def save_cycle_on_program_change(
                     previous_snapshot.get("active_program") or previous_program,
                     previous_snapshot.get("material"),
                     f"{previous_snapshot.get('program_status') or 'Necitit'} -> program schimbat",
+                    previous_snapshot.get("upper_tool"),
+                    previous_snapshot.get("lower_tool"),
+                    resolve_abkant_tool_signature(previous_snapshot),
+                    0,
                     cutting_started_at_raw,
                     change_detected_at.isoformat(timespec="seconds"),
                     change_detected_at.isoformat(timespec="seconds"),
@@ -3016,6 +3132,8 @@ def build_prometheus_metrics() -> str:
         "# TYPE haba_saved_cycle_table_change_seconds gauge",
         "# HELP haba_saved_cycle_efficiency_percent Efficiency percent for a completed cycle.",
         "# TYPE haba_saved_cycle_efficiency_percent gauge",
+        "# HELP haba_saved_cycle_setup_changed Setup change flag for a completed cycle.",
+        "# TYPE haba_saved_cycle_setup_changed gauge",
     ]
 
     for machine_profile in get_machine_profiles():
@@ -3090,6 +3208,10 @@ def build_prometheus_metrics() -> str:
             "active_program": record["active_program"],
             "material": record["material"],
             "program_status": record["program_status"],
+            "upper_tool": record.get("upper_tool") or "n/a",
+            "lower_tool": record.get("lower_tool") or "n/a",
+            "setup_signature": record.get("setup_signature") or "",
+            "setup_changed": "true" if bool(record.get("setup_changed")) else "false",
             "cutting_started_at": record["cutting_started_at"] or "",
             "table_change_started_at": record["table_change_started_at"] or "",
             "completed_at": record["table_change_ended_at"] or record["created_at"] or "",
@@ -3124,6 +3246,12 @@ def build_prometheus_metrics() -> str:
             lines,
             "haba_saved_cycle_efficiency_percent",
             float(record["efficiency_percent"] or 0),
+            cycle_labels,
+        )
+        append_prometheus_metric(
+            lines,
+            "haba_saved_cycle_setup_changed",
+            1 if bool(record.get("setup_changed")) else 0,
             cycle_labels,
         )
 
@@ -3162,6 +3290,45 @@ def insert_event(
         connection.commit()
 
 
+def enrich_abkant_snapshot_with_setup_state(
+    snapshot: dict,
+    previous_snapshot: dict | None,
+    current_signals: dict[str, dict],
+) -> dict:
+    if not snapshot.get("available"):
+        return snapshot
+
+    derived_signals = dict(snapshot.get("derived_signals") or {})
+    machine_on = bool(derived_signals.get("machine_on"))
+    cutting_active = bool(derived_signals.get("cutting_active"))
+    legacy_table_change = bool(derived_signals.get("table_change", False))
+    previous_signature = resolve_abkant_tool_signature(previous_snapshot)
+    current_signature = resolve_abkant_tool_signature(snapshot)
+    old_table_change = bool(current_signals.get("table_change", {}).get("active"))
+    tool_changed = bool(machine_on and previous_signature and current_signature and previous_signature != current_signature)
+
+    if not machine_on:
+        setup_change = False
+    elif not current_signature:
+        setup_change = legacy_table_change
+    elif old_table_change:
+        setup_change = not cutting_active
+    else:
+        setup_change = tool_changed and not cutting_active
+
+    snapshot["upper_tool"] = normalize_abkant_tool_value(snapshot.get("upper_tool")) or "n/a"
+    snapshot["lower_tool"] = normalize_abkant_tool_value(snapshot.get("lower_tool")) or "n/a"
+    snapshot["setup_signature"] = current_signature
+    snapshot["setup_changed"] = tool_changed
+    derived_signals["table_change"] = setup_change
+    snapshot["derived_signals"] = derived_signals
+
+    if setup_change:
+        snapshot["program_status"] = "Setup change"
+
+    return snapshot
+
+
 def sync_machine_events_from_live_snapshot(machine_key: str) -> dict | None:
     snapshot = get_live_machine_snapshot(machine_key)
     if not snapshot:
@@ -3170,6 +3337,9 @@ def sync_machine_events_from_live_snapshot(machine_key: str) -> dict | None:
     runtime = get_machine_runtime(machine_key)
     previous_snapshot = runtime.get("last_snapshot")
     stats_anchor = runtime.get("stats_anchor")
+    current_signals = fetch_current_signals(machine_key)
+    if machine_key == "abkant":
+        snapshot = enrich_abkant_snapshot_with_setup_state(snapshot, previous_snapshot, current_signals)
     current_context = resolve_snapshot_context(snapshot)
     if snapshot.get("available") and context_requires_stats_reset(previous_snapshot, snapshot):
         stats_anchor = {
@@ -3192,7 +3362,6 @@ def sync_machine_events_from_live_snapshot(machine_key: str) -> dict | None:
         return snapshot
 
     derived_signals = snapshot.get("derived_signals") or {}
-    current_signals = fetch_current_signals(machine_key)
     machine_profile = get_machine_profile(machine_key)
     operator_snapshot = fetch_current_operator(machine_profile["workcenter_id"])
 
@@ -3200,6 +3369,8 @@ def sync_machine_events_from_live_snapshot(machine_key: str) -> dict | None:
         f"selected={snapshot.get('selected_program')}; "
         f"active={snapshot.get('active_program')}; "
         f"material={snapshot.get('material')}; "
+        f"upper={snapshot.get('upper_tool', 'n/a')}; "
+        f"lower={snapshot.get('lower_tool', 'n/a')}; "
         f"status={snapshot.get('program_status')}"
     )
 

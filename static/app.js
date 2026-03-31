@@ -34,13 +34,13 @@ const savedPeriodReportLabelMap = {
 };
 
 function getMachineOnMetricLabel(machineKey) {
-    return machineKey === "abkant" ? "Feed activ" : "Machine ON";
+    return "Feed activ";
 }
 
 function getAvailabilityPrefix(machineKey) {
     return machineKey === "abkant"
         ? "Disponibilitate indoire/feed_activ"
-        : "Disponibilitate taiere/masina_pornita";
+        : "Disponibilitate taiere/feed_activ";
 }
 
 function getSignalButtonLabel(signalName, signal) {
@@ -891,7 +891,7 @@ function renderLiveExtraction(snapshot) {
             { slot: "active_program", label: "Active program", value: snapshot.active_program || "Necitit" },
             { slot: "material", label: "Material", value: snapshot.material || "Necitit" },
             { slot: "program_status", label: "Program status", value: snapshot.program_status || "Necitit" },
-            { slot: "machine_on", label: "Machine ON", value: signals.machine_on ? "DA" : "NU" },
+            { slot: "machine_on", label: "Feed activ", value: signals.machine_on ? "DA" : "NU" },
             { slot: "cutting", label: "Cutting", value: signals.cutting_active ? "DA" : "NU" },
             { slot: "table_change", label: "Table change", value: signals.table_change ? "DA" : "NU" },
             { slot: "idle", label: "Idle", value: signals.idle ? "DA" : "NU" }
@@ -1028,7 +1028,7 @@ function renderTimeline(events) {
                 <small>${formatDateTime(eventItem.created_at)}</small>
                 <small>${eventItem.source}</small>
             </div>
-            <strong>${eventItem.signal_label}: ${eventItem.value ? "ON" : "OFF"}</strong>
+            <strong>${eventItem.signal_label}: ${eventItem.value ? "Activ" : "Inactiv"}</strong>
             <p>${eventItem.operator_name || "Fara operator activ"}</p>
             <small>${eventItem.note || "Fara observatii"}${eventItem.is_manual ? " | test manual" : ""}</small>
         `;

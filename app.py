@@ -170,13 +170,13 @@ REAL_DATA_FEEDS = {
             {"label": "Selected program", "value": "OCR nume program din ecran"},
             {"label": "Active program", "value": "LaserState / nume program OCR"},
             {"label": "Program status", "value": "OK / ERR din script"},
-            {"label": "Machine ON", "value": "LaserStatus = UP"},
+            {"label": "Feed activ", "value": "LaserStatus = UP"},
             {"label": "Cutting", "value": "nu este extras direct inca"},
             {"label": "Table change", "value": "nu este extras direct inca"},
             {"label": "Idle", "value": "derivat doar dupa ce avem Cutting"},
         ],
         "derivation_rules": [
-            {"label": "Machine ON", "value": "DA cand Redis key LaserStatus este UP"},
+            {"label": "Feed activ", "value": "DA cand Redis key LaserStatus este UP"},
             {"label": "Cutting", "value": "Nu exista in script un OCR direct pe zona Running / Laser ON / Wati"},
             {"label": "Table change", "value": "Nu exista in script o zona OCR sau semnal IO dedicat schimbului de masa"},
             {"label": "Idle", "value": "Poate fi calculat doar dupa ce definim clar Cutting si Table change"},
@@ -203,13 +203,13 @@ REAL_DATA_FEEDS = {
             {"label": "Selected program", "value": "necitit"},
             {"label": "Active program", "value": "necitit"},
             {"label": "Program status", "value": "fara feed dedicat"},
-            {"label": "Machine ON", "value": "ramane OFF pana exista sursa separata"},
+            {"label": "Feed activ", "value": "ramane NU pina exista sursa separata"},
             {"label": "Cutting", "value": "oprit"},
             {"label": "Table change", "value": "oprit"},
             {"label": "Idle", "value": "oprit"},
         ],
         "derivation_rules": [
-            {"label": "Machine ON", "value": "ramane NU fara feed sau semnal dedicat pentru Laser2"},
+            {"label": "Feed activ", "value": "ramane NU fara feed sau semnal dedicat pentru Laser2"},
             {"label": "Cutting", "value": "necesita OCR separat sau PLC dedicat"},
             {"label": "Table change", "value": "necesita feed separat sau semnal suplimentar"},
             {"label": "Idle", "value": "va fi calculat doar dupa instrumentarea dedicata"},
@@ -286,6 +286,26 @@ SIGNAL_DEFINITIONS = {
 }
 
 MACHINE_SIGNAL_OVERRIDES = {
+    "laser1": {
+        "machine_on": {
+            "label": "Feed activ",
+            "description": "Bridge-ul OCR si semnalul LaserStatus raspund pentru Laser1.",
+            "button_on_label": "Marcheaza feed inactiv",
+            "button_off_label": "Marcheaza feed activ",
+            "metric_label": "Feed activ",
+            "report_label": "Feed activ",
+        },
+    },
+    "laser2": {
+        "machine_on": {
+            "label": "Feed activ",
+            "description": "Dashboardul vede doar disponibilitatea feedului configurat pentru Laser2.",
+            "button_on_label": "Marcheaza feed inactiv",
+            "button_off_label": "Marcheaza feed activ",
+            "metric_label": "Feed activ",
+            "report_label": "Feed activ",
+        },
+    },
     "abkant": {
         "machine_on": {
             "label": "Feed activ",
@@ -338,6 +358,26 @@ STATE_DEFINITIONS = {
 }
 
 MACHINE_STATE_OVERRIDES = {
+    "laser1": {
+        "off": {
+            "label": "Feed indisponibil",
+            "description": "Nu mai vine snapshot valid din feed-ul Laser1.",
+        },
+        "ready": {
+            "label": "Pregatit",
+            "description": "Feedul Laser1 este activ, dar nu avem taiere detectata acum.",
+        },
+    },
+    "laser2": {
+        "off": {
+            "label": "Feed indisponibil",
+            "description": "Laser2 nu are inca feed dedicat sau snapshot valid.",
+        },
+        "ready": {
+            "label": "Pregatit",
+            "description": "Feedul Laser2 este activ, dar nu avem taiere detectata acum.",
+        },
+    },
     "abkant": {
         "off": {
             "label": "Feed indisponibil",
@@ -1092,7 +1132,7 @@ def analyze_laser_live_snapshot(machine_key: str) -> dict | None:
                 "table_change": False,
                 "idle": False,
             },
-            "message": "Laser2 nu are inca feed sau semnal dedicat, deci ramane OFF pana il configuram separat.",
+            "message": "Laser2 nu are inca feed sau semnal dedicat, deci dashboardul il trateaza doar ca feed indisponibil pana il configuram separat.",
         }
 
     endpoint = resolve_real_data_endpoint(machine_key)
@@ -3062,7 +3102,7 @@ def build_today_stats(machine_key: str) -> dict:
     availability_prefix = (
         "Disponibilitate indoire/feed_activ"
         if machine_key == "abkant"
-        else "Disponibilitate taiere/masina_pornita"
+        else "Disponibilitate taiere/feed_activ"
     )
 
     return {

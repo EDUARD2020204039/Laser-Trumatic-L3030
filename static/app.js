@@ -302,7 +302,7 @@ function bindActions() {
 
     const savedSummary = document.getElementById("saved-summary");
     if (savedSummary) {
-        savedSummary.addEventListener("click", async (event) => {
+        savedSummary.addEventListener("click", (event) => {
             const card = event.target.closest("[data-operator-id]");
             if (!card) {
                 return;
@@ -310,7 +310,12 @@ function bindActions() {
 
             state.savedOperatorId = card.dataset.operatorId || "";
             window.localStorage.setItem("savedOperatorId", state.savedOperatorId);
-            await loadSavedRecords();
+            if (state.savedRecords) {
+                state.savedRecords.selected_operator_id = state.savedOperatorId;
+                renderSavedView(state.savedRecords);
+                return;
+            }
+            loadSavedRecords();
         });
     }
 
@@ -409,9 +414,6 @@ async function loadSavedRecords() {
 
     try {
         const query = new URLSearchParams({ period: state.savedPeriod });
-        if (state.savedOperatorId) {
-            query.set("operator_id", state.savedOperatorId);
-        }
         const response = await fetch(
             `${window.appConfig.savedRecordsUrl}?${query.toString()}`,
             { signal: state.savedAbortController.signal }
@@ -449,6 +451,21 @@ async function loadSavedRecords() {
             state.savedAbortController = null;
         }
     }
+}
+
+function getFilteredSavedRecords(payload) {
+    const records = payload?.records || [];
+    const selectedOperatorId = payload?.selected_operator_id || "";
+    if (!selectedOperatorId) {
+        return records;
+    }
+
+    return records.filter((record) => {
+        const recordOperatorId = String(record.operator_id || "").trim();
+        const recordOperatorName = record.operator_name || "Fara operator la salvare";
+        const resolvedOperatorId = recordOperatorId || `name:${recordOperatorName}`;
+        return resolvedOperatorId === selectedOperatorId;
+    });
 }
 
 async function sendEvent(signalName, value) {
@@ -594,6 +611,7 @@ function renderDashboard(payload) {
 function renderSavedView(payload) {
     const currentPeriod = payload.period || state.savedPeriod;
     const periodMeta = getSavedPeriodMeta(currentPeriod);
+    const filteredRecords = getFilteredSavedRecords(payload);
     syncSectionVisibility("saved");
     renderSavedHeader(payload, periodMeta);
     renderMachineSelector(state.dashboard?.machines || window.appConfig.initialMachines || []);
@@ -601,7 +619,7 @@ function renderSavedView(payload) {
     renderSavedFilters(currentPeriod);
     renderSavedReports(payload, currentPeriod, periodMeta);
     renderSavedMachineReports(payload, currentPeriod, periodMeta);
-    renderSavedRecords(payload.records || [], periodMeta);
+    renderSavedRecords(filteredRecords, periodMeta);
 }
 
 function renderHeader(payload) {
@@ -1109,7 +1127,7 @@ function getSelectedSavedOperator(payload) {
 function renderSavedSummary(payload, periodMeta) {
     const container = document.getElementById("saved-summary");
     const count = document.getElementById("saved-records-count");
-    const recordsCount = Number(state.savedRecords?.records_count || 0);
+    const recordsCount = getFilteredSavedRecords(payload).length;
     count.textContent = String(recordsCount);
 
     const operators = payload.operators || [];
@@ -1194,8 +1212,9 @@ function renderSavedReports(payload, period, periodMeta) {
 
         const periodStats = getSavedOperatorPeriod(selectedOperator, period);
         const unitLabels = getSavedUnitLabels(selectedOperator);
-        const activityLabel = payload.records?.[0]?.activity_label || "Cutting";
-        const changeLabel = payload.records?.[0]?.change_label || "Table change";
+        const filteredRecords = getFilteredSavedRecords(payload);
+        const activityLabel = filteredRecords[0]?.activity_label || "Cutting";
+        const changeLabel = filteredRecords[0]?.change_label || "Table change";
         container.innerHTML = `
             <article class="saved-report-card">
                 <small>Operator selectat</small>
@@ -1254,7 +1273,7 @@ function renderSavedReports(payload, period, periodMeta) {
 function renderSavedMachineReports(payload, period, periodMeta) {
     const container = document.getElementById("saved-machine-reports");
     if ((payload.operators || []).length) {
-        const records = payload.records || [];
+        const records = getFilteredSavedRecords(payload);
         if (!records.length) {
             container.innerHTML = `<p class="empty-state">${periodMeta.emptyMachineReports}</p>`;
             return;

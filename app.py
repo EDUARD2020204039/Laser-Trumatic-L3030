@@ -2553,7 +2553,7 @@ def build_saved_cycles_payload(machine_key: str | None = None, period: str = "al
             )
         )
         selected_operator_id = resolve_selected_operator_id(operator_id, operators)
-        records = build_prometheus_saved_records(normalized_period, operator_id=selected_operator_id)
+        records = build_prometheus_saved_records(normalized_period)
         if operators:
             return {
                 "view": "saved",
@@ -2572,18 +2572,17 @@ def build_saved_cycles_payload(machine_key: str | None = None, period: str = "al
     records = fetch_saved_cycles_for_period(machine_key=machine_key, period=normalized_period)
     operators = build_sqlite_operator_summaries(machine_key=machine_key)
     selected_operator_id = resolve_selected_operator_id(operator_id, operators)
-    filtered_records = filter_records_by_operator(records, selected_operator_id)
     return {
         "view": "saved",
         "selected_machine_key": machine_key,
         "period": normalized_period,
         "operators": operators,
         "selected_operator_id": selected_operator_id,
-        "records": filtered_records,
+        "records": records,
         "summary": summarize_saved_cycles(records),
         "reports": build_saved_cycles_reports(machine_key),
         "reports_by_machine": build_saved_cycles_reports_by_machine(),
-        "records_count": len(filtered_records),
+        "records_count": len(records),
         "data_source": "sqlite-fallback",
         "updated_at": now_local().isoformat(timespec="seconds"),
     }

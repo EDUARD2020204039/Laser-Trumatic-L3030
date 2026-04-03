@@ -47,6 +47,14 @@ load_dotenv(BASE_DIR / ".env")
 DEFAULT_SQLITE_FILENAME = "laser_monitor.db"
 
 
+def get_static_asset_version(filename: str) -> str:
+    asset_path = BASE_DIR / "static" / filename
+    try:
+        return str(int(asset_path.stat().st_mtime))
+    except OSError:
+        return "dev"
+
+
 def resolve_sqlite_path() -> Path:
     explicit_sqlite_path = os.getenv("LASER_SQLITE_PATH")
     if explicit_sqlite_path:
@@ -3670,6 +3678,8 @@ def index():
         machines=get_machine_profiles(),
         default_machine_key=DEFAULT_MACHINE_KEY,
         script_catalog=build_script_catalog(),
+        css_asset_version=get_static_asset_version("app.css"),
+        js_asset_version=get_static_asset_version("app.js"),
     )
 
 

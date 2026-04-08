@@ -4,11 +4,13 @@ import json
 import os
 import re
 import shutil
+import socket
 import sqlite3
 import threading
 import time as time_module
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, time, timedelta
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -103,10 +105,12 @@ BACKGROUND_SYNC_INTERVAL_SECONDS = max(int(os.getenv("BACKGROUND_SYNC_INTERVAL_S
 SNAPSHOT_FRESHNESS_SECONDS = max(int(os.getenv("SNAPSHOT_FRESHNESS_SECONDS", "3")), 1)
 ABKANT_IDLE_STAGNATION_SECONDS = max(int(os.getenv("ABKANT_IDLE_STAGNATION_SECONDS", "600")), 60)
 OPERATOR_CACHE_SECONDS = max(int(os.getenv("OPERATOR_CACHE_SECONDS", "20")), 3)
+PROMETHEUS_MAX_PARALLEL_QUERIES = max(int(os.getenv("PROMETHEUS_MAX_PARALLEL_QUERIES", "6")), 1)
 _background_sync_started = False
 RUNTIME_VALUE_UNCHANGED = object()
 PROMETHEUS_BASE_URL = (os.getenv("PROMETHEUS_BASE_URL", "http://localhost:9090") or "http://localhost:9090").rstrip("/")
 UNKNOWN_OPERATOR_LABEL = "Fara operator la salvare"
+SAVED_CYCLE_INSERT_PLACEHOLDERS = ", ".join(["?"] * 23)
 _operator_snapshot_cache: dict[int, dict] = {}
 
 if pytesseract is not None:  # pragma: no cover - runtime environment specific
@@ -118,6 +122,11 @@ MACHINE_DEFINITIONS = {
     "laser1": {
         "label": "Laser1",
         "description": "Post principal de taiere si monitorizare laser.",
+        "accent": "ember",
+    },
+    "laser1modbus": {
+        "label": "LASER1MODBUS",
+        "description": "Laser1 cu timpi cititi din Modbus si program extras din feed.",
         "accent": "ember",
     },
     "laser2": {
@@ -134,12 +143,20 @@ MACHINE_DEFINITIONS = {
 
 DEFAULT_MACHINE_HMI_URLS = {
     "laser1": "https://laser.helpan.ro/",
+    "laser1modbus": "https://laser.helpan.ro/",
     "laser2": "",
     "abkant": "https://abkant.helpan.ro/",
 }
 
 DEFAULT_MACHINE_CAMERA_FEEDS = {
     "laser1": {
+        "url": "http://192.168.2.140/ISAPI/Streaming/channels/101/picture",
+        "mode": "image",
+        "username": "admin",
+        "password": "HELPAN2011$",
+        "auth": "digest",
+    },
+    "laser1modbus": {
         "url": "http://192.168.2.140/ISAPI/Streaming/channels/101/picture",
         "mode": "image",
         "username": "admin",
@@ -194,6 +211,38 @@ REAL_DATA_FEEDS = {
             "Redis keys observate: LaserStatus, LaserState",
             "MQTT topic observat: Laser/3020/Status",
             "Scriptul urmareste downtime si numele programului activ",
+        ],
+    },
+    "laser1modbus": {
+        "script_name": "app.py",
+        "display_name": "Laser1 Modbus bridge",
+        "endpoint": "https://laser.helpan.ro/",
+        "transport": "Modbus TCP + OCR din feed",
+        "left_panel": [
+            {"label": "OCR program", "value": "da"},
+            {"label": "OCR material", "value": "da"},
+            {"label": "Modbus bits", "value": "IN1 .. IN4"},
+            {"label": "Semnal live", "value": "complet din Modbus"},
+        ],
+        "screen_rows": [
+            {"label": "Selected program", "value": "OCR din feedul Laser1"},
+            {"label": "Active program", "value": "OCR din feedul Laser1"},
+            {"label": "Machine ON", "value": "bit Modbus mapat pe IN1..IN4"},
+            {"label": "Cutting", "value": "bit Modbus mapat pe IN1..IN4"},
+            {"label": "Table change", "value": "bit Modbus mapat pe IN1..IN4"},
+            {"label": "Idle / Aborted", "value": "bit Modbus optional mapat pe IN1..IN4"},
+            {"label": "Randament", "value": "Cutting / Machine ON"},
+        ],
+        "derivation_rules": [
+            {"label": "Machine ON", "value": "Se activeaza cind bitul mapat este 1 sau daca orice alt semnal productiv este 1"},
+            {"label": "Cutting", "value": "Se activeaza direct din bitul Modbus mapat"},
+            {"label": "Table change", "value": "Porneste pe 1 si ciclul se inchide cind bitul revine pe 0"},
+            {"label": "Program", "value": "Se citeste doar din feed pe intervalul semnalelor Modbus"},
+        ],
+        "details": [
+            "Configurezi host, port, unit ID, tipul de biti si maparea IN1..IN4 direct din dashboard",
+            "Aplicatia citeste Modbus TCP direct din container, fara bridge separat",
+            "Programul si materialul ramin citite din feedul Laser1",
         ],
     },
     "laser2": {
@@ -291,6 +340,13 @@ SIGNAL_DEFINITIONS = {
         "metric_label": "Table change",
         "report_label": "Schimb masa",
     },
+    "idle_abort": {
+        "label": "Idle / Aborted",
+        "description": "Semnal dedicat pentru idle sau abort din utilaj.",
+        "accent": "slate",
+        "metric_label": "Idle / Aborted",
+        "report_label": "Idle / Aborted",
+    },
 }
 
 MACHINE_SIGNAL_OVERRIDES = {
@@ -302,6 +358,32 @@ MACHINE_SIGNAL_OVERRIDES = {
             "button_off_label": "Marcheaza feed activ",
             "metric_label": "Feed activ",
             "report_label": "Feed activ",
+        },
+    },
+    "laser1modbus": {
+        "machine_on": {
+            "label": "Machine ON",
+            "description": "Bitul Modbus mapat pe Machine ON este activ.",
+            "metric_label": "Machine ON",
+            "report_label": "Machine ON",
+        },
+        "cutting_active": {
+            "label": "Cutting",
+            "description": "Bitul Modbus mapat pe Cutting este activ.",
+            "metric_label": "Cutting",
+            "report_label": "Cutting",
+        },
+        "table_change": {
+            "label": "Table change",
+            "description": "Bitul Modbus mapat pe Table change este activ.",
+            "metric_label": "Table change",
+            "report_label": "Table change",
+        },
+        "idle_abort": {
+            "label": "Idle / Aborted",
+            "description": "Bitul Modbus mapat pe Idle sau Aborted este activ.",
+            "metric_label": "Idle / Aborted",
+            "report_label": "Idle / Aborted",
         },
     },
     "laser2": {
@@ -353,6 +435,11 @@ STATE_DEFINITIONS = {
         "description": "Masina este pornita, dar nu lucreaza activ.",
         "tone": "steel",
     },
+    "idle": {
+        "label": "Idle",
+        "description": "Masina este pornita, dar este in idle sau abort.",
+        "tone": "slate",
+    },
     "cutting": {
         "label": "In productie",
         "description": "Productie activa in curs.",
@@ -386,6 +473,20 @@ MACHINE_STATE_OVERRIDES = {
             "description": "Feedul Laser2 este activ, dar nu avem taiere detectata acum.",
         },
     },
+    "laser1modbus": {
+        "off": {
+            "label": "Modbus indisponibil",
+            "description": "Containerul nu poate citi inca bitii Modbus configurati.",
+        },
+        "ready": {
+            "label": "Pregatit",
+            "description": "Machine ON este activ, dar nici taierea, nici schimbul de masa nu ruleaza acum.",
+        },
+        "idle": {
+            "label": "Idle / Aborted",
+            "description": "Bitul dedicat de idle sau abort este activ in Modbus.",
+        },
+    },
     "abkant": {
         "off": {
             "label": "Feed indisponibil",
@@ -411,6 +512,15 @@ LASER_OCR_ZONES = {
     "right_panel": (620, 170, 620, 550),
     "left_panel": (0, 170, 620, 260),
 }
+
+MODBUS_MACHINE_KEYS = {"laser1modbus"}
+MODBUS_SIGNAL_TARGET_CHOICES = (
+    "unused",
+    "machine_on",
+    "cutting_active",
+    "table_change",
+    "idle_abort",
+)
 
 app = Flask(__name__)
 app.config["JSON_SORT_KEYS"] = False
@@ -449,6 +559,17 @@ def parse_optional_int(value) -> int | None:
     return int(value)
 
 
+def parse_optional_float(value) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        return float(stripped)
+    return float(value)
+
+
 def ensure_signal_name(signal_name: str) -> str:
     if signal_name not in SIGNAL_DEFINITIONS:
         raise ValueError(f"Unsupported signal: {signal_name}")
@@ -483,6 +604,17 @@ def get_machine_env_value(machine_key: str, suffix: str, legacy_names: tuple[str
     return ""
 
 
+def machine_uses_modbus(machine_key: str) -> bool:
+    return ensure_machine_key(machine_key) in MODBUS_MACHINE_KEYS
+
+
+def machine_supports_idle_signal(machine_key: str) -> bool:
+    if not machine_uses_modbus(machine_key):
+        return False
+    config = get_machine_modbus_config(machine_key)
+    return "idle_abort" in set(config.get("signal_map", {}).values())
+
+
 def resolve_real_data_endpoint(machine_key: str) -> str:
     legacy_names = ("LASER_REAL_DATA_ENDPOINT",) if machine_key in {"laser1", "laser2"} else ()
     return get_machine_env_value(machine_key, "REAL_DATA_ENDPOINT", legacy_names) or REAL_DATA_FEEDS[machine_key]["endpoint"]
@@ -495,6 +627,11 @@ def resolve_real_data_name(machine_key: str) -> str:
 
 def machine_has_dedicated_live_source(machine_key: str) -> bool:
     machine_key = ensure_machine_key(machine_key)
+    if machine_key == "laser1modbus":
+        try:
+            return bool(get_machine_modbus_config(machine_key).get("enabled"))
+        except Exception:
+            return False
     if machine_key != "laser2":
         return True
 
@@ -559,7 +696,7 @@ def build_machine_feeds(machine_key: str) -> list[dict]:
     camera_username, camera_password, _ = resolve_machine_camera_feed_credentials(machine_key)
     hmi_url = resolve_machine_hmi_feed_url(machine_key)
     camera_refresh_ms = None
-    if machine_key == "laser1" and camera_mode == "image" and (
+    if machine_key in {"laser1", "laser1modbus"} and camera_mode == "image" and (
         camera_url.strip().lower().endswith("/picture")
         or (camera_username and camera_password)
     ):
@@ -1143,48 +1280,25 @@ def analyze_laser_live_snapshot(machine_key: str) -> dict | None:
             "message": "Laser2 nu are inca feed sau semnal dedicat, deci dashboardul il trateaza doar ca feed indisponibil pana il configuram separat.",
         }
 
-    endpoint = resolve_real_data_endpoint(machine_key)
-    image, error_message = fetch_mjpeg_frame(endpoint)
-    if image is None:
-        return {
-            "available": False,
-            "connected": False,
-            "endpoint": endpoint,
-            "message": f"Nu pot citi captura live de la {endpoint}. Motiv: {error_message}",
-        }
+    ocr_snapshot = get_laser_ocr_snapshot(machine_key)
+    if not ocr_snapshot.get("available"):
+        return ocr_snapshot
 
-    right_panel_variants = read_ocr_block_variants(image, LASER_OCR_ZONES["right_panel"])
-    if right_panel_variants:
-        right_panel_text = right_panel_variants[0]
-    else:
-        right_panel_text = read_ocr_block(image, LASER_OCR_ZONES["right_panel"], psm=6)
-        right_panel_variants = [right_panel_text] if right_panel_text else []
-    left_panel_text = read_ocr_block(image, LASER_OCR_ZONES["left_panel"], psm=11)
-
-    selected_program = extract_section_token(right_panel_text, "Selected program", "Active program")
-    active_program = extract_section_token(right_panel_text, "Active program", "NC blocks")
-    material = extract_material(left_panel_text)
-    program_status = extract_program_status(*right_panel_variants)
-    warning_message = detect_laser_warning(image)
-
-    normalized_status = program_status.upper()
-    normalized_active_program = active_program.upper()
+    selected_program = ocr_snapshot.get("selected_program") or "Necitit"
+    active_program = ocr_snapshot.get("active_program") or "Necitit"
+    material = ocr_snapshot.get("material") or "Necitit"
+    program_status = ocr_snapshot.get("program_status") or "Necitit"
+    warning_message = ocr_snapshot.get("warning_message")
+    normalized_status = str(program_status).upper()
+    normalized_active_program = str(active_program).upper()
     machine_on = bool(selected_program or active_program or program_status or material)
     table_change = "SHEET_LOAD" in normalized_active_program or "LOAD_SHEET" in normalized_active_program
     cutting_active = machine_on and normalized_status == "RUNNING" and not table_change
     idle = machine_on and not cutting_active and not table_change
 
     return {
-        "available": True,
-        "connected": True,
+        **ocr_snapshot,
         "source": "live-ocr",
-        "endpoint": endpoint,
-        "captured_at": now_local().isoformat(timespec="seconds"),
-        "selected_program": selected_program or "Necitit",
-        "active_program": active_program or "Necitit",
-        "material": material or "Necitit",
-        "program_status": program_status or "Necitit",
-        "warning_message": warning_message,
         "derived_signals": {
             "machine_on": machine_on,
             "cutting_active": cutting_active,
@@ -1205,6 +1319,14 @@ def analyze_abkant_live_snapshot(machine_key: str) -> dict | None:
 
     endpoint = resolve_real_data_endpoint(machine_key)
     reachable = bool(endpoint)
+    postgres_reason = (postgres_snapshot or {}).get("message")
+    base_message = (
+        "Abkant foloseste momentan feedul din script, dar nu avem inca un semnal live separat pentru utilaj; aici tratam doar disponibilitatea feedului."
+        if reachable
+        else "Feedul abkant nu este accesibil din dashboard."
+    )
+    if postgres_reason:
+        base_message = f"{base_message} Diagnostic PostgreSQL: {postgres_reason}"
     return {
         "available": reachable,
         "connected": reachable,
@@ -1228,15 +1350,13 @@ def analyze_abkant_live_snapshot(machine_key: str) -> dict | None:
             "table_change": False,
             "idle": False,
         },
-        "message": (
-            "Abkant foloseste momentan feedul din script, dar nu avem inca un semnal live separat pentru utilaj; aici tratam doar disponibilitatea feedului."
-            if reachable
-            else "Feedul abkant nu este accesibil din dashboard."
-        ),
+        "message": base_message,
     }
 
 
 def get_live_machine_snapshot(machine_key: str) -> dict | None:
+    if machine_key == "laser1modbus":
+        return analyze_laser_modbus_live_snapshot(machine_key)
     if machine_key in {"laser1", "laser2"}:
         return analyze_laser_live_snapshot(machine_key)
     if machine_key == "abkant":
@@ -1273,22 +1393,218 @@ def get_default_machine_profiles() -> list[dict]:
             "sort_order": 1,
         },
         {
+            "machine_key": "laser1modbus",
+            "label": MACHINE_DEFINITIONS["laser1modbus"]["label"],
+            "workcenter_id": parse_optional_int(os.getenv("PONTAJ_LASER1MODBUS_WORKCENTER_ID", laser_default)),
+            "sort_order": 2,
+        },
+        {
             "machine_key": "laser2",
             "label": MACHINE_DEFINITIONS["laser2"]["label"],
             "workcenter_id": parse_optional_int(os.getenv("PONTAJ_LASER2_WORKCENTER_ID", laser_default)),
-            "sort_order": 2,
+            "sort_order": 3,
         },
         {
             "machine_key": "abkant",
             "label": MACHINE_DEFINITIONS["abkant"]["label"],
             "workcenter_id": parse_optional_int(os.getenv("PONTAJ_ABKANT_WORKCENTER_ID", "2")),
-            "sort_order": 3,
+            "sort_order": 4,
         },
     ]
 
 
+def get_default_machine_modbus_configs() -> list[dict]:
+    return [
+        {
+            "machine_key": "laser1modbus",
+            "host": get_machine_env_value("laser1modbus", "MODBUS_HOST"),
+            "port": parse_optional_int(get_machine_env_value("laser1modbus", "MODBUS_PORT")) or 502,
+            "unit_id": parse_optional_int(get_machine_env_value("laser1modbus", "MODBUS_UNIT_ID")) or 1,
+            "bit_source": (get_machine_env_value("laser1modbus", "MODBUS_BIT_SOURCE") or "discrete_input").strip().lower(),
+            "start_address": parse_optional_int(get_machine_env_value("laser1modbus", "MODBUS_START_ADDRESS")) or 0,
+            "poll_timeout_seconds": parse_optional_float(get_machine_env_value("laser1modbus", "MODBUS_TIMEOUT_SECONDS")) or 1.5,
+            "in1_signal": (get_machine_env_value("laser1modbus", "MODBUS_IN1_SIGNAL") or "machine_on").strip().lower(),
+            "in2_signal": (get_machine_env_value("laser1modbus", "MODBUS_IN2_SIGNAL") or "table_change").strip().lower(),
+            "in3_signal": (get_machine_env_value("laser1modbus", "MODBUS_IN3_SIGNAL") or "cutting_active").strip().lower(),
+            "in4_signal": (get_machine_env_value("laser1modbus", "MODBUS_IN4_SIGNAL") or "idle_abort").strip().lower(),
+        }
+    ]
+
+
+def get_modbus_signal_target_options() -> list[dict[str, str]]:
+    return [
+        {"value": "unused", "label": "Neutilizat"},
+        {"value": "machine_on", "label": "Machine ON"},
+        {"value": "cutting_active", "label": "Cutting"},
+        {"value": "table_change", "label": "Table change"},
+        {"value": "idle_abort", "label": "Idle / Aborted"},
+    ]
+
+
+def build_modbus_signal_map(config: dict | sqlite3.Row | None) -> dict[str, str]:
+    if not config:
+        return {}
+    return {
+        "in1": (config["in1_signal"] or "unused").strip().lower(),
+        "in2": (config["in2_signal"] or "unused").strip().lower(),
+        "in3": (config["in3_signal"] or "unused").strip().lower(),
+        "in4": (config["in4_signal"] or "unused").strip().lower(),
+    }
+
+
+def serialize_machine_modbus_config(row: sqlite3.Row | dict | None) -> dict | None:
+    if not row:
+        return None
+
+    signal_map = build_modbus_signal_map(row)
+    return {
+        "machine_key": row["machine_key"],
+        "host": (row["host"] or "").strip(),
+        "port": int(row["port"] or 502),
+        "unit_id": int(row["unit_id"] or 1),
+        "bit_source": (row["bit_source"] or "discrete_input").strip().lower(),
+        "start_address": int(row["start_address"] or 0),
+        "poll_timeout_seconds": float(row["poll_timeout_seconds"] or 1.5),
+        "signal_map": signal_map,
+        "inputs": [
+            {"key": "in1", "label": "IN1", "signal": signal_map["in1"]},
+            {"key": "in2", "label": "IN2", "signal": signal_map["in2"]},
+            {"key": "in3", "label": "IN3", "signal": signal_map["in3"]},
+            {"key": "in4", "label": "IN4", "signal": signal_map["in4"]},
+        ],
+        "signal_options": get_modbus_signal_target_options(),
+        "enabled": bool((row["host"] or "").strip()),
+        "endpoint": f"{(row['host'] or '').strip()}:{int(row['port'] or 502)}" if (row["host"] or "").strip() else "",
+    }
+
+
+def get_machine_modbus_config(machine_key: str) -> dict:
+    machine_key = ensure_machine_key(machine_key)
+    if not machine_uses_modbus(machine_key):
+        raise ValueError(f"Machine does not use Modbus: {machine_key}")
+
+    with get_sqlite_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT machine_key, host, port, unit_id, bit_source, start_address, poll_timeout_seconds,
+                   in1_signal, in2_signal, in3_signal, in4_signal, updated_at
+            FROM machine_modbus_configs
+            WHERE machine_key = ?
+            """,
+            (machine_key,),
+        ).fetchone()
+    if row is None:
+        raise ValueError(f"Machine Modbus config not found: {machine_key}")
+    return serialize_machine_modbus_config(row)
+
+
+def validate_machine_modbus_config(machine_key: str, data: dict) -> dict:
+    if not machine_uses_modbus(machine_key):
+        raise ValueError(f"Machine does not use Modbus: {machine_key}")
+
+    host = (data.get("host") or "").strip()
+    port = parse_optional_int(data.get("port"))
+    unit_id = parse_optional_int(data.get("unit_id"))
+    start_address = parse_optional_int(data.get("start_address"))
+    poll_timeout_seconds = parse_optional_float(data.get("poll_timeout_seconds"))
+    bit_source = (data.get("bit_source") or "discrete_input").strip().lower()
+    if bit_source not in {"discrete_input", "coil"}:
+        raise ValueError("Tipul de bit Modbus trebuie sa fie discrete_input sau coil.")
+
+    if port is None or port < 1 or port > 65535:
+        raise ValueError("Portul Modbus trebuie sa fie intre 1 si 65535.")
+    if unit_id is None or unit_id < 0 or unit_id > 255:
+        raise ValueError("Unit ID-ul Modbus trebuie sa fie intre 0 si 255.")
+    if start_address is None or start_address < 0:
+        raise ValueError("Adresa de start Modbus trebuie sa fie 0 sau mai mare.")
+    if poll_timeout_seconds is None or poll_timeout_seconds <= 0 or poll_timeout_seconds > 30:
+        raise ValueError("Timeout-ul Modbus trebuie sa fie intre 0 si 30 secunde.")
+
+    signal_map = {
+        "in1_signal": (data.get("in1_signal") or "unused").strip().lower(),
+        "in2_signal": (data.get("in2_signal") or "unused").strip().lower(),
+        "in3_signal": (data.get("in3_signal") or "unused").strip().lower(),
+        "in4_signal": (data.get("in4_signal") or "unused").strip().lower(),
+    }
+    seen_targets: set[str] = set()
+    for field_name, target in signal_map.items():
+        if target not in MODBUS_SIGNAL_TARGET_CHOICES:
+            raise ValueError(f"Maparea {field_name} nu este suportata: {target}")
+        if target != "unused":
+            if target in seen_targets:
+                raise ValueError("Fiecare semnal Modbus poate fi asignat o singura data.")
+            seen_targets.add(target)
+
+    return {
+        "machine_key": machine_key,
+        "host": host,
+        "port": port,
+        "unit_id": unit_id,
+        "bit_source": bit_source,
+        "start_address": start_address,
+        "poll_timeout_seconds": poll_timeout_seconds,
+        **signal_map,
+    }
+
+
+def update_machine_modbus_config(machine_key: str, data: dict) -> dict:
+    config = validate_machine_modbus_config(machine_key, data)
+    updated_at = now_local().isoformat(timespec="seconds")
+    with get_sqlite_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO machine_modbus_configs (
+                machine_key, host, port, unit_id, bit_source, start_address, poll_timeout_seconds,
+                in1_signal, in2_signal, in3_signal, in4_signal, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(machine_key) DO UPDATE SET
+                host = excluded.host,
+                port = excluded.port,
+                unit_id = excluded.unit_id,
+                bit_source = excluded.bit_source,
+                start_address = excluded.start_address,
+                poll_timeout_seconds = excluded.poll_timeout_seconds,
+                in1_signal = excluded.in1_signal,
+                in2_signal = excluded.in2_signal,
+                in3_signal = excluded.in3_signal,
+                in4_signal = excluded.in4_signal,
+                updated_at = excluded.updated_at
+            """,
+            (
+                config["machine_key"],
+                config["host"],
+                config["port"],
+                config["unit_id"],
+                config["bit_source"],
+                config["start_address"],
+                config["poll_timeout_seconds"],
+                config["in1_signal"],
+                config["in2_signal"],
+                config["in3_signal"],
+                config["in4_signal"],
+                updated_at,
+            ),
+        )
+        connection.commit()
+    return get_machine_modbus_config(machine_key)
+
+
 def serialize_machine_profile(row: sqlite3.Row, selected_machine_key: str | None = None) -> dict:
     definition = MACHINE_DEFINITIONS[row["machine_key"]]
+    modbus_config = None
+    if row["machine_key"] in MODBUS_MACHINE_KEYS:
+        with get_sqlite_connection() as connection:
+            modbus_row = connection.execute(
+                """
+                SELECT machine_key, host, port, unit_id, bit_source, start_address, poll_timeout_seconds,
+                       in1_signal, in2_signal, in3_signal, in4_signal, updated_at
+                FROM machine_modbus_configs
+                WHERE machine_key = ?
+                """,
+                (row["machine_key"],),
+            ).fetchone()
+        modbus_config = serialize_machine_modbus_config(modbus_row)
     return {
         "key": row["machine_key"],
         "label": row["label"] or definition["label"],
@@ -1297,6 +1613,7 @@ def serialize_machine_profile(row: sqlite3.Row, selected_machine_key: str | None
         "workcenter_id": row["workcenter_id"],
         "updated_at": row["updated_at"],
         "is_selected": row["machine_key"] == selected_machine_key,
+        "modbus_config": modbus_config,
     }
 
 
@@ -1361,6 +1678,21 @@ def init_db() -> None:
                 stats_anchor_context_json TEXT,
                 updated_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS machine_modbus_configs (
+                machine_key TEXT PRIMARY KEY,
+                host TEXT NOT NULL DEFAULT '',
+                port INTEGER NOT NULL DEFAULT 502,
+                unit_id INTEGER NOT NULL DEFAULT 1,
+                bit_source TEXT NOT NULL DEFAULT 'discrete_input',
+                start_address INTEGER NOT NULL DEFAULT 0,
+                poll_timeout_seconds REAL NOT NULL DEFAULT 1.5,
+                in1_signal TEXT NOT NULL DEFAULT 'machine_on',
+                in2_signal TEXT NOT NULL DEFAULT 'table_change',
+                in3_signal TEXT NOT NULL DEFAULT 'cutting_active',
+                in4_signal TEXT NOT NULL DEFAULT 'idle_abort',
+                updated_at TEXT NOT NULL
+            );
             """
         )
 
@@ -1404,6 +1736,21 @@ def init_db() -> None:
             connection.execute("ALTER TABLE machine_runtime ADD COLUMN stats_anchor_started_at TEXT")
         if "stats_anchor_context_json" not in machine_runtime_columns:
             connection.execute("ALTER TABLE machine_runtime ADD COLUMN stats_anchor_context_json TEXT")
+
+        machine_modbus_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(machine_modbus_configs)").fetchall()
+        }
+        if "poll_timeout_seconds" not in machine_modbus_columns:
+            connection.execute("ALTER TABLE machine_modbus_configs ADD COLUMN poll_timeout_seconds REAL NOT NULL DEFAULT 1.5")
+        if "in1_signal" not in machine_modbus_columns:
+            connection.execute("ALTER TABLE machine_modbus_configs ADD COLUMN in1_signal TEXT NOT NULL DEFAULT 'machine_on'")
+        if "in2_signal" not in machine_modbus_columns:
+            connection.execute("ALTER TABLE machine_modbus_configs ADD COLUMN in2_signal TEXT NOT NULL DEFAULT 'table_change'")
+        if "in3_signal" not in machine_modbus_columns:
+            connection.execute("ALTER TABLE machine_modbus_configs ADD COLUMN in3_signal TEXT NOT NULL DEFAULT 'cutting_active'")
+        if "in4_signal" not in machine_modbus_columns:
+            connection.execute("ALTER TABLE machine_modbus_configs ADD COLUMN in4_signal TEXT NOT NULL DEFAULT 'idle_abort'")
 
         connection.execute(
             """
@@ -1473,6 +1820,58 @@ def init_db() -> None:
                 ),
             )
 
+        for config in get_default_machine_modbus_configs():
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO machine_modbus_configs (
+                    machine_key, host, port, unit_id, bit_source, start_address, poll_timeout_seconds,
+                    in1_signal, in2_signal, in3_signal, in4_signal, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    config["machine_key"],
+                    config["host"],
+                    config["port"],
+                    config["unit_id"],
+                    config["bit_source"],
+                    config["start_address"],
+                    config["poll_timeout_seconds"],
+                    config["in1_signal"],
+                    config["in2_signal"],
+                    config["in3_signal"],
+                    config["in4_signal"],
+                    updated_at,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE machine_modbus_configs
+                SET port = COALESCE(port, ?),
+                    unit_id = COALESCE(unit_id, ?),
+                    bit_source = COALESCE(NULLIF(bit_source, ''), ?),
+                    start_address = COALESCE(start_address, ?),
+                    poll_timeout_seconds = COALESCE(poll_timeout_seconds, ?),
+                    in1_signal = COALESCE(NULLIF(in1_signal, ''), ?),
+                    in2_signal = COALESCE(NULLIF(in2_signal, ''), ?),
+                    in3_signal = COALESCE(NULLIF(in3_signal, ''), ?),
+                    in4_signal = COALESCE(NULLIF(in4_signal, ''), ?)
+                WHERE machine_key = ?
+                """,
+                (
+                    config["port"],
+                    config["unit_id"],
+                    config["bit_source"],
+                    config["start_address"],
+                    config["poll_timeout_seconds"],
+                    config["in1_signal"],
+                    config["in2_signal"],
+                    config["in3_signal"],
+                    config["in4_signal"],
+                    config["machine_key"],
+                ),
+            )
+
         connection.commit()
     backfill_saved_cycle_metrics()
 
@@ -1532,15 +1931,39 @@ def get_real_data_settings(machine_profile: dict) -> dict[str, str]:
 
     endpoint = resolve_real_data_endpoint(machine_profile["key"])
     name = resolve_real_data_name(machine_profile["key"])
+    details = list(feed["details"])
+    resolved_endpoint = endpoint or "Fara endpoint dedicat"
+    message = ""
+    if machine_uses_modbus(machine_profile["key"]):
+        modbus_config = get_machine_modbus_config(machine_profile["key"])
+        details.extend(
+            [
+                f"Modbus endpoint: {modbus_config['endpoint'] or 'neconfigurat'}",
+                f"Tip biti: {modbus_config['bit_source']}",
+                f"Adresa start: {modbus_config['start_address']}",
+                "Mapare: "
+                + ", ".join(
+                    f"{item['label']} -> {item['signal']}"
+                    for item in modbus_config["inputs"]
+                ),
+            ]
+        )
+        resolved_endpoint = modbus_config["endpoint"] or resolved_endpoint
+        message = (
+            f"{machine_profile['label']} citeste timpii din Modbus, iar programul din feedul Laser1."
+            if dedicated_live_source
+            else "Sursa Modbus nu este configurata complet. Seteaza hostul, portul si maparea intrarilor."
+        )
     status = "configured" if script_exists and dedicated_live_source else "pending"
     return {
         "name": name,
-        "endpoint": endpoint or "Fara endpoint dedicat",
+        "endpoint": resolved_endpoint,
         "status": status,
         "transport": feed["transport"],
         "script_name": script_name,
-        "details": feed["details"],
-        "message": (
+        "details": details,
+        "message": message
+        or (
             f"Sursa reala pentru {machine_profile['label']} a fost identificata din fisierul {script_name}."
             if script_exists and dedicated_live_source
             else (
@@ -1573,6 +1996,234 @@ def build_script_catalog() -> list[dict]:
             }
         )
     return catalog
+
+
+def read_modbus_tcp_bits(
+    host: str,
+    port: int,
+    unit_id: int,
+    start_address: int,
+    count: int,
+    bit_source: str = "discrete_input",
+    timeout_seconds: float = 1.5,
+) -> list[bool]:
+    function_code = 2 if bit_source == "discrete_input" else 1
+    transaction_id = int(time_module.time() * 1000) & 0xFFFF
+    protocol_id = 0
+    pdu = bytes(
+        [
+            function_code,
+            (start_address >> 8) & 0xFF,
+            start_address & 0xFF,
+            (count >> 8) & 0xFF,
+            count & 0xFF,
+        ]
+    )
+    frame = (
+        transaction_id.to_bytes(2, "big")
+        + protocol_id.to_bytes(2, "big")
+        + (len(pdu) + 1).to_bytes(2, "big")
+        + bytes([unit_id & 0xFF])
+        + pdu
+    )
+
+    with socket.create_connection((host, port), timeout=timeout_seconds) as sock:
+        sock.settimeout(timeout_seconds)
+        sock.sendall(frame)
+        response_header = sock.recv(7)
+        if len(response_header) < 7:
+            raise RuntimeError("Raspuns Modbus incomplet la nivel MBAP.")
+        response_length = int.from_bytes(response_header[4:6], "big")
+        payload = bytes()
+        expected_payload_length = max(response_length - 1, 0)
+        while len(payload) < expected_payload_length:
+            chunk = sock.recv(expected_payload_length - len(payload))
+            if not chunk:
+                break
+            payload += chunk
+
+    if len(payload) < 2:
+        raise RuntimeError("Raspuns Modbus incomplet la nivel PDU.")
+
+    response_function = payload[0]
+    if response_function == (function_code | 0x80):
+        exception_code = payload[1] if len(payload) > 1 else -1
+        raise RuntimeError(f"Modbus a raspuns cu exceptia {exception_code}.")
+    if response_function != function_code:
+        raise RuntimeError(f"Codul de functie Modbus returnat este invalid: {response_function}.")
+
+    byte_count = payload[1]
+    data_bytes = payload[2 : 2 + byte_count]
+    if len(data_bytes) < byte_count:
+        raise RuntimeError("Raspuns Modbus incomplet pentru bitii ceruti.")
+
+    bits: list[bool] = []
+    for bit_index in range(count):
+        data_byte = data_bytes[bit_index // 8]
+        bits.append(bool((data_byte >> (bit_index % 8)) & 0x01))
+    return bits
+
+
+def build_modbus_input_signal_map(config: dict) -> dict[str, str]:
+    return {
+        "in1": config.get("signal_map", {}).get("in1", "unused"),
+        "in2": config.get("signal_map", {}).get("in2", "unused"),
+        "in3": config.get("signal_map", {}).get("in3", "unused"),
+        "in4": config.get("signal_map", {}).get("in4", "unused"),
+    }
+
+
+def build_modbus_signal_state(config: dict, inputs: list[bool]) -> tuple[dict[str, bool], list[dict[str, object]]]:
+    input_map = build_modbus_input_signal_map(config)
+    derived_signals = {
+        "machine_on": False,
+        "cutting_active": False,
+        "table_change": False,
+        "idle_abort": False,
+    }
+    raw_inputs: list[dict[str, object]] = []
+    for index, bit_value in enumerate(inputs[:4], start=1):
+        input_key = f"in{index}"
+        target_signal = input_map.get(input_key, "unused")
+        raw_inputs.append(
+            {
+                "key": input_key,
+                "label": f"IN{index}",
+                "signal": target_signal,
+                "active": bool(bit_value),
+            }
+        )
+        if target_signal in derived_signals:
+            derived_signals[target_signal] = bool(bit_value)
+
+    if derived_signals["cutting_active"] or derived_signals["table_change"] or derived_signals["idle_abort"]:
+        derived_signals["machine_on"] = True
+
+    return derived_signals, raw_inputs
+
+
+def get_laser_ocr_snapshot(machine_key: str) -> dict:
+    endpoint = resolve_real_data_endpoint(machine_key)
+    image, error_message = fetch_mjpeg_frame(endpoint)
+    if image is None:
+        return {
+            "available": False,
+            "connected": False,
+            "endpoint": endpoint,
+            "message": f"Nu pot citi captura live de la {endpoint}. Motiv: {error_message}",
+        }
+
+    right_panel_variants = read_ocr_block_variants(image, LASER_OCR_ZONES["right_panel"])
+    if right_panel_variants:
+        right_panel_text = right_panel_variants[0]
+    else:
+        right_panel_text = read_ocr_block(image, LASER_OCR_ZONES["right_panel"], psm=6)
+        right_panel_variants = [right_panel_text] if right_panel_text else []
+    left_panel_text = read_ocr_block(image, LASER_OCR_ZONES["left_panel"], psm=11)
+
+    selected_program = extract_section_token(right_panel_text, "Selected program", "Active program")
+    active_program = extract_section_token(right_panel_text, "Active program", "NC blocks")
+    material = extract_material(left_panel_text)
+    program_status = extract_program_status(*right_panel_variants)
+    warning_message = detect_laser_warning(image)
+
+    return {
+        "available": True,
+        "connected": True,
+        "endpoint": endpoint,
+        "captured_at": now_local().isoformat(timespec="seconds"),
+        "selected_program": selected_program or "Necitit",
+        "active_program": active_program or "Necitit",
+        "material": material or "Necitit",
+        "program_status": program_status or "Necitit",
+        "warning_message": warning_message,
+    }
+
+
+def analyze_laser_modbus_live_snapshot(machine_key: str) -> dict | None:
+    config = get_machine_modbus_config(machine_key)
+    if not config.get("enabled"):
+        return {
+            "available": False,
+            "connected": False,
+            "source": "modbus",
+            "endpoint": "",
+            "message": "Configureaza hostul Modbus pentru LASER1MODBUS ca sa putem citi bitii din container.",
+        }
+
+    try:
+        inputs = read_modbus_tcp_bits(
+            host=config["host"],
+            port=config["port"],
+            unit_id=config["unit_id"],
+            start_address=config["start_address"],
+            count=4,
+            bit_source=config["bit_source"],
+            timeout_seconds=config["poll_timeout_seconds"],
+        )
+    except Exception as exc:
+        return {
+            "available": False,
+            "connected": False,
+            "source": "modbus",
+            "endpoint": config["endpoint"],
+            "message": f"Nu pot citi Modbus TCP de la {config['endpoint']}. Motiv: {exc}",
+        }
+
+    derived_signals, raw_inputs = build_modbus_signal_state(config, inputs)
+    idle = bool(derived_signals["idle_abort"] or (derived_signals["machine_on"] and not derived_signals["cutting_active"] and not derived_signals["table_change"]))
+    ocr_snapshot = get_laser_ocr_snapshot(machine_key)
+    if not ocr_snapshot.get("available"):
+        return {
+            "available": True,
+            "connected": True,
+            "source": "modbus+ocr",
+            "captured_at": now_local().isoformat(timespec="seconds"),
+            "selected_program": "Necitit",
+            "active_program": "Necitit",
+            "material": "Necitit",
+            "program_status": "Feed indisponibil / Modbus activ",
+            "modbus_endpoint": config["endpoint"],
+            "endpoint": config["endpoint"],
+            "modbus_inputs": raw_inputs,
+            "derived_signals": {
+                "machine_on": derived_signals["machine_on"],
+                "cutting_active": derived_signals["cutting_active"],
+                "table_change": derived_signals["table_change"],
+                "idle_abort": derived_signals["idle_abort"],
+                "idle": idle,
+            },
+            "message": (
+                f"Bitii Modbus sunt activi si continua sa fie cititi din {config['endpoint']}, "
+                f"dar feedul pentru program nu raspunde acum: {ocr_snapshot.get('message')}"
+            ),
+        }
+
+    message = (
+        f"Programul este citit din feed, iar timpii vin din Modbus TCP {config['endpoint']}. "
+        f"Bitii activi: {', '.join(input_item['label'] for input_item in raw_inputs if input_item['active']) or 'niciunul'}."
+    )
+    if ocr_snapshot.get("warning_message"):
+        message = f"{message} Banner galben detectat: {ocr_snapshot['warning_message']}."
+
+    return {
+        **ocr_snapshot,
+        "available": True,
+        "connected": True,
+        "source": "modbus+ocr",
+        "machine_mode": "laser1modbus",
+        "endpoint": config["endpoint"],
+        "modbus_endpoint": config["endpoint"],
+        "modbus_inputs": raw_inputs,
+        "derived_signals": {
+            "machine_on": derived_signals["machine_on"],
+            "cutting_active": derived_signals["cutting_active"],
+            "table_change": derived_signals["table_change"],
+            "idle_abort": derived_signals["idle_abort"],
+            "idle": idle,
+        },
+        "message": message,
+    }
 
 
 def get_pontaj_connection():
@@ -1775,13 +2426,19 @@ def calculate_saved_cycle_metrics(
     machine_on_seconds = calculate_active_seconds(machine_key, "machine_on", start_dt, end_dt)
     cutting_seconds = calculate_active_seconds(machine_key, "cutting_active", start_dt, end_dt)
     table_change_seconds = calculate_active_seconds(machine_key, "table_change", start_dt, end_dt)
+    idle_seconds = (
+        calculate_active_seconds(machine_key, "idle_abort", start_dt, end_dt)
+        if machine_supports_idle_signal(machine_key)
+        else max(machine_on_seconds - cutting_seconds - table_change_seconds, 0)
+    )
     if not table_change_seconds:
         table_change_seconds = max(int(fallback_table_change_seconds or 0), 0)
     if not cutting_seconds:
         cutting_seconds = max(int(fallback_cutting_seconds or 0), 0)
     if machine_on_seconds < cutting_seconds + table_change_seconds:
         machine_on_seconds = cutting_seconds + table_change_seconds
-    idle_seconds = max(machine_on_seconds - cutting_seconds - table_change_seconds, 0)
+    if not machine_supports_idle_signal(machine_key):
+        idle_seconds = max(machine_on_seconds - cutting_seconds - table_change_seconds, 0)
     efficiency_percent = round((cutting_seconds / machine_on_seconds) * 100, 1) if machine_on_seconds else 0.0
     return {
         "machine_on_duration_seconds": machine_on_seconds,
@@ -2127,6 +2784,27 @@ def fetch_prometheus_vector(query: str) -> list[dict]:
     raise RuntimeError(f"Prometheus query failed for all configured endpoints: {last_error}")
 
 
+def fetch_prometheus_query_map(query_map: dict[str, str]) -> dict[str, list[dict]]:
+    if not query_map:
+        return {}
+
+    if len(query_map) == 1:
+        only_key, only_query = next(iter(query_map.items()))
+        return {only_key: fetch_prometheus_vector(only_query)}
+
+    results: dict[str, list[dict]] = {}
+    max_workers = min(PROMETHEUS_MAX_PARALLEL_QUERIES, len(query_map))
+    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="prom-query") as executor:
+        future_map = {
+            executor.submit(fetch_prometheus_vector, query): query_key
+            for query_key, query in query_map.items()
+        }
+        for future in as_completed(future_map):
+            results[future_map[future]] = future.result()
+
+    return {query_key: results.get(query_key, []) for query_key in query_map}
+
+
 def escape_prometheus_label_matcher(value: str) -> str:
     return str(value).replace("\\", "\\\\").replace('"', '\\"')
 
@@ -2158,6 +2836,7 @@ def build_prometheus_operator_summaries() -> list[dict]:
         if machine_label:
             operator_entry["machines"].add(machine_label)
 
+    period_query_map: dict[str, str] = {}
     for period in periods:
         period_range = prometheus_period_range(period)
         query_map = {
@@ -2168,33 +2847,36 @@ def build_prometheus_operator_summaries() -> list[dict]:
             "idle_seconds": f'sum by (operator_id, operator_name) (max_over_time(haba_saved_cycle_idle_seconds[{period_range}]))',
             "table_change_seconds": f'sum by (operator_id, operator_name) (max_over_time(haba_saved_cycle_table_change_seconds[{period_range}]))',
         }
-
         for field_name, query in query_map.items():
-            for series in fetch_prometheus_vector(query):
-                labels = series.get("metric") or {}
-                operator_name = labels.get("operator_name") or UNKNOWN_OPERATOR_LABEL
-                employee_id = labels.get("operator_id") or ""
-                operator_id = employee_id or f"name:{operator_name}"
-                operator_entry = operator_map.setdefault(
-                    operator_id,
-                    {
-                        "operator_id": operator_id,
-                        "employee_id": employee_id,
-                        "operator_name": operator_name,
-                        "machines": set(),
-                        "day": {},
-                        "week": {},
-                        "month": {},
-                    },
-                )
-                value_raw = (series.get("value") or [None, "0"])[1]
-                numeric_value = float(value_raw or 0)
-                target_period = operator_entry[period]
-                if field_name.endswith("_seconds"):
-                    target_period[field_name] = int(round(numeric_value))
-                    target_period[field_name.replace("_seconds", "_label")] = format_seconds(int(round(numeric_value)))
-                elif field_name in {"records_count", "setup_count"}:
-                    target_period[field_name] = int(round(numeric_value))
+            period_query_map[f"{period}:{field_name}"] = query
+
+    for query_key, result_series in fetch_prometheus_query_map(period_query_map).items():
+        period, field_name = query_key.split(":", 1)
+        for series in result_series:
+            labels = series.get("metric") or {}
+            operator_name = labels.get("operator_name") or UNKNOWN_OPERATOR_LABEL
+            employee_id = labels.get("operator_id") or ""
+            operator_id = employee_id or f"name:{operator_name}"
+            operator_entry = operator_map.setdefault(
+                operator_id,
+                {
+                    "operator_id": operator_id,
+                    "employee_id": employee_id,
+                    "operator_name": operator_name,
+                    "machines": set(),
+                    "day": {},
+                    "week": {},
+                    "month": {},
+                },
+            )
+            value_raw = (series.get("value") or [None, "0"])[1]
+            numeric_value = float(value_raw or 0)
+            target_period = operator_entry[period]
+            if field_name.endswith("_seconds"):
+                target_period[field_name] = int(round(numeric_value))
+                target_period[field_name.replace("_seconds", "_label")] = format_seconds(int(round(numeric_value)))
+            elif field_name in {"records_count", "setup_count"}:
+                target_period[field_name] = int(round(numeric_value))
 
     output = []
     for operator_entry in operator_map.values():
@@ -2270,9 +2952,12 @@ def build_prometheus_saved_records(period: str, operator_id: str | None = None) 
         "efficiency_percent": "haba_saved_cycle_efficiency_percent",
         "setup_changed": "haba_saved_cycle_setup_changed",
     }
-    for field_name, metric_name in metric_map.items():
-        query = f"max_over_time({metric_name}{label_filter}[{period_range}])"
-        for series in fetch_prometheus_vector(query):
+    metric_query_map = {
+        field_name: f"max_over_time({metric_name}{label_filter}[{period_range}])"
+        for field_name, metric_name in metric_map.items()
+    }
+    for field_name, result_series in fetch_prometheus_query_map(metric_query_map).items():
+        for series in result_series:
             labels = series.get("metric") or {}
             cycle_id = labels.get("cycle_id")
             if not cycle_id or cycle_id not in base_records:
@@ -2355,6 +3040,20 @@ def clone_operator_entry(entry: dict) -> dict:
         target_bucket = cloned[period_key]
         target_bucket.update(source_bucket)
     return cloned
+
+
+def filter_saved_cycle_records_by_operator(records: list[dict], operator_id: str | None) -> list[dict]:
+    if not operator_id:
+        return records
+
+    filtered_records: list[dict] = []
+    for record in records:
+        record_operator_id = str(record.get("operator_id") or "").strip()
+        record_operator_name = (record.get("operator_name") or UNKNOWN_OPERATOR_LABEL).strip()
+        resolved_operator_id = record_operator_id or f"name:{record_operator_name}"
+        if resolved_operator_id == operator_id:
+            filtered_records.append(record)
+    return filtered_records
 
 
 def build_workcenter_operator_summaries() -> list[dict]:
@@ -2561,7 +3260,7 @@ def build_saved_cycles_payload(machine_key: str | None = None, period: str = "al
             )
         )
         selected_operator_id = resolve_selected_operator_id(operator_id, operators)
-        records = build_prometheus_saved_records(normalized_period)
+        records = build_prometheus_saved_records(normalized_period, selected_operator_id)
         if operators:
             return {
                 "view": "saved",
@@ -2580,6 +3279,7 @@ def build_saved_cycles_payload(machine_key: str | None = None, period: str = "al
     records = fetch_saved_cycles_for_period(machine_key=machine_key, period=normalized_period)
     operators = build_sqlite_operator_summaries(machine_key=machine_key)
     selected_operator_id = resolve_selected_operator_id(operator_id, operators)
+    records = filter_saved_cycle_records_by_operator(records, selected_operator_id)
     return {
         "view": "saved",
         "selected_machine_key": machine_key,
@@ -2798,7 +3498,7 @@ def finalize_pending_cycle(machine_key: str, current_snapshot: dict) -> None:
         ).fetchone()
         if duplicate is None:
             connection.execute(
-                """
+                f"""
                 INSERT INTO saved_cycles (
                     machine_key,
                     workcenter_id,
@@ -2824,7 +3524,7 @@ def finalize_pending_cycle(machine_key: str, current_snapshot: dict) -> None:
                     snapshot_json,
                     created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES ({SAVED_CYCLE_INSERT_PLACEHOLDERS})
                 """,
                 (
                     machine_key,
@@ -2933,7 +3633,7 @@ def save_cycle_on_program_change(
         ).fetchone()
         if duplicate is None:
             connection.execute(
-                """
+                f"""
                 INSERT INTO saved_cycles (
                     machine_key,
                     workcenter_id,
@@ -2959,7 +3659,7 @@ def save_cycle_on_program_change(
                     snapshot_json,
                     created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES ({SAVED_CYCLE_INSERT_PLACEHOLDERS})
                 """,
                 (
                     machine_key,
@@ -3023,6 +3723,7 @@ def fetch_current_signals(machine_key: str) -> dict[str, dict]:
                 "button_off_label": meta.get("button_off_label"),
                 "metric_label": meta.get("metric_label", meta["label"]),
                 "report_label": meta.get("report_label", meta["label"]),
+                "visible": signal_name != "idle_abort" or machine_uses_modbus(machine_key),
             }
     return current_signals
 
@@ -3034,6 +3735,8 @@ def derive_machine_state(machine_key: str, current_signals: dict[str, dict]) -> 
         return {"key": "cutting", **resolve_state_definition(machine_key, "cutting")}
     if current_signals["table_change"]["active"]:
         return {"key": "table_change", **resolve_state_definition(machine_key, "table_change")}
+    if current_signals.get("idle_abort", {}).get("active"):
+        return {"key": "idle", **resolve_state_definition(machine_key, "idle")}
     return {"key": "ready", **resolve_state_definition(machine_key, "ready")}
 
 
@@ -3101,7 +3804,11 @@ def build_today_stats(machine_key: str) -> dict:
     machine_on_seconds = calculate_active_seconds(machine_key, "machine_on", stats_window_start, now)
     cutting_seconds = calculate_active_seconds(machine_key, "cutting_active", stats_window_start, now)
     table_change_seconds = calculate_active_seconds(machine_key, "table_change", stats_window_start, now)
-    idle_seconds = max(machine_on_seconds - cutting_seconds - table_change_seconds, 0)
+    idle_seconds = (
+        calculate_active_seconds(machine_key, "idle_abort", stats_window_start, now)
+        if machine_supports_idle_signal(machine_key)
+        else max(machine_on_seconds - cutting_seconds - table_change_seconds, 0)
+    )
     utilization = round((cutting_seconds / machine_on_seconds) * 100, 1) if machine_on_seconds else 0.0
     availability = round((cutting_seconds / machine_on_seconds) * 100, 1) if machine_on_seconds else 0.0
     cutting_meta = resolve_signal_definition(machine_key, "cutting_active")
@@ -3447,7 +4154,7 @@ def sync_machine_events_from_live_snapshot(machine_key: str) -> dict | None:
     elif old_table_change and not new_table_change:
         finalize_pending_cycle(machine_key, snapshot)
 
-    for signal_name in ("machine_on", "cutting_active", "table_change"):
+    for signal_name in SIGNAL_DEFINITIONS:
         new_value = bool(derived_signals.get(signal_name, False))
         if current_signals[signal_name]["active"] == new_value:
             continue
@@ -3517,6 +4224,14 @@ def build_event_sequence(signal_name: str, target_value: bool, current_signals: 
                     "note": "Auto-stop: masina a fost oprita.",
                 }
             )
+        if current_signals.get("idle_abort", {}).get("active"):
+            events.append(
+                {
+                    "signal_name": "idle_abort",
+                    "value": False,
+                    "note": "Auto-stop: masina a fost oprita.",
+                }
+            )
         events.append({"signal_name": "machine_on", "value": False, "note": None})
         return events
 
@@ -3535,6 +4250,14 @@ def build_event_sequence(signal_name: str, target_value: bool, current_signals: 
                     "signal_name": "table_change",
                     "value": False,
                     "note": "Auto-stop: taierea a oprit schimbul de masa.",
+                }
+            )
+        if current_signals.get("idle_abort", {}).get("active"):
+            events.append(
+                {
+                    "signal_name": "idle_abort",
+                    "value": False,
+                    "note": "Auto-stop: taierea a iesit din idle/abort.",
                 }
             )
         events.append({"signal_name": "cutting_active", "value": True, "note": None})
@@ -3557,7 +4280,43 @@ def build_event_sequence(signal_name: str, target_value: bool, current_signals: 
                     "note": "Auto-stop: schimbul de masa a oprit taierea.",
                 }
             )
+        if current_signals.get("idle_abort", {}).get("active"):
+            events.append(
+                {
+                    "signal_name": "idle_abort",
+                    "value": False,
+                    "note": "Auto-stop: schimbul de masa a iesit din idle/abort.",
+                }
+            )
         events.append({"signal_name": "table_change", "value": True, "note": None})
+        return events
+
+    if signal_name == "idle_abort" and target_value:
+        if not current_signals["machine_on"]["active"]:
+            events.append(
+                {
+                    "signal_name": "machine_on",
+                    "value": True,
+                    "note": "Auto-start: idle/abort a pornit masina.",
+                }
+            )
+        if current_signals["cutting_active"]["active"]:
+            events.append(
+                {
+                    "signal_name": "cutting_active",
+                    "value": False,
+                    "note": "Auto-stop: idle/abort a oprit taierea.",
+                }
+            )
+        if current_signals["table_change"]["active"]:
+            events.append(
+                {
+                    "signal_name": "table_change",
+                    "value": False,
+                    "note": "Auto-stop: idle/abort a oprit schimbul de masa.",
+                }
+            )
+        events.append({"signal_name": "idle_abort", "value": True, "note": None})
         return events
 
     events.append({"signal_name": signal_name, "value": target_value, "note": None})
@@ -3572,7 +4331,7 @@ def snapshot_differs_from_current_signals(
         return False
 
     derived_signals = snapshot.get("derived_signals") or {}
-    for signal_name in ("machine_on", "cutting_active", "table_change"):
+    for signal_name in SIGNAL_DEFINITIONS:
         if bool(derived_signals.get(signal_name, False)) != bool(current_signals.get(signal_name, {}).get("active")):
             return True
     return False
@@ -3628,6 +4387,7 @@ def build_dashboard_payload(machine_key: str = DEFAULT_MACHINE_KEY) -> dict:
         "selected_machine_key": machine_key,
         "machine": machine_profile,
         "machines": machines,
+        "modbus_config": machine_profile.get("modbus_config"),
         "workcenter_id": machine_profile["workcenter_id"],
         "current_state": current_state,
         "current_signals": current_signals,
@@ -3698,15 +4458,29 @@ def update_machine_profile(machine_key: str):
     data = request.get_json(silent=True) or {}
 
     try:
-        workcenter_id = parse_optional_int(data.get("workcenter_id"))
-        machine = update_machine_workcenter(machine_key, workcenter_id)
+        machine_key = ensure_machine_key(machine_key)
+        machine = get_machine_profile(machine_key)
+        message_parts: list[str] = []
+
+        if "workcenter_id" in data:
+            workcenter_id = parse_optional_int(data.get("workcenter_id"))
+            machine = update_machine_workcenter(machine_key, workcenter_id)
+            message_parts.append("WorkCenter actualizat")
+
+        if "modbus_config" in data:
+            update_machine_modbus_config(machine_key, data.get("modbus_config") or {})
+            machine = get_machine_profile(machine_key)
+            message_parts.append("Configuratia Modbus a fost salvata")
+
+        if not message_parts:
+            raise ValueError("Nu am primit nimic de actualizat.")
     except ValueError as exc:
         return jsonify({"success": False, "message": str(exc)}), 400
 
     return jsonify(
         {
             "success": True,
-            "message": "WorkCenter actualizat.",
+            "message": ". ".join(message_parts) + ".",
             "machine": machine,
             "dashboard": build_dashboard_payload(machine["key"]),
         }

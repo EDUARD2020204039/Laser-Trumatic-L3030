@@ -1,7 +1,8 @@
 const signalLabels = {
     machine_on: { on: "Opreste masina", off: "Porneste masina" },
     cutting_active: { on: "Opreste productia", off: "Porneste productia" },
-    table_change: { on: "Opreste schimbul", off: "Porneste schimbul" }
+    table_change: { on: "Opreste schimbul", off: "Porneste schimbul" },
+    idle_abort: { on: "Opreste idle/abort", off: "Porneste idle/abort" }
 };
 
 const state = {
@@ -13,6 +14,7 @@ const state = {
     savedPeriod: window.localStorage.getItem("savedPeriod") || "all",
     savedOperatorId: window.localStorage.getItem("savedOperatorId") || "",
     workcenterFeedback: null,
+    modbusFeedback: null,
     lastSavedRefreshMs: 0,
     lastStatsSnapshot: null,
     lastStatsSyncMs: 0,
@@ -266,6 +268,7 @@ function bindActions() {
             state.currentView = "dashboard";
             window.localStorage.setItem("currentView", state.currentView);
             state.workcenterFeedback = null;
+            state.modbusFeedback = null;
             await loadDashboard(nextMachineKey);
         });
     }
@@ -329,6 +332,11 @@ function bindActions() {
     const saveWorkcenterButton = document.getElementById("save-workcenter");
     if (saveWorkcenterButton) {
         saveWorkcenterButton.addEventListener("click", updateWorkcenter);
+    }
+
+    const saveModbusButton = document.getElementById("save-modbus-config");
+    if (saveModbusButton) {
+        saveModbusButton.addEventListener("click", updateModbusConfig);
     }
 
     const workcenterInput = document.getElementById("workcenter-id-input");
@@ -398,6 +406,9 @@ async function loadSavedRecords() {
 
     try {
         const query = new URLSearchParams({ period: state.savedPeriod });
+        if (state.savedOperatorId) {
+            query.set("operator_id", state.savedOperatorId);
+        }
         const response = await fetch(
             `${window.appConfig.savedRecordsUrl}?${query.toString()}`,
             { signal: state.savedAbortController.signal }
@@ -576,6 +587,63 @@ async function updateWorkcenter() {
     }
 }
 
+async function updateModbusConfig() {
+    if (state.isSubmitting) {
+        return;
+    }
+
+    const machineKey = state.selectedMachineKey;
+    const hostInput = document.getElementById("modbus-host-input");
+    if (!hostInput) {
+        return;
+    }
+
+    state.isSubmitting = true;
+    syncBusyState();
+
+    try {
+        const response = await fetch(
+            `${window.appConfig.machinesUrl}/${encodeURIComponent(machineKey)}`,
+            {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    modbus_config: {
+                        host: hostInput.value.trim(),
+                        port: document.getElementById("modbus-port-input").value.trim(),
+                        unit_id: document.getElementById("modbus-unit-id-input").value.trim(),
+                        bit_source: document.getElementById("modbus-bit-source-input").value,
+                        start_address: document.getElementById("modbus-start-address-input").value.trim(),
+                        poll_timeout_seconds: document.getElementById("modbus-timeout-input").value.trim(),
+                        in1_signal: document.getElementById("modbus-in1-signal").value,
+                        in2_signal: document.getElementById("modbus-in2-signal").value,
+                        in3_signal: document.getElementById("modbus-in3-signal").value,
+                        in4_signal: document.getElementById("modbus-in4-signal").value
+                    }
+                })
+            }
+        );
+
+        const payload = await response.json();
+        if (!response.ok || !payload.success) {
+            throw new Error(payload.message || "Nu am putut salva configuratia Modbus.");
+        }
+
+        state.modbusFeedback = {
+            machineKey,
+            tone: "success",
+            message: `Configuratia Modbus a fost salvata pentru ${payload.machine.label}.`
+        };
+        state.dashboard = payload.dashboard;
+        renderDashboard(payload.dashboard);
+    } catch (error) {
+        setModbusFeedback(error.message, "error");
+    } finally {
+        state.isSubmitting = false;
+        syncBusyState();
+    }
+}
+
 function renderDashboard(payload) {
     syncSectionVisibility("dashboard");
     renderHeader(payload);
@@ -584,6 +652,7 @@ function renderDashboard(payload) {
     renderSignals(payload.current_signals);
     renderButtons(payload.current_signals);
     renderWorkcenter(payload.machine);
+    renderModbusConfig(payload.machine);
     renderOperator(payload.operator_snapshot);
     renderSource(payload.real_data_source);
     renderLiveExtraction(payload.live_extraction);
@@ -666,6 +735,9 @@ function renderSignals(signals) {
     signalGrid.innerHTML = "";
 
     Object.entries(signals).forEach(([signalName, signal]) => {
+        if (signal.visible === false) {
+            return;
+        }
         const tile = document.createElement("article");
         tile.className = `signal-tile accent-${signal.accent}`;
         tile.innerHTML = `
@@ -692,6 +764,14 @@ function renderButtons(signals) {
     });
 }
 
+function renderModbusInputValue(modbusInputs, inputKey) {
+    const input = (modbusInputs || []).find((item) => item.key === inputKey);
+    if (!input) {
+        return "Necitit";
+    }
+    return `${input.active ? "1" : "0"} / ${input.signal || "unused"}`;
+}
+
 function renderWorkcenter(machine) {
     const input = document.getElementById("workcenter-id-input");
     if (document.activeElement !== input) {
@@ -706,6 +786,62 @@ function renderWorkcenter(machine) {
         };
 
     setFeedbackText(feedback.message, feedback.tone);
+}
+
+function renderModbusConfig(machine) {
+    const section = document.getElementById("modbus-config-section");
+    if (!section) {
+        return;
+    }
+
+    const config = machine?.modbus_config;
+    const isVisible = Boolean(config);
+    section.classList.toggle("is-hidden", !isVisible);
+    if (!isVisible) {
+        return;
+    }
+
+    const fieldIds = {
+        host: "modbus-host-input",
+        port: "modbus-port-input",
+        unit_id: "modbus-unit-id-input",
+        bit_source: "modbus-bit-source-input",
+        start_address: "modbus-start-address-input",
+        poll_timeout_seconds: "modbus-timeout-input"
+    };
+
+    Object.entries(fieldIds).forEach(([fieldName, fieldId]) => {
+        const input = document.getElementById(fieldId);
+        if (!input || document.activeElement === input) {
+            return;
+        }
+        input.value = config[fieldName] ?? "";
+    });
+
+    ["in1", "in2", "in3", "in4"].forEach((inputKey) => {
+        const select = document.getElementById(`modbus-${inputKey}-signal`);
+        if (!select) {
+            return;
+        }
+        const currentValue = config.signal_map?.[inputKey] || "unused";
+        const options = config.signal_options || [];
+        select.innerHTML = options
+            .map((option) => `<option value="${option.value}">${option.label}</option>`)
+            .join("");
+        if (document.activeElement !== select) {
+            select.value = currentValue;
+        }
+    });
+
+    const feedback = state.modbusFeedback?.machineKey === machine.key
+        ? state.modbusFeedback
+        : {
+            tone: config.enabled ? "success" : "muted",
+            message: config.enabled
+                ? `Containerul citeste Modbus din ${config.endpoint}. Maparea intrarilor poate fi schimbata oricand.`
+                : "Seteaza hostul Modbus si maparea IN1..IN4, apoi salveaza configuratia."
+        };
+    setModbusFeedback(feedback.message, feedback.tone);
 }
 
 function renderOperator(operatorSnapshot) {
@@ -782,7 +918,7 @@ function renderStats(stats) {
             machine_on: Boolean(state.dashboard?.current_signals?.machine_on?.active),
             cutting_active: Boolean(state.dashboard?.current_signals?.cutting_active?.active),
             table_change: Boolean(state.dashboard?.current_signals?.table_change?.active),
-            idle: Boolean(state.dashboard?.current_signals?.idle?.active),
+            idle: Boolean(state.dashboard?.current_signals?.idle_abort?.active),
         },
         machine_key: state.dashboard?.machine?.key || state.selectedMachineKey
     };
@@ -892,8 +1028,9 @@ function renderLiveExtraction(snapshot) {
     }
 
     const signals = snapshot.derived_signals || {};
-    const cells = currentMachineKey === "abkant"
-        ? [
+    let cells;
+    if (currentMachineKey === "abkant") {
+        cells = [
             { slot: "program", label: "Program curent", value: snapshot.active_program || "Necitit" },
             { slot: "upper_tool", label: "Upper", value: snapshot.upper_tool || "n/a" },
             { slot: "lower_tool", label: "Lower", value: snapshot.lower_tool || "n/a" },
@@ -904,8 +1041,24 @@ function renderLiveExtraction(snapshot) {
             { slot: "bending", label: "Bending", value: signals.cutting_active ? "DA" : "NU" },
             { slot: "setup_change", label: "Setup change", value: signals.table_change ? "DA" : "NU" },
             { slot: "status", label: "Status program", value: snapshot.program_status || "Necitit" }
-        ]
-        : [
+        ];
+    } else if (currentMachineKey === "laser1modbus") {
+        cells = [
+            { slot: "selected_program", label: "Selected program", value: snapshot.selected_program || "Necitit" },
+            { slot: "active_program", label: "Active program", value: snapshot.active_program || "Necitit" },
+            { slot: "material", label: "Material", value: snapshot.material || "Necitit" },
+            { slot: "program_status", label: "Program status", value: snapshot.program_status || "Necitit" },
+            { slot: "in1", label: "IN1", value: renderModbusInputValue(snapshot.modbus_inputs, "in1") },
+            { slot: "in2", label: "IN2", value: renderModbusInputValue(snapshot.modbus_inputs, "in2") },
+            { slot: "in3", label: "IN3", value: renderModbusInputValue(snapshot.modbus_inputs, "in3") },
+            { slot: "in4", label: "IN4", value: renderModbusInputValue(snapshot.modbus_inputs, "in4") },
+            { slot: "machine_on", label: "Machine ON", value: signals.machine_on ? "DA" : "NU" },
+            { slot: "cutting", label: "Cutting", value: signals.cutting_active ? "DA" : "NU" },
+            { slot: "table_change", label: "Table change", value: signals.table_change ? "DA" : "NU" },
+            { slot: "idle", label: "Idle / Aborted", value: signals.idle_abort ? "DA" : (signals.idle ? "IDLE" : "NU") }
+        ];
+    } else {
+        cells = [
             { slot: "selected_program", label: "Selected program", value: snapshot.selected_program || "Necitit" },
             { slot: "active_program", label: "Active program", value: snapshot.active_program || "Necitit" },
             { slot: "material", label: "Material", value: snapshot.material || "Necitit" },
@@ -915,6 +1068,7 @@ function renderLiveExtraction(snapshot) {
             { slot: "table_change", label: "Table change", value: signals.table_change ? "DA" : "NU" },
             { slot: "idle", label: "Idle", value: signals.idle ? "DA" : "NU" }
         ];
+    }
 
     const layoutKey = `${currentMachineKey}:live`;
     if (state.liveExtractionLayoutKey !== layoutKey) {
@@ -1497,6 +1651,20 @@ function setWorkcenterFeedback(message, tone = "muted") {
 
 function setFeedbackText(message, tone = "muted") {
     const feedback = document.getElementById("workcenter-feedback");
+    feedback.textContent = message;
+    feedback.className = `feedback-text ${tone ? `is-${tone}` : ""}`.trim();
+}
+
+function setModbusFeedback(message, tone = "muted") {
+    state.modbusFeedback = {
+        machineKey: state.selectedMachineKey,
+        tone,
+        message
+    };
+    const feedback = document.getElementById("modbus-feedback");
+    if (!feedback) {
+        return;
+    }
     feedback.textContent = message;
     feedback.className = `feedback-text ${tone ? `is-${tone}` : ""}`.trim();
 }

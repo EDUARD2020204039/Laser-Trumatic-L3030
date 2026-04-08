@@ -425,6 +425,17 @@ body.dark-mode .signal-tile {
     gap: 10px;
 }
 
+.modbus-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    margin-bottom: 14px;
+}
+
+.modbus-grid-signals {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .action-btn {
     display: inline-flex;
     align-items: center;
@@ -954,6 +965,7 @@ body.dark-mode .saved-record-grid span {
     .signal-grid,
     .live-screen-row,
     .feed-grid,
+    .modbus-grid,
     .saved-summary-grid,
     .saved-report-grid,
     .saved-machine-report-grid,

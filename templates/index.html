@@ -168,12 +168,32 @@
 
                             <div class="modbus-grid">
                                 <div>
+                                    <label class="form-label field-label" for="modbus-transport-input">Transport</label>
+                                    <select id="modbus-transport-input" class="form-select"></select>
+                                </div>
+                                <div data-modbus-transport-scope="tcp">
                                     <label class="form-label field-label" for="modbus-host-input">Host / IP</label>
                                     <input id="modbus-host-input" class="form-control" type="text" placeholder="Ex: 192.168.2.50">
                                 </div>
-                                <div>
+                                <div data-modbus-transport-scope="tcp">
                                     <label class="form-label field-label" for="modbus-port-input">Port</label>
                                     <input id="modbus-port-input" class="form-control" type="number" min="1" max="65535" placeholder="502">
+                                </div>
+                                <div data-modbus-transport-scope="rtu">
+                                    <label class="form-label field-label" for="modbus-serial-port-input">Port serial</label>
+                                    <input id="modbus-serial-port-input" class="form-control" type="text" placeholder="Ex: COM9">
+                                </div>
+                                <div data-modbus-transport-scope="rtu">
+                                    <label class="form-label field-label" for="modbus-serial-baudrate-input">Baud rate</label>
+                                    <input id="modbus-serial-baudrate-input" class="form-control" type="number" min="300" max="1000000" step="1" placeholder="9600">
+                                </div>
+                                <div data-modbus-transport-scope="rtu">
+                                    <label class="form-label field-label" for="modbus-serial-parity-input">Parity</label>
+                                    <select id="modbus-serial-parity-input" class="form-select"></select>
+                                </div>
+                                <div data-modbus-transport-scope="rtu">
+                                    <label class="form-label field-label" for="modbus-serial-stopbits-input">Stop bits</label>
+                                    <select id="modbus-serial-stopbits-input" class="form-select"></select>
                                 </div>
                                 <div>
                                     <label class="form-label field-label" for="modbus-unit-id-input">Unit ID</label>
@@ -216,7 +236,7 @@
                             </div>
 
                             <p class="feedback-text" id="modbus-feedback">
-                                Configureaza hostul si maparea intrarilor, apoi dashboard-ul citeste direct bitii din container.
+                                Configureaza transportul Modbus si maparea intrarilor, apoi dashboard-ul citeste direct bitii.
                             </p>
                         </div>
 

@@ -43,6 +43,11 @@ try:  # pragma: no cover - optional OCR stack
 except ImportError:  # pragma: no cover
     pytesseract = None
 
+try:  # pragma: no cover - optional RTU support
+    from pymodbus.client import ModbusSerialClient
+except ImportError:  # pragma: no cover
+    ModbusSerialClient = None
+
 
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
@@ -217,7 +222,7 @@ REAL_DATA_FEEDS = {
         "script_name": "app.py",
         "display_name": "Laser1 Modbus bridge",
         "endpoint": "https://laser.helpan.ro/",
-        "transport": "Modbus TCP + OCR din feed",
+        "transport": "Modbus TCP/RTU + OCR din feed",
         "left_panel": [
             {"label": "OCR program", "value": "da"},
             {"label": "OCR material", "value": "da"},
@@ -240,8 +245,8 @@ REAL_DATA_FEEDS = {
             {"label": "Program", "value": "Se citeste doar din feed pe intervalul semnalelor Modbus"},
         ],
         "details": [
-            "Configurezi host, port, unit ID, tipul de biti si maparea IN1..IN4 direct din dashboard",
-            "Aplicatia citeste Modbus TCP direct din container, fara bridge separat",
+            "Configurezi transportul, endpointul si maparea IN1..IN4 direct din dashboard",
+            "Aplicatia poate citi Modbus TCP sau Modbus RTU direct din container",
             "Programul si materialul ramin citite din feedul Laser1",
         ],
     },
@@ -514,6 +519,7 @@ LASER_OCR_ZONES = {
 }
 
 MODBUS_MACHINE_KEYS = {"laser1modbus"}
+MODBUS_TRANSPORT_CHOICES = ("tcp", "rtu")
 MODBUS_SIGNAL_TARGET_CHOICES = (
     "unused",
     "machine_on",
@@ -521,6 +527,8 @@ MODBUS_SIGNAL_TARGET_CHOICES = (
     "table_change",
     "idle_abort",
 )
+MODBUS_SERIAL_PARITY_CHOICES = ("N", "E", "O")
+MODBUS_SERIAL_STOPBITS_CHOICES = (1, 2)
 
 app = Flask(__name__)
 app.config["JSON_SORT_KEYS"] = False
@@ -602,6 +610,20 @@ def get_machine_env_value(machine_key: str, suffix: str, legacy_names: tuple[str
         if value:
             return value
     return ""
+
+
+def normalize_modbus_transport(value: str | None, fallback: str = "tcp") -> str:
+    normalized = (value or "").strip().lower()
+    if normalized in MODBUS_TRANSPORT_CHOICES:
+        return normalized
+    return fallback
+
+
+def normalize_modbus_serial_parity(value: str | None) -> str:
+    normalized = (value or "N").strip().upper()
+    if normalized in MODBUS_SERIAL_PARITY_CHOICES:
+        return normalized
+    return "N"
 
 
 def machine_uses_modbus(machine_key: str) -> bool:
@@ -1414,11 +1436,23 @@ def get_default_machine_profiles() -> list[dict]:
 
 
 def get_default_machine_modbus_configs() -> list[dict]:
+    serial_port = get_machine_env_value("laser1modbus", "MODBUS_SERIAL_PORT")
+    host = get_machine_env_value("laser1modbus", "MODBUS_HOST")
     return [
         {
             "machine_key": "laser1modbus",
-            "host": get_machine_env_value("laser1modbus", "MODBUS_HOST"),
+            "transport": normalize_modbus_transport(
+                get_machine_env_value("laser1modbus", "MODBUS_TRANSPORT"),
+                fallback="rtu" if serial_port and not host else "tcp",
+            ),
+            "host": host,
             "port": parse_optional_int(get_machine_env_value("laser1modbus", "MODBUS_PORT")) or 502,
+            "serial_port": serial_port,
+            "serial_baudrate": parse_optional_int(get_machine_env_value("laser1modbus", "MODBUS_SERIAL_BAUDRATE")) or 9600,
+            "serial_parity": normalize_modbus_serial_parity(
+                get_machine_env_value("laser1modbus", "MODBUS_SERIAL_PARITY") or "N"
+            ),
+            "serial_stopbits": parse_optional_int(get_machine_env_value("laser1modbus", "MODBUS_SERIAL_STOPBITS")) or 1,
             "unit_id": parse_optional_int(get_machine_env_value("laser1modbus", "MODBUS_UNIT_ID")) or 1,
             "bit_source": (get_machine_env_value("laser1modbus", "MODBUS_BIT_SOURCE") or "discrete_input").strip().lower(),
             "start_address": parse_optional_int(get_machine_env_value("laser1modbus", "MODBUS_START_ADDRESS")) or 0,
@@ -1441,6 +1475,46 @@ def get_modbus_signal_target_options() -> list[dict[str, str]]:
     ]
 
 
+def get_modbus_transport_options() -> list[dict[str, str]]:
+    return [
+        {"value": "tcp", "label": "Modbus TCP"},
+        {"value": "rtu", "label": "Modbus RTU / RS485"},
+    ]
+
+
+def get_modbus_serial_parity_options() -> list[dict[str, str]]:
+    return [
+        {"value": "N", "label": "None"},
+        {"value": "E", "label": "Even"},
+        {"value": "O", "label": "Odd"},
+    ]
+
+
+def get_modbus_serial_stopbits_options() -> list[dict[str, str]]:
+    return [
+        {"value": "1", "label": "1"},
+        {"value": "2", "label": "2"},
+    ]
+
+
+def build_modbus_endpoint(config: dict | sqlite3.Row) -> str:
+    transport = normalize_modbus_transport(config["transport"] if "transport" in config.keys() else None)
+    unit_id = int(config["unit_id"] or 1)
+    if transport == "rtu":
+        serial_port = (config["serial_port"] or "").strip()
+        if not serial_port:
+            return ""
+        baudrate = int(config["serial_baudrate"] or 9600)
+        parity = normalize_modbus_serial_parity(config["serial_parity"] or "N")
+        stopbits = int(config["serial_stopbits"] or 1)
+        return f"{serial_port} / {baudrate} 8{parity}{stopbits} / unit {unit_id}"
+
+    host = (config["host"] or "").strip()
+    if not host:
+        return ""
+    return f"{host}:{int(config['port'] or 502)}"
+
+
 def build_modbus_signal_map(config: dict | sqlite3.Row | None) -> dict[str, str]:
     if not config:
         return {}
@@ -1457,10 +1531,22 @@ def serialize_machine_modbus_config(row: sqlite3.Row | dict | None) -> dict | No
         return None
 
     signal_map = build_modbus_signal_map(row)
+    transport = normalize_modbus_transport(row["transport"] if "transport" in row.keys() else None)
+    serial_parity = normalize_modbus_serial_parity(row["serial_parity"] if "serial_parity" in row.keys() else "N")
+    serial_stopbits = int(row["serial_stopbits"] or 1) if "serial_stopbits" in row.keys() else 1
+    enabled = bool((row["serial_port"] or "").strip()) if transport == "rtu" else bool((row["host"] or "").strip())
     return {
         "machine_key": row["machine_key"],
+        "transport": transport,
+        "transport_options": get_modbus_transport_options(),
         "host": (row["host"] or "").strip(),
         "port": int(row["port"] or 502),
+        "serial_port": (row["serial_port"] or "").strip() if "serial_port" in row.keys() else "",
+        "serial_baudrate": int(row["serial_baudrate"] or 9600) if "serial_baudrate" in row.keys() else 9600,
+        "serial_parity": serial_parity,
+        "serial_parity_options": get_modbus_serial_parity_options(),
+        "serial_stopbits": serial_stopbits,
+        "serial_stopbits_options": get_modbus_serial_stopbits_options(),
         "unit_id": int(row["unit_id"] or 1),
         "bit_source": (row["bit_source"] or "discrete_input").strip().lower(),
         "start_address": int(row["start_address"] or 0),
@@ -1473,8 +1559,8 @@ def serialize_machine_modbus_config(row: sqlite3.Row | dict | None) -> dict | No
             {"key": "in4", "label": "IN4", "signal": signal_map["in4"]},
         ],
         "signal_options": get_modbus_signal_target_options(),
-        "enabled": bool((row["host"] or "").strip()),
-        "endpoint": f"{(row['host'] or '').strip()}:{int(row['port'] or 502)}" if (row["host"] or "").strip() else "",
+        "enabled": enabled,
+        "endpoint": build_modbus_endpoint(row),
     }
 
 
@@ -1486,7 +1572,8 @@ def get_machine_modbus_config(machine_key: str) -> dict:
     with get_sqlite_connection() as connection:
         row = connection.execute(
             """
-            SELECT machine_key, host, port, unit_id, bit_source, start_address, poll_timeout_seconds,
+            SELECT machine_key, transport, host, port, serial_port, serial_baudrate, serial_parity, serial_stopbits,
+                   unit_id, bit_source, start_address, poll_timeout_seconds,
                    in1_signal, in2_signal, in3_signal, in4_signal, updated_at
             FROM machine_modbus_configs
             WHERE machine_key = ?
@@ -1502,8 +1589,13 @@ def validate_machine_modbus_config(machine_key: str, data: dict) -> dict:
     if not machine_uses_modbus(machine_key):
         raise ValueError(f"Machine does not use Modbus: {machine_key}")
 
+    transport = normalize_modbus_transport(data.get("transport"))
     host = (data.get("host") or "").strip()
     port = parse_optional_int(data.get("port"))
+    serial_port = (data.get("serial_port") or "").strip()
+    serial_baudrate = parse_optional_int(data.get("serial_baudrate"))
+    serial_parity = normalize_modbus_serial_parity(data.get("serial_parity") or "N")
+    serial_stopbits = parse_optional_int(data.get("serial_stopbits"))
     unit_id = parse_optional_int(data.get("unit_id"))
     start_address = parse_optional_int(data.get("start_address"))
     poll_timeout_seconds = parse_optional_float(data.get("poll_timeout_seconds"))
@@ -1511,8 +1603,14 @@ def validate_machine_modbus_config(machine_key: str, data: dict) -> dict:
     if bit_source not in {"discrete_input", "coil"}:
         raise ValueError("Tipul de bit Modbus trebuie sa fie discrete_input sau coil.")
 
-    if port is None or port < 1 or port > 65535:
-        raise ValueError("Portul Modbus trebuie sa fie intre 1 si 65535.")
+    if transport == "tcp":
+        if port is None or port < 1 or port > 65535:
+            raise ValueError("Portul Modbus trebuie sa fie intre 1 si 65535.")
+    else:
+        if serial_baudrate is None or serial_baudrate < 300 or serial_baudrate > 1000000:
+            raise ValueError("Baud rate-ul Modbus RTU trebuie sa fie intre 300 si 1000000.")
+        if serial_stopbits not in MODBUS_SERIAL_STOPBITS_CHOICES:
+            raise ValueError("Stop bits pentru Modbus RTU trebuie sa fie 1 sau 2.")
     if unit_id is None or unit_id < 0 or unit_id > 255:
         raise ValueError("Unit ID-ul Modbus trebuie sa fie intre 0 si 255.")
     if start_address is None or start_address < 0:
@@ -1537,8 +1635,13 @@ def validate_machine_modbus_config(machine_key: str, data: dict) -> dict:
 
     return {
         "machine_key": machine_key,
+        "transport": transport,
         "host": host,
-        "port": port,
+        "port": port or 502,
+        "serial_port": serial_port,
+        "serial_baudrate": serial_baudrate or 9600,
+        "serial_parity": serial_parity,
+        "serial_stopbits": serial_stopbits or 1,
         "unit_id": unit_id,
         "bit_source": bit_source,
         "start_address": start_address,
@@ -1554,13 +1657,19 @@ def update_machine_modbus_config(machine_key: str, data: dict) -> dict:
         connection.execute(
             """
             INSERT INTO machine_modbus_configs (
-                machine_key, host, port, unit_id, bit_source, start_address, poll_timeout_seconds,
+                machine_key, transport, host, port, serial_port, serial_baudrate, serial_parity, serial_stopbits,
+                unit_id, bit_source, start_address, poll_timeout_seconds,
                 in1_signal, in2_signal, in3_signal, in4_signal, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(machine_key) DO UPDATE SET
+                transport = excluded.transport,
                 host = excluded.host,
                 port = excluded.port,
+                serial_port = excluded.serial_port,
+                serial_baudrate = excluded.serial_baudrate,
+                serial_parity = excluded.serial_parity,
+                serial_stopbits = excluded.serial_stopbits,
                 unit_id = excluded.unit_id,
                 bit_source = excluded.bit_source,
                 start_address = excluded.start_address,
@@ -1573,8 +1682,13 @@ def update_machine_modbus_config(machine_key: str, data: dict) -> dict:
             """,
             (
                 config["machine_key"],
+                config["transport"],
                 config["host"],
                 config["port"],
+                config["serial_port"],
+                config["serial_baudrate"],
+                config["serial_parity"],
+                config["serial_stopbits"],
                 config["unit_id"],
                 config["bit_source"],
                 config["start_address"],
@@ -1597,7 +1711,8 @@ def serialize_machine_profile(row: sqlite3.Row, selected_machine_key: str | None
         with get_sqlite_connection() as connection:
             modbus_row = connection.execute(
                 """
-                SELECT machine_key, host, port, unit_id, bit_source, start_address, poll_timeout_seconds,
+                SELECT machine_key, transport, host, port, serial_port, serial_baudrate, serial_parity, serial_stopbits,
+                       unit_id, bit_source, start_address, poll_timeout_seconds,
                        in1_signal, in2_signal, in3_signal, in4_signal, updated_at
                 FROM machine_modbus_configs
                 WHERE machine_key = ?
@@ -1681,8 +1796,13 @@ def init_db() -> None:
 
             CREATE TABLE IF NOT EXISTS machine_modbus_configs (
                 machine_key TEXT PRIMARY KEY,
+                transport TEXT NOT NULL DEFAULT 'tcp',
                 host TEXT NOT NULL DEFAULT '',
                 port INTEGER NOT NULL DEFAULT 502,
+                serial_port TEXT NOT NULL DEFAULT '',
+                serial_baudrate INTEGER NOT NULL DEFAULT 9600,
+                serial_parity TEXT NOT NULL DEFAULT 'N',
+                serial_stopbits INTEGER NOT NULL DEFAULT 1,
                 unit_id INTEGER NOT NULL DEFAULT 1,
                 bit_source TEXT NOT NULL DEFAULT 'discrete_input',
                 start_address INTEGER NOT NULL DEFAULT 0,
@@ -1741,6 +1861,16 @@ def init_db() -> None:
             row["name"]
             for row in connection.execute("PRAGMA table_info(machine_modbus_configs)").fetchall()
         }
+        if "transport" not in machine_modbus_columns:
+            connection.execute("ALTER TABLE machine_modbus_configs ADD COLUMN transport TEXT NOT NULL DEFAULT 'tcp'")
+        if "serial_port" not in machine_modbus_columns:
+            connection.execute("ALTER TABLE machine_modbus_configs ADD COLUMN serial_port TEXT NOT NULL DEFAULT ''")
+        if "serial_baudrate" not in machine_modbus_columns:
+            connection.execute("ALTER TABLE machine_modbus_configs ADD COLUMN serial_baudrate INTEGER NOT NULL DEFAULT 9600")
+        if "serial_parity" not in machine_modbus_columns:
+            connection.execute("ALTER TABLE machine_modbus_configs ADD COLUMN serial_parity TEXT NOT NULL DEFAULT 'N'")
+        if "serial_stopbits" not in machine_modbus_columns:
+            connection.execute("ALTER TABLE machine_modbus_configs ADD COLUMN serial_stopbits INTEGER NOT NULL DEFAULT 1")
         if "poll_timeout_seconds" not in machine_modbus_columns:
             connection.execute("ALTER TABLE machine_modbus_configs ADD COLUMN poll_timeout_seconds REAL NOT NULL DEFAULT 1.5")
         if "in1_signal" not in machine_modbus_columns:
@@ -1824,15 +1954,21 @@ def init_db() -> None:
             connection.execute(
                 """
                 INSERT OR IGNORE INTO machine_modbus_configs (
-                    machine_key, host, port, unit_id, bit_source, start_address, poll_timeout_seconds,
+                    machine_key, transport, host, port, serial_port, serial_baudrate, serial_parity, serial_stopbits,
+                    unit_id, bit_source, start_address, poll_timeout_seconds,
                     in1_signal, in2_signal, in3_signal, in4_signal, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     config["machine_key"],
+                    config["transport"],
                     config["host"],
                     config["port"],
+                    config["serial_port"],
+                    config["serial_baudrate"],
+                    config["serial_parity"],
+                    config["serial_stopbits"],
                     config["unit_id"],
                     config["bit_source"],
                     config["start_address"],
@@ -1847,7 +1983,13 @@ def init_db() -> None:
             connection.execute(
                 """
                 UPDATE machine_modbus_configs
-                SET port = COALESCE(port, ?),
+                SET transport = COALESCE(NULLIF(transport, ''), ?),
+                    host = COALESCE(NULLIF(host, ''), ?),
+                    port = COALESCE(port, ?),
+                    serial_port = COALESCE(NULLIF(serial_port, ''), ?),
+                    serial_baudrate = COALESCE(serial_baudrate, ?),
+                    serial_parity = COALESCE(NULLIF(serial_parity, ''), ?),
+                    serial_stopbits = COALESCE(serial_stopbits, ?),
                     unit_id = COALESCE(unit_id, ?),
                     bit_source = COALESCE(NULLIF(bit_source, ''), ?),
                     start_address = COALESCE(start_address, ?),
@@ -1859,7 +2001,13 @@ def init_db() -> None:
                 WHERE machine_key = ?
                 """,
                 (
+                    config["transport"],
+                    config["host"],
                     config["port"],
+                    config["serial_port"],
+                    config["serial_baudrate"],
+                    config["serial_parity"],
+                    config["serial_stopbits"],
                     config["unit_id"],
                     config["bit_source"],
                     config["start_address"],
@@ -1936,9 +2084,10 @@ def get_real_data_settings(machine_profile: dict) -> dict[str, str]:
     message = ""
     if machine_uses_modbus(machine_profile["key"]):
         modbus_config = get_machine_modbus_config(machine_profile["key"])
+        transport_label = "Modbus RTU" if modbus_config["transport"] == "rtu" else "Modbus TCP"
         details.extend(
             [
-                f"Modbus endpoint: {modbus_config['endpoint'] or 'neconfigurat'}",
+                f"{transport_label}: {modbus_config['endpoint'] or 'neconfigurat'}",
                 f"Tip biti: {modbus_config['bit_source']}",
                 f"Adresa start: {modbus_config['start_address']}",
                 "Mapare: "
@@ -1952,7 +2101,7 @@ def get_real_data_settings(machine_profile: dict) -> dict[str, str]:
         message = (
             f"{machine_profile['label']} citeste timpii din Modbus, iar programul din feedul Laser1."
             if dedicated_live_source
-            else "Sursa Modbus nu este configurata complet. Seteaza hostul, portul si maparea intrarilor."
+            else "Sursa Modbus nu este configurata complet. Seteaza hostul/portul TCP sau portul serial RTU si maparea intrarilor."
         )
     status = "configured" if script_exists and dedicated_live_source else "pending"
     return {
@@ -2064,6 +2213,47 @@ def read_modbus_tcp_bits(
     return bits
 
 
+def read_modbus_rtu_bits(
+    serial_port: str,
+    baudrate: int,
+    unit_id: int,
+    start_address: int,
+    count: int,
+    bit_source: str = "discrete_input",
+    timeout_seconds: float = 1.5,
+    parity: str = "N",
+    stopbits: int = 1,
+) -> list[bool]:
+    if ModbusSerialClient is None:
+        raise RuntimeError("Lipseste dependinta pymodbus necesara pentru Modbus RTU.")
+
+    client = ModbusSerialClient(
+        port=serial_port,
+        baudrate=baudrate,
+        parity=normalize_modbus_serial_parity(parity),
+        stopbits=stopbits,
+        timeout=timeout_seconds,
+    )
+    try:
+        if not client.connect():
+            raise RuntimeError(f"Nu pot deschide portul serial {serial_port}.")
+
+        if bit_source == "discrete_input":
+            response = client.read_discrete_inputs(start_address, count=count, device_id=unit_id)
+        else:
+            response = client.read_coils(start_address, count=count, device_id=unit_id)
+
+        if response.isError():
+            raise RuntimeError(f"Modbus RTU a raspuns cu eroare: {response}")
+
+        bits = [bool(bit) for bit in (response.bits or [])[:count]]
+        if len(bits) < count:
+            bits.extend([False] * (count - len(bits)))
+        return bits
+    finally:
+        client.close()
+
+
 def build_modbus_input_signal_map(config: dict) -> dict[str, str]:
     return {
         "in1": config.get("signal_map", {}).get("in1", "unused"),
@@ -2143,31 +2333,51 @@ def get_laser_ocr_snapshot(machine_key: str) -> dict:
 def analyze_laser_modbus_live_snapshot(machine_key: str) -> dict | None:
     config = get_machine_modbus_config(machine_key)
     if not config.get("enabled"):
+        transport = config.get("transport", "tcp")
+        transport_hint = (
+            "Configureaza portul serial, baud rate-ul si maparea IN1..IN4 pentru Modbus RTU."
+            if transport == "rtu"
+            else "Configureaza hostul, portul si maparea IN1..IN4 pentru Modbus TCP."
+        )
         return {
             "available": False,
             "connected": False,
             "source": "modbus",
             "endpoint": "",
-            "message": "Configureaza hostul Modbus pentru LASER1MODBUS ca sa putem citi bitii din container.",
+            "message": transport_hint,
         }
 
     try:
-        inputs = read_modbus_tcp_bits(
-            host=config["host"],
-            port=config["port"],
-            unit_id=config["unit_id"],
-            start_address=config["start_address"],
-            count=4,
-            bit_source=config["bit_source"],
-            timeout_seconds=config["poll_timeout_seconds"],
-        )
+        if config.get("transport") == "rtu":
+            inputs = read_modbus_rtu_bits(
+                serial_port=config["serial_port"],
+                baudrate=config["serial_baudrate"],
+                unit_id=config["unit_id"],
+                start_address=config["start_address"],
+                count=4,
+                bit_source=config["bit_source"],
+                timeout_seconds=config["poll_timeout_seconds"],
+                parity=config["serial_parity"],
+                stopbits=config["serial_stopbits"],
+            )
+        else:
+            inputs = read_modbus_tcp_bits(
+                host=config["host"],
+                port=config["port"],
+                unit_id=config["unit_id"],
+                start_address=config["start_address"],
+                count=4,
+                bit_source=config["bit_source"],
+                timeout_seconds=config["poll_timeout_seconds"],
+            )
     except Exception as exc:
+        transport_label = "Modbus RTU" if config.get("transport") == "rtu" else "Modbus TCP"
         return {
             "available": False,
             "connected": False,
             "source": "modbus",
             "endpoint": config["endpoint"],
-            "message": f"Nu pot citi Modbus TCP de la {config['endpoint']}. Motiv: {exc}",
+            "message": f"Nu pot citi {transport_label} de la {config['endpoint']}. Motiv: {exc}",
         }
 
     derived_signals, raw_inputs = build_modbus_signal_state(config, inputs)
@@ -2200,7 +2410,7 @@ def analyze_laser_modbus_live_snapshot(machine_key: str) -> dict | None:
         }
 
     message = (
-        f"Programul este citit din feed, iar timpii vin din Modbus TCP {config['endpoint']}. "
+        f"Programul este citit din feed, iar timpii vin din Modbus {config['endpoint']}. "
         f"Bitii activi: {', '.join(input_item['label'] for input_item in raw_inputs if input_item['active']) or 'niciunul'}."
     )
     if ocr_snapshot.get("warning_message"):

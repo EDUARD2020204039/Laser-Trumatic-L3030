@@ -57,7 +57,9 @@ Aplicatia porneste implicit pe `http://localhost:3030`.
 - `LASER1_CAMERA_FEED_PASSWORD`, `LASER2_CAMERA_FEED_PASSWORD`, `ABKANT_CAMERA_FEED_PASSWORD` pentru parola camerei
 - `LASER1_CAMERA_FEED_AUTH`, `LASER2_CAMERA_FEED_AUTH`, `ABKANT_CAMERA_FEED_AUTH` cu `basic` sau `digest`, daca feedul camerei cere autentificare HTTP
 - `LASER1_HMI_FEED_URL`, `LASER2_HMI_FEED_URL`, `ABKANT_HMI_FEED_URL` pentru pagina HMI embed-uita in dashboard
+- `LASER1MODBUS_MODBUS_TRANSPORT` cu `tcp` sau `rtu`
 - `LASER1MODBUS_MODBUS_HOST`, `LASER1MODBUS_MODBUS_PORT`, `LASER1MODBUS_MODBUS_UNIT_ID`, `LASER1MODBUS_MODBUS_BIT_SOURCE`, `LASER1MODBUS_MODBUS_START_ADDRESS` pentru citirea Modbus TCP directa din container
+- `LASER1MODBUS_MODBUS_SERIAL_PORT`, `LASER1MODBUS_MODBUS_SERIAL_BAUDRATE`, `LASER1MODBUS_MODBUS_SERIAL_PARITY`, `LASER1MODBUS_MODBUS_SERIAL_STOPBITS` pentru citirea Modbus RTU prin RS485/USB direct din container sau din Windows
 - `LASER1MODBUS_MODBUS_IN1_SIGNAL` .. `LASER1MODBUS_MODBUS_IN4_SIGNAL` daca vrei o configurare initiala din `.env`; ulterior aceeasi mapare poate fi schimbata direct din dashboard
 - `ABKANT_PG_HOST`, `ABKANT_PG_DATABASE`, `ABKANT_PG_USER`, `ABKANT_PG_PASSWORD` pentru fallback-ul Abkant din PostgreSQL cind linkul video pica
 - daca rulezi aplicatia in Docker pe un server public, endpointurile de tip Tailscale sau hostname intern trebuie sa fie accesibile si din container; altfel utilajul ramine `OFF`

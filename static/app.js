@@ -15,6 +15,9 @@ const state = {
     savedOperatorId: window.localStorage.getItem("savedOperatorId") || "",
     workcenterFeedback: null,
     modbusFeedback: null,
+    modbusDraft: null,
+    modbusDraftDirty: false,
+    modbusDraftMachineKey: null,
     lastSavedRefreshMs: 0,
     lastStatsSnapshot: null,
     lastStatsSyncMs: 0,
@@ -269,6 +272,7 @@ function bindActions() {
             window.localStorage.setItem("currentView", state.currentView);
             state.workcenterFeedback = null;
             state.modbusFeedback = null;
+            clearModbusDraft();
             await loadDashboard(nextMachineKey);
         });
     }
@@ -341,7 +345,25 @@ function bindActions() {
 
     const modbusTransportInput = document.getElementById("modbus-transport-input");
     if (modbusTransportInput) {
-        modbusTransportInput.addEventListener("change", syncModbusTransportFields);
+        modbusTransportInput.addEventListener("change", () => {
+            markModbusDraftDirty();
+            syncModbusTransportFields();
+        });
+    }
+
+    const modbusConfigSection = document.getElementById("modbus-config-section");
+    if (modbusConfigSection) {
+        const handleDraftChange = (event) => {
+            if (!event.target?.id?.startsWith("modbus-")) {
+                return;
+            }
+            if (event.target.id === "modbus-feedback") {
+                return;
+            }
+            markModbusDraftDirty();
+        };
+        modbusConfigSection.addEventListener("input", handleDraftChange);
+        modbusConfigSection.addEventListener("change", handleDraftChange);
     }
 
     const workcenterInput = document.getElementById("workcenter-id-input");
@@ -381,6 +403,9 @@ async function loadDashboard(machineKey = state.selectedMachineKey) {
 
         state.dashboard = payload;
         state.selectedMachineKey = payload.selected_machine_key;
+        if (state.modbusDraftMachineKey && state.modbusDraftMachineKey !== payload.selected_machine_key) {
+            clearModbusDraft();
+        }
         window.localStorage.setItem("selectedMachineKey", payload.selected_machine_key);
         window.localStorage.setItem("currentView", "dashboard");
         state.currentView = "dashboard";
@@ -644,6 +669,7 @@ async function updateModbusConfig() {
             tone: "success",
             message: `Configuratia Modbus a fost salvata pentru ${payload.machine.label}.`
         };
+        clearModbusDraft();
         state.dashboard = payload.dashboard;
         renderDashboard(payload.dashboard);
     } catch (error) {
@@ -782,6 +808,40 @@ function renderModbusInputValue(modbusInputs, inputKey) {
     return `${input.active ? "1" : "0"} / ${input.signal || "unused"}`;
 }
 
+function collectModbusDraftFromDom() {
+    return {
+        transport: document.getElementById("modbus-transport-input")?.value || "tcp",
+        host: document.getElementById("modbus-host-input")?.value.trim() || "",
+        port: document.getElementById("modbus-port-input")?.value.trim() || "",
+        serial_port: document.getElementById("modbus-serial-port-input")?.value.trim() || "",
+        serial_baudrate: document.getElementById("modbus-serial-baudrate-input")?.value.trim() || "",
+        serial_parity: document.getElementById("modbus-serial-parity-input")?.value || "N",
+        serial_stopbits: document.getElementById("modbus-serial-stopbits-input")?.value || "1",
+        unit_id: document.getElementById("modbus-unit-id-input")?.value.trim() || "",
+        bit_source: document.getElementById("modbus-bit-source-input")?.value || "discrete_input",
+        start_address: document.getElementById("modbus-start-address-input")?.value.trim() || "",
+        poll_timeout_seconds: document.getElementById("modbus-timeout-input")?.value.trim() || "",
+        signal_map: {
+            in1: document.getElementById("modbus-in1-signal")?.value || "unused",
+            in2: document.getElementById("modbus-in2-signal")?.value || "unused",
+            in3: document.getElementById("modbus-in3-signal")?.value || "unused",
+            in4: document.getElementById("modbus-in4-signal")?.value || "unused"
+        }
+    };
+}
+
+function markModbusDraftDirty() {
+    state.modbusDraft = collectModbusDraftFromDom();
+    state.modbusDraftDirty = true;
+    state.modbusDraftMachineKey = state.selectedMachineKey;
+}
+
+function clearModbusDraft() {
+    state.modbusDraft = null;
+    state.modbusDraftDirty = false;
+    state.modbusDraftMachineKey = null;
+}
+
 function syncModbusTransportFields() {
     const transportSelect = document.getElementById("modbus-transport-input");
     const transport = transportSelect?.value || "tcp";
@@ -820,6 +880,17 @@ function renderModbusConfig(machine) {
         return;
     }
 
+    const displayConfig = state.modbusDraftDirty && state.modbusDraftMachineKey === machine.key
+        ? {
+            ...config,
+            ...state.modbusDraft,
+            signal_map: {
+                ...(config.signal_map || {}),
+                ...(state.modbusDraft?.signal_map || {})
+            }
+        }
+        : config;
+
     const fieldIds = {
         transport: "modbus-transport-input",
         host: "modbus-host-input",
@@ -837,7 +908,7 @@ function renderModbusConfig(machine) {
         if (!input || document.activeElement === input) {
             return;
         }
-        input.value = config[fieldName] ?? "";
+        input.value = displayConfig[fieldName] ?? "";
     });
 
     const transportSelect = document.getElementById("modbus-transport-input");
@@ -846,7 +917,7 @@ function renderModbusConfig(machine) {
             .map((option) => `<option value="${option.value}">${option.label}</option>`)
             .join("");
         if (document.activeElement !== transportSelect) {
-            transportSelect.value = config.transport || "tcp";
+            transportSelect.value = displayConfig.transport || "tcp";
         }
     }
 
@@ -856,7 +927,7 @@ function renderModbusConfig(machine) {
             .map((option) => `<option value="${option.value}">${option.label}</option>`)
             .join("");
         if (document.activeElement !== serialParitySelect) {
-            serialParitySelect.value = config.serial_parity || "N";
+            serialParitySelect.value = displayConfig.serial_parity || "N";
         }
     }
 
@@ -866,7 +937,7 @@ function renderModbusConfig(machine) {
             .map((option) => `<option value="${option.value}">${option.label}</option>`)
             .join("");
         if (document.activeElement !== serialStopbitsSelect) {
-            serialStopbitsSelect.value = String(config.serial_stopbits || 1);
+            serialStopbitsSelect.value = String(displayConfig.serial_stopbits || 1);
         }
     }
 
@@ -875,7 +946,7 @@ function renderModbusConfig(machine) {
         if (!select) {
             return;
         }
-        const currentValue = config.signal_map?.[inputKey] || "unused";
+        const currentValue = displayConfig.signal_map?.[inputKey] || "unused";
         const options = config.signal_options || [];
         select.innerHTML = options
             .map((option) => `<option value="${option.value}">${option.label}</option>`)
@@ -890,10 +961,16 @@ function renderModbusConfig(machine) {
     const feedback = state.modbusFeedback?.machineKey === machine.key
         ? state.modbusFeedback
         : {
-            tone: config.enabled ? "success" : "muted",
-            message: config.enabled
-                ? `Containerul citeste ${config.transport === "rtu" ? "Modbus RTU" : "Modbus TCP"} din ${config.endpoint}. Maparea intrarilor poate fi schimbata oricand.`
-                : "Alege transportul Modbus, completeaza endpointul si salveaza maparea IN1..IN4."
+            tone: state.modbusDraftDirty && state.modbusDraftMachineKey === machine.key
+                ? "muted"
+                : (config.enabled ? "success" : "muted"),
+            message: state.modbusDraftDirty && state.modbusDraftMachineKey === machine.key
+                ? "Ai modificari Modbus nesalvate. Ele raman in formular pana apesi Salveaza Modbus."
+                : (
+                    config.enabled
+                        ? `Containerul citeste ${config.transport === "rtu" ? "Modbus RTU" : "Modbus TCP"} din ${config.endpoint}. Maparea intrarilor poate fi schimbata oricand.`
+                        : "Alege transportul Modbus, completeaza endpointul si salveaza maparea IN1..IN4."
+                )
         };
     setModbusFeedback(feedback.message, feedback.tone);
 }

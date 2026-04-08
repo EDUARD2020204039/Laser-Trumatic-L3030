@@ -842,6 +842,28 @@ function clearModbusDraft() {
     state.modbusDraftMachineKey = null;
 }
 
+function syncSelectOptions(select, options, desiredValue) {
+    if (!select) {
+        return;
+    }
+
+    const optionMarkup = (options || [])
+        .map((option) => `<option value="${option.value}">${option.label}</option>`)
+        .join("");
+
+    if (select.dataset.optionsMarkup !== optionMarkup) {
+        select.innerHTML = optionMarkup;
+        select.dataset.optionsMarkup = optionMarkup;
+    }
+
+    const safeDesiredValue = desiredValue == null ? "" : String(desiredValue);
+    const activeValue = document.activeElement === select ? select.value : safeDesiredValue;
+    const hasOption = Array.from(select.options).some((option) => option.value === activeValue);
+    if (hasOption) {
+        select.value = activeValue;
+    }
+}
+
 function syncModbusTransportFields() {
     const transportSelect = document.getElementById("modbus-transport-input");
     const transport = transportSelect?.value || "tcp";
@@ -912,34 +934,17 @@ function renderModbusConfig(machine) {
     });
 
     const transportSelect = document.getElementById("modbus-transport-input");
-    if (transportSelect) {
-        transportSelect.innerHTML = (config.transport_options || [])
-            .map((option) => `<option value="${option.value}">${option.label}</option>`)
-            .join("");
-        if (document.activeElement !== transportSelect) {
-            transportSelect.value = displayConfig.transport || "tcp";
-        }
-    }
+    syncSelectOptions(transportSelect, config.transport_options || [], displayConfig.transport || "tcp");
 
     const serialParitySelect = document.getElementById("modbus-serial-parity-input");
-    if (serialParitySelect) {
-        serialParitySelect.innerHTML = (config.serial_parity_options || [])
-            .map((option) => `<option value="${option.value}">${option.label}</option>`)
-            .join("");
-        if (document.activeElement !== serialParitySelect) {
-            serialParitySelect.value = displayConfig.serial_parity || "N";
-        }
-    }
+    syncSelectOptions(serialParitySelect, config.serial_parity_options || [], displayConfig.serial_parity || "N");
 
     const serialStopbitsSelect = document.getElementById("modbus-serial-stopbits-input");
-    if (serialStopbitsSelect) {
-        serialStopbitsSelect.innerHTML = (config.serial_stopbits_options || [])
-            .map((option) => `<option value="${option.value}">${option.label}</option>`)
-            .join("");
-        if (document.activeElement !== serialStopbitsSelect) {
-            serialStopbitsSelect.value = String(displayConfig.serial_stopbits || 1);
-        }
-    }
+    syncSelectOptions(
+        serialStopbitsSelect,
+        config.serial_stopbits_options || [],
+        String(displayConfig.serial_stopbits || 1)
+    );
 
     ["in1", "in2", "in3", "in4"].forEach((inputKey) => {
         const select = document.getElementById(`modbus-${inputKey}-signal`);
@@ -948,12 +953,7 @@ function renderModbusConfig(machine) {
         }
         const currentValue = displayConfig.signal_map?.[inputKey] || "unused";
         const options = config.signal_options || [];
-        select.innerHTML = options
-            .map((option) => `<option value="${option.value}">${option.label}</option>`)
-            .join("");
-        if (document.activeElement !== select) {
-            select.value = currentValue;
-        }
+        syncSelectOptions(select, options, currentValue);
     });
 
     syncModbusTransportFields();

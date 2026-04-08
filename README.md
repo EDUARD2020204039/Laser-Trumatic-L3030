@@ -71,6 +71,32 @@ Aplicatia porneste implicit pe `http://localhost:3030`.
 - pagina `Date salvate` incearca mai intii sa reconstruiasca operatorii si foile din Prometheus; daca Prometheus nu raspunde sau nu are inca seriile salvate, cade temporar pe SQLite
 - pentru persistenta reala dupa update, Prometheus trebuie sa aiba propriul director de date persistent si o retenție suficient de mare
 
+## Bridge Modbus RTU -> TCP pentru PC separat
+
+Daca adaptorul USB-RS485 este bagat intr-un alt PC decit serverul Docker, nu folosi `Modbus RTU / RS485` direct in dashboard. In schimb:
+
+1. Pe PC-ul unde exista portul `COM9`, rulezi bridge-ul:
+
+```powershell
+python .\modbus_rtu_tcp_bridge.py --serial-port COM9 --baudrate 9600 --parity N --stopbits 1 --unit-id 1 --tcp-host 0.0.0.0 --tcp-port 502
+```
+
+2. In dashboard-ul de pe serverul Docker alegi:
+
+- `Transport`: `Modbus TCP`
+- `Host / IP`: IP-ul PC-ului pe care ruleaza bridge-ul, de exemplu `192.168.2.222`
+- `Port`: `502`
+- `Unit ID`: `1`
+- `Tip biti`: `Discrete Inputs`
+- `Adresa start`: `0` sau `1`, in functie de cum numeroteaza modulul `DI1`
+
+Bridge-ul expune prin TCP citirile Modbus RTU pentru:
+
+- `Coils` (`Function Code 1`)
+- `Discrete Inputs` (`Function Code 2`)
+
+Asta este suficient pentru dashboard-ul Laser1, care citeste doar stari digitale `IN1..IN4`.
+
 ## Grafana
 
 Repo-ul include un dashboard Grafana gata de import:

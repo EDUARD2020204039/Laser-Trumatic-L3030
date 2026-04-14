@@ -111,6 +111,7 @@ REQUEST_LIVE_SYNC_ENABLED = os.getenv("REQUEST_LIVE_SYNC_ENABLED", "0") == "1"
 SAVED_RECORDS_PROMETHEUS_ENABLED = os.getenv("SAVED_RECORDS_PROMETHEUS_ENABLED", "0") == "1"
 SNAPSHOT_FRESHNESS_SECONDS = max(int(os.getenv("SNAPSHOT_FRESHNESS_SECONDS", "3")), 1)
 ABKANT_IDLE_STAGNATION_SECONDS = max(int(os.getenv("ABKANT_IDLE_STAGNATION_SECONDS", "600")), 60)
+ABKANT_FEED_STALE_SECONDS = max(int(os.getenv("ABKANT_FEED_STALE_SECONDS", "120")), 15)
 OPERATOR_CACHE_SECONDS = max(int(os.getenv("OPERATOR_CACHE_SECONDS", "20")), 3)
 PROMETHEUS_MAX_PARALLEL_QUERIES = max(int(os.getenv("PROMETHEUS_MAX_PARALLEL_QUERIES", "6")), 1)
 try:
@@ -1179,14 +1180,32 @@ def fetch_abkant_postgres_snapshot() -> dict | None:
             "message": f"Fallback Abkant PostgreSQL indisponibil: {exc}",
         }
 
-    machine_on = bool(parameter_row[0]) if parameter_row is not None else False
     active_program = (latest_row[1] or "").strip() if latest_row else ""
     pieces_text = (latest_row[2] or "").strip() if latest_row and latest_row[2] is not None else ""
     produced_pieces_raw = latest_row[4] if latest_row and latest_row[4] is not None else None
     upper_tool = normalize_abkant_tool_value(latest_row[5] if latest_row and len(latest_row) > 5 else None)
     lower_tool = normalize_abkant_tool_value(latest_row[6] if latest_row and len(latest_row) > 6 else None)
     setup_signature = build_abkant_tool_signature_from_values(upper_tool, lower_tool)
-    collected_at = latest_row[0].isoformat(sep=" ", timespec="seconds") if latest_row and latest_row[0] else None
+    collected_at_dt = latest_row[0] if latest_row and latest_row[0] else None
+    collected_at = collected_at_dt.isoformat(sep=" ", timespec="seconds") if collected_at_dt else None
+    snapshot_age_seconds = (
+        max(
+            int(
+                (
+                    now_local() - collected_at_dt.replace(tzinfo=None)
+                    if getattr(collected_at_dt, "tzinfo", None)
+                    else now_local() - collected_at_dt
+                ).total_seconds()
+            ),
+            0,
+        )
+        if collected_at_dt
+        else 0
+    )
+    has_recent_snapshot = bool(collected_at_dt and snapshot_age_seconds <= ABKANT_FEED_STALE_SECONDS)
+    parameter_machine_on = bool(parameter_row[0]) if parameter_row is not None else False
+    inferred_feed_activity = bool(has_recent_snapshot and (active_program or setup_signature or pieces_text))
+    machine_on = bool(parameter_machine_on or inferred_feed_activity)
     last_changed_at = last_changed_row[0] if last_changed_row and last_changed_row[0] else (latest_row[0] if latest_row and latest_row[0] else None)
     stagnation_seconds = (
         max(int((now_local() - last_changed_at.replace(tzinfo=None) if getattr(last_changed_at, "tzinfo", None) else now_local() - last_changed_at).total_seconds()), 0)
@@ -1245,7 +1264,9 @@ def fetch_abkant_postgres_snapshot() -> dict | None:
         )
     )
 
-    if setup_change:
+    if not has_recent_snapshot:
+        program_status = "Feed indisponibil"
+    elif setup_change:
         program_status = "Setup change"
     elif idle:
         program_status = "Idle"
@@ -1254,7 +1275,7 @@ def fetch_abkant_postgres_snapshot() -> dict | None:
     elif machine_on:
         program_status = "Pregatit"
     else:
-        program_status = "Feed indisponibil"
+        program_status = "Pregatit"
 
     return {
         "available": True,
@@ -1270,6 +1291,7 @@ def fetch_abkant_postgres_snapshot() -> dict | None:
         "pieces_label": pieces_label or "n/a",
         "produced_pieces": produced_pieces,
         "total_pieces": total_pieces,
+        "snapshot_age_seconds": snapshot_age_seconds,
         "stagnation_seconds": stagnation_seconds,
         "upper_tool": upper_tool or "n/a",
         "lower_tool": lower_tool or "n/a",
@@ -1284,7 +1306,8 @@ def fetch_abkant_postgres_snapshot() -> dict | None:
             f"Abkant citit din PostgreSQL. Ultima colectare: {collected_at or 'necunoscuta'}. "
             f"Program: {active_program or 'necunoscut'}. Piese: {pieces_label or 'n/a'}. "
             f"Upper: {upper_tool or 'n/a'}. Lower: {lower_tool or 'n/a'}. "
-            f"Fara schimbare de {format_seconds(stagnation_seconds)}."
+            f"Fara schimbare de {format_seconds(stagnation_seconds)}. "
+            f"Varsta snapshot: {format_seconds(snapshot_age_seconds)}."
         ),
     }
 

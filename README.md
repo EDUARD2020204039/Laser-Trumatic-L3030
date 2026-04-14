@@ -70,6 +70,7 @@ Aplicatia porneste implicit pe `http://localhost:3030`.
 - `PROMETHEUS_QUERY_TIMEOUT_SECONDS=2.5` scurteaza timpul de asteptare pe fiecare query Prometheus inainte sa se treaca mai departe sau sa se cada pe fallback
 - `SNAPSHOT_FRESHNESS_SECONDS=3` forteaza refresh live daca ultimul snapshot din runtime este prea vechi
 - `ABKANT_IDLE_STAGNATION_SECONDS=600` marcheaza Abkantul ca `Idle` daca programul si progresul ramin neschimbate mai mult de 10 minute
+- `ABKANT_FEED_STALE_SECONDS=120` spune dupa cite secunde fara colectare recenta snapshotul Abkant trebuie tratat ca `Feed indisponibil`
 - `PROMETHEUS_BASE_URL=http://localhost:9090` spune dashboard-ului de unde sa citeasca istoricul foilor salvate din Prometheus
 - pagina `Date salvate` incearca mai intii sa reconstruiasca operatorii si foile din Prometheus; daca Prometheus nu raspunde sau nu are inca seriile salvate, cade temporar pe SQLite
 - pentru persistenta reala dupa update, Prometheus trebuie sa aiba propriul director de date persistent si o retenție suficient de mare

@@ -65,6 +65,7 @@ Aplicatia porneste implicit pe `http://localhost:3030`.
 - daca rulezi aplicatia in Docker pe un server public, endpointurile de tip Tailscale sau hostname intern trebuie sa fie accesibile si din container; altfel utilajul ramine `OFF`
 - `BACKGROUND_SYNC_ENABLED=1` porneste pollerul din fundal care urmareste utilajele chiar daca nu ai pagina deschisa
 - `BACKGROUND_SYNC_INTERVAL_SECONDS=3` controleaza la cite secunde se face sincronizarea live si salvarea automata in istoricul local
+- `REQUEST_LIVE_SYNC_ENABLED=0` pastreaza dashboard-ul rapid si evita sync-ul live direct in request cind exista deja pollerul din fundal; seteaza `1` doar daca vrei fallback sincron in request
 - `SNAPSHOT_FRESHNESS_SECONDS=3` forteaza refresh live daca ultimul snapshot din runtime este prea vechi
 - `ABKANT_IDLE_STAGNATION_SECONDS=600` marcheaza Abkantul ca `Idle` daca programul si progresul ramin neschimbate mai mult de 10 minute
 - `PROMETHEUS_BASE_URL=http://localhost:9090` spune dashboard-ului de unde sa citeasca istoricul foilor salvate din Prometheus
@@ -96,6 +97,35 @@ Bridge-ul expune prin TCP citirile Modbus RTU pentru:
 - `Discrete Inputs` (`Function Code 2`)
 
 Asta este suficient pentru dashboard-ul Laser1, care citeste doar stari digitale `IN1..IN4`.
+
+### Startup automat pe Linux cu systemd
+
+Daca PC-ul de linga utilaj ruleaza Linux, poti porni bridge-ul automat la boot:
+
+1. copiezi repo-ul in `/opt/lasertrumaticl3030`
+2. copiezi fisierul de mediu:
+
+```bash
+sudo cp /opt/lasertrumaticl3030/deploy/systemd/modbus-rtu-tcp-bridge.env.example /etc/default/modbus-rtu-tcp-bridge
+```
+
+3. editezi `/etc/default/modbus-rtu-tcp-bridge` si pui portul serial real, de exemplu `/dev/ttyUSB0`
+4. instalezi serviciul:
+
+```bash
+sudo cp /opt/lasertrumaticl3030/deploy/systemd/modbus-rtu-tcp-bridge.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now modbus-rtu-tcp-bridge.service
+```
+
+5. verifici statusul:
+
+```bash
+sudo systemctl status modbus-rtu-tcp-bridge.service
+sudo journalctl -u modbus-rtu-tcp-bridge.service -f
+```
+
+Pe Linux, portul serial va fi de obicei `/dev/ttyUSB0` sau `/dev/ttyUSB1`, nu `COM9`.
 
 ## Grafana
 

@@ -107,6 +107,7 @@ MANUAL_SOURCE_PREFIX = "manual"
 OCR_AVAILABLE = cv2 is not None and np is not None and pytesseract is not None
 BACKGROUND_SYNC_ENABLED = os.getenv("BACKGROUND_SYNC_ENABLED", "1") != "0"
 BACKGROUND_SYNC_INTERVAL_SECONDS = max(int(os.getenv("BACKGROUND_SYNC_INTERVAL_SECONDS", "3")), 1)
+REQUEST_LIVE_SYNC_ENABLED = os.getenv("REQUEST_LIVE_SYNC_ENABLED", "0") == "1"
 SNAPSHOT_FRESHNESS_SECONDS = max(int(os.getenv("SNAPSHOT_FRESHNESS_SECONDS", "3")), 1)
 ABKANT_IDLE_STAGNATION_SECONDS = max(int(os.getenv("ABKANT_IDLE_STAGNATION_SECONDS", "600")), 60)
 OPERATOR_CACHE_SECONDS = max(int(os.getenv("OPERATOR_CACHE_SECONDS", "20")), 3)
@@ -4570,11 +4571,12 @@ def build_dashboard_payload(machine_key: str = DEFAULT_MACHINE_KEY) -> dict:
         runtime = get_machine_runtime(machine_key)
         live_extraction = runtime.get("last_snapshot")
         current_signals = fetch_current_signals(machine_key)
-        if (
+        needs_live_refresh = (
             live_extraction is None
             or snapshot_is_stale(live_extraction)
             or snapshot_differs_from_current_signals(live_extraction, current_signals)
-        ):
+        )
+        if needs_live_refresh and REQUEST_LIVE_SYNC_ENABLED:
             live_extraction = sync_machine_events_from_live_snapshot(machine_key)
             current_signals = fetch_current_signals(machine_key)
     else:

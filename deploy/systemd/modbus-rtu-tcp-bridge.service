@@ -1,0 +1,16 @@
+[Unit]
+Description=Modbus RTU to TCP bridge for Laser1
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/lasertrumaticl3030
+EnvironmentFile=/etc/default/modbus-rtu-tcp-bridge
+ExecStart=/bin/sh -lc 'exec /usr/bin/python3 /opt/lasertrumaticl3030/modbus_rtu_tcp_bridge.py --serial-port "${SERIAL_PORT}" --baudrate "${BAUDRATE}" --parity "${PARITY}" --stopbits "${STOPBITS}" --unit-id "${UNIT_ID}" --tcp-host "${TCP_HOST}" --tcp-port "${TCP_PORT}" --serial-timeout "${SERIAL_TIMEOUT}" --log-level "${LOG_LEVEL}"'
+Restart=always
+RestartSec=3
+User=root
+
+[Install]
+WantedBy=multi-user.target

@@ -108,10 +108,16 @@ OCR_AVAILABLE = cv2 is not None and np is not None and pytesseract is not None
 BACKGROUND_SYNC_ENABLED = os.getenv("BACKGROUND_SYNC_ENABLED", "1") != "0"
 BACKGROUND_SYNC_INTERVAL_SECONDS = max(int(os.getenv("BACKGROUND_SYNC_INTERVAL_SECONDS", "3")), 1)
 REQUEST_LIVE_SYNC_ENABLED = os.getenv("REQUEST_LIVE_SYNC_ENABLED", "0") == "1"
+SAVED_RECORDS_PROMETHEUS_ENABLED = os.getenv("SAVED_RECORDS_PROMETHEUS_ENABLED", "0") == "1"
 SNAPSHOT_FRESHNESS_SECONDS = max(int(os.getenv("SNAPSHOT_FRESHNESS_SECONDS", "3")), 1)
 ABKANT_IDLE_STAGNATION_SECONDS = max(int(os.getenv("ABKANT_IDLE_STAGNATION_SECONDS", "600")), 60)
 OPERATOR_CACHE_SECONDS = max(int(os.getenv("OPERATOR_CACHE_SECONDS", "20")), 3)
 PROMETHEUS_MAX_PARALLEL_QUERIES = max(int(os.getenv("PROMETHEUS_MAX_PARALLEL_QUERIES", "6")), 1)
+try:
+    PROMETHEUS_QUERY_TIMEOUT_SECONDS = float(os.getenv("PROMETHEUS_QUERY_TIMEOUT_SECONDS", "2.5") or 2.5)
+except (TypeError, ValueError):
+    PROMETHEUS_QUERY_TIMEOUT_SECONDS = 2.5
+PROMETHEUS_QUERY_TIMEOUT_SECONDS = min(max(PROMETHEUS_QUERY_TIMEOUT_SECONDS, 0.5), 30.0)
 _background_sync_started = False
 RUNTIME_VALUE_UNCHANGED = object()
 PROMETHEUS_BASE_URL = (os.getenv("PROMETHEUS_BASE_URL", "http://localhost:9090") or "http://localhost:9090").rstrip("/")
@@ -2983,7 +2989,7 @@ def fetch_prometheus_vector(query: str) -> list[dict]:
             headers={"User-Agent": "HABA-Production-Monitor/1.0"},
         )
         try:
-            with urllib.request.urlopen(request_obj, timeout=10) as response:
+            with urllib.request.urlopen(request_obj, timeout=PROMETHEUS_QUERY_TIMEOUT_SECONDS) as response:
                 payload = json.loads(response.read().decode("utf-8"))
             if payload.get("status") != "success":
                 raise RuntimeError(payload.get("error") or "Prometheus query failed.")
@@ -3463,29 +3469,30 @@ def fetch_saved_cycles_for_period(machine_key: str | None, period: str) -> list[
 def build_saved_cycles_payload(machine_key: str | None = None, period: str = "all") -> dict:
     normalized_period = resolve_saved_period(period)
     operator_id = (request.args.get("operator_id") or "").strip() or None
-    try:
-        operators = finalize_operator_entries(
-            merge_operator_seed_entries(
-                build_prometheus_operator_summaries(),
-                build_workcenter_operator_summaries(),
+    if SAVED_RECORDS_PROMETHEUS_ENABLED:
+        try:
+            operators = finalize_operator_entries(
+                merge_operator_seed_entries(
+                    build_prometheus_operator_summaries(),
+                    build_workcenter_operator_summaries(),
+                )
             )
-        )
-        selected_operator_id = resolve_selected_operator_id(operator_id, operators)
-        records = build_prometheus_saved_records(normalized_period, selected_operator_id)
-        if operators:
-            return {
-                "view": "saved",
-                "selected_machine_key": machine_key,
-                "period": normalized_period,
-                "operators": operators,
-                "selected_operator_id": selected_operator_id,
-                "records": records,
-                "records_count": len(records),
-                "data_source": "prometheus",
-                "updated_at": now_local().isoformat(timespec="seconds"),
-            }
-    except Exception:
-        pass
+            selected_operator_id = resolve_selected_operator_id(operator_id, operators)
+            records = build_prometheus_saved_records(normalized_period, selected_operator_id)
+            if operators:
+                return {
+                    "view": "saved",
+                    "selected_machine_key": machine_key,
+                    "period": normalized_period,
+                    "operators": operators,
+                    "selected_operator_id": selected_operator_id,
+                    "records": records,
+                    "records_count": len(records),
+                    "data_source": "prometheus",
+                    "updated_at": now_local().isoformat(timespec="seconds"),
+                }
+        except Exception:
+            pass
 
     records = fetch_saved_cycles_for_period(machine_key=machine_key, period=normalized_period)
     operators = build_sqlite_operator_summaries(machine_key=machine_key)

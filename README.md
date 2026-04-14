@@ -66,6 +66,8 @@ Aplicatia porneste implicit pe `http://localhost:3030`.
 - `BACKGROUND_SYNC_ENABLED=1` porneste pollerul din fundal care urmareste utilajele chiar daca nu ai pagina deschisa
 - `BACKGROUND_SYNC_INTERVAL_SECONDS=3` controleaza la cite secunde se face sincronizarea live si salvarea automata in istoricul local
 - `REQUEST_LIVE_SYNC_ENABLED=0` pastreaza dashboard-ul rapid si evita sync-ul live direct in request cind exista deja pollerul din fundal; seteaza `1` doar daca vrei fallback sincron in request
+- `SAVED_RECORDS_PROMETHEUS_ENABLED=0` face pagina `Date salvate` sa raspunda rapid direct din SQLite; seteaza `1` doar daca vrei sa fortezi citirea din Prometheus inainte de fallback
+- `PROMETHEUS_QUERY_TIMEOUT_SECONDS=2.5` scurteaza timpul de asteptare pe fiecare query Prometheus inainte sa se treaca mai departe sau sa se cada pe fallback
 - `SNAPSHOT_FRESHNESS_SECONDS=3` forteaza refresh live daca ultimul snapshot din runtime este prea vechi
 - `ABKANT_IDLE_STAGNATION_SECONDS=600` marcheaza Abkantul ca `Idle` daca programul si progresul ramin neschimbate mai mult de 10 minute
 - `PROMETHEUS_BASE_URL=http://localhost:9090` spune dashboard-ului de unde sa citeasca istoricul foilor salvate din Prometheus

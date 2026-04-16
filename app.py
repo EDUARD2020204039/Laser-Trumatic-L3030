@@ -537,6 +537,7 @@ MODBUS_SIGNAL_TARGET_CHOICES = (
 )
 MODBUS_SERIAL_PARITY_CHOICES = ("N", "E", "O")
 MODBUS_SERIAL_STOPBITS_CHOICES = (1, 2)
+PROGRAM_STATS_MACHINE_KEYS = {"laser1", "laser1modbus"}
 
 app = Flask(__name__)
 app.config["JSON_SORT_KEYS"] = False
@@ -3801,7 +3802,13 @@ def finalize_pending_cycle(machine_key: str, current_snapshot: dict) -> None:
             )
             connection.commit()
 
-    save_machine_runtime(machine_key, current_snapshot, None)
+    stats_anchor = RUNTIME_VALUE_UNCHANGED
+    if machine_key in PROGRAM_STATS_MACHINE_KEYS:
+        stats_anchor = {
+            "started_at": table_change_ended_at.isoformat(timespec="seconds"),
+            "context": resolve_snapshot_context(current_snapshot),
+        }
+    save_machine_runtime(machine_key, current_snapshot, None, stats_anchor=stats_anchor)
 
 
 def resolve_snapshot_program(snapshot: dict | None) -> str:
@@ -4031,6 +4038,27 @@ def calculate_active_seconds(
     return max(total_seconds, 0)
 
 
+def resolve_stats_window_start(machine_key: str, now: datetime) -> datetime:
+    start_of_day = datetime.combine(date.today(), time.min)
+    if machine_key not in PROGRAM_STATS_MACHINE_KEYS:
+        return start_of_day
+
+    runtime = get_machine_runtime(machine_key)
+    stats_anchor = runtime.get("stats_anchor") or {}
+    started_at_raw = stats_anchor.get("started_at")
+    if not started_at_raw:
+        return start_of_day
+
+    try:
+        started_at = parse_timestamp(started_at_raw)
+    except Exception:
+        return start_of_day
+
+    if started_at > now:
+        return start_of_day
+    return started_at
+
+
 def format_seconds(total_seconds: int) -> str:
     hours, remainder = divmod(max(total_seconds, 0), 3600)
     minutes, seconds = divmod(remainder, 60)
@@ -4039,8 +4067,7 @@ def format_seconds(total_seconds: int) -> str:
 
 def build_today_stats(machine_key: str) -> dict:
     now = now_local()
-    start_of_day = datetime.combine(date.today(), time.min)
-    stats_window_start = start_of_day
+    stats_window_start = resolve_stats_window_start(machine_key, now)
     elapsed_seconds = max(int((now - stats_window_start).total_seconds()), 1)
     machine_on_seconds = calculate_active_seconds(machine_key, "machine_on", stats_window_start, now)
     cutting_seconds = calculate_active_seconds(machine_key, "cutting_active", stats_window_start, now)

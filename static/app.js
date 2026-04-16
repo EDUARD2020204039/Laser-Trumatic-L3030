@@ -39,7 +39,7 @@ const savedPeriodReportLabelMap = {
 };
 
 function getMachineOnMetricLabel(machineKey) {
-    return "Timp activ azi";
+    return "Timp activ pe program";
 }
 
 function getAvailabilityPrefix(machineKey) {

@@ -4376,6 +4376,15 @@ def sync_machine_events_from_live_snapshot(machine_key: str) -> dict | None:
     if not snapshot:
         return snapshot
 
+    if not snapshot.get("available"):
+        if machine_uses_modbus(machine_key):
+            snapshot = {
+                **snapshot,
+                "derived_signals": {signal_name: False for signal_name in SIGNAL_DEFINITIONS},
+            }
+        else:
+            return snapshot
+
     runtime = get_machine_runtime(machine_key)
     previous_snapshot = runtime.get("last_snapshot")
     stats_anchor = runtime.get("stats_anchor")
@@ -4400,23 +4409,24 @@ def sync_machine_events_from_live_snapshot(machine_key: str) -> dict | None:
         runtime.get("pending_cycle"),
         stats_anchor=stats_anchor,
     )
-    if not snapshot.get("available"):
-        return snapshot
 
     derived_signals = snapshot.get("derived_signals") or {}
     machine_profile = get_machine_profile(machine_key)
     operator_snapshot = fetch_current_operator(machine_profile["workcenter_id"])
 
-    note = (
-        f"selected={snapshot.get('selected_program')}; "
-        f"active={snapshot.get('active_program')}; "
-        f"material={snapshot.get('material')}; "
-        f"upper={snapshot.get('upper_tool', 'n/a')}; "
-        f"lower={snapshot.get('lower_tool', 'n/a')}; "
-        f"status={snapshot.get('program_status')}"
-    )
+    if snapshot.get("available"):
+        note = (
+            f"selected={snapshot.get('selected_program')}; "
+            f"active={snapshot.get('active_program')}; "
+            f"material={snapshot.get('material')}; "
+            f"upper={snapshot.get('upper_tool', 'n/a')}; "
+            f"lower={snapshot.get('lower_tool', 'n/a')}; "
+            f"status={snapshot.get('program_status')}"
+        )
+    else:
+        note = f"Auto-stop: snapshot indisponibil. Motiv: {snapshot.get('message') or 'necunoscut'}"
 
-    if previous_snapshot and not runtime.get("pending_cycle"):
+    if snapshot.get("available") and previous_snapshot and not runtime.get("pending_cycle"):
         save_cycle_on_program_change(
             machine_key,
             machine_profile,

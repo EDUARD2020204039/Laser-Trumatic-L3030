@@ -695,8 +695,18 @@ body.dark-mode .timeline-item {
 .saved-filter-row {
     display: flex;
     flex-wrap: wrap;
+    align-items: flex-end;
     gap: 10px;
     margin: 0 0 20px;
+}
+
+.saved-operator-filter {
+    min-width: 260px;
+    max-width: 360px;
+}
+
+.saved-operator-filter label {
+    margin-bottom: 4px;
 }
 
 .saved-period-hint {

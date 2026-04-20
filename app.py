@@ -2919,6 +2919,24 @@ def format_saved_cycle_row(row: sqlite3.Row) -> dict:
     machine_key = row["machine_key"]
     cutting_meta = resolve_signal_definition(machine_key, "cutting_active")
     table_change_meta = resolve_signal_definition(machine_key, "table_change")
+    snapshot_payload = {}
+    try:
+        if row["snapshot_json"]:
+            parsed_snapshot = json.loads(row["snapshot_json"])
+            if isinstance(parsed_snapshot, dict):
+                snapshot_payload = parsed_snapshot
+    except (TypeError, ValueError, json.JSONDecodeError):
+        snapshot_payload = {}
+    close_reason = str(snapshot_payload.get("close_reason") or "").strip().lower()
+    next_program = resolve_snapshot_program(snapshot_payload.get("resume_snapshot"))
+    if close_reason == "program_change":
+        close_reason_label = "Program schimbat"
+    else:
+        close_reason = "table_change_completed"
+        close_reason_label = "Table change finalizat"
+        if "program schimbat" in str(row["program_status"] or "").lower():
+            close_reason = "program_change"
+            close_reason_label = "Program schimbat"
     machine_on_seconds = row["machine_on_duration_seconds"] or 0
     idle_seconds = row["idle_duration_seconds"] or 0
     efficiency_percent = float(row["efficiency_percent"] or 0.0)
@@ -2951,6 +2969,9 @@ def format_saved_cycle_row(row: sqlite3.Row) -> dict:
         "efficiency_percent": efficiency_percent,
         "activity_label": cutting_meta.get("report_label", cutting_meta["label"]),
         "change_label": table_change_meta.get("report_label", table_change_meta["label"]),
+        "close_reason": close_reason,
+        "close_reason_label": close_reason_label,
+        "next_program": next_program or None,
         "source": row["source"],
         "created_at": row["created_at"],
     }
@@ -3683,21 +3704,88 @@ def resolve_saved_modbus_window(period: str, now: datetime) -> tuple[datetime, d
     return start, end, True, "Luna completa anterioara"
 
 
-def build_saved_modbus_payload(period: str = "day") -> dict:
+def build_saved_modbus_payload(period: str = "day", operator_id: str | None = None) -> dict:
     normalized_period = resolve_saved_modbus_period(period)
     now = now_local()
     window_start, window_end, is_closed_period, window_label = resolve_saved_modbus_window(normalized_period, now)
     records = fetch_saved_cycles_between(window_start, window_end, machine_key="laser1modbus")
-    efficiencies = [float(record.get("efficiency_percent") or 0.0) for record in records]
+    machine_label = MACHINE_DEFINITIONS.get("laser1modbus", {}).get("label", "LASER1MODBUS")
+    machine_profile = get_machine_profile("laser1modbus")
+    operator_snapshot = fetch_current_operator(machine_profile.get("workcenter_id"))
+    operator_map: dict[str, dict] = {}
+
+    for operator in operator_snapshot.get("operators", []):
+        employee_id = str(operator.get("employee_id") or "").strip()
+        operator_name = (operator.get("full_name") or UNKNOWN_OPERATOR_LABEL).strip() or UNKNOWN_OPERATOR_LABEL
+        resolved_operator_id = employee_id or f"name:{operator_name}"
+        operator_map[resolved_operator_id] = {
+            "operator_id": resolved_operator_id,
+            "employee_id": employee_id,
+            "operator_name": operator_name,
+            "records_count": 0,
+            "_efficiency_total": 0.0,
+        }
+
+    for record in records:
+        employee_id = str(record.get("operator_id") or "").strip()
+        operator_name = (record.get("operator_name") or UNKNOWN_OPERATOR_LABEL).strip() or UNKNOWN_OPERATOR_LABEL
+        resolved_operator_id = employee_id or f"name:{operator_name}"
+        operator_entry = operator_map.setdefault(
+            resolved_operator_id,
+            {
+                "operator_id": resolved_operator_id,
+                "employee_id": employee_id,
+                "operator_name": operator_name,
+                "records_count": 0,
+                "_efficiency_total": 0.0,
+            },
+        )
+        operator_entry["records_count"] += 1
+        operator_entry["_efficiency_total"] += float(record.get("efficiency_percent") or 0.0)
+
+    operators: list[dict] = []
+    for operator_entry in operator_map.values():
+        records_count = int(operator_entry.get("records_count") or 0)
+        average_efficiency_percent = round(operator_entry["_efficiency_total"] / records_count, 1) if records_count else 0.0
+        operators.append(
+            {
+                "operator_id": operator_entry["operator_id"],
+                "employee_id": operator_entry["employee_id"],
+                "operator_name": operator_entry["operator_name"],
+                "machine_label": machine_label,
+                "records_count": records_count,
+                "average_efficiency_percent": average_efficiency_percent,
+            }
+        )
+
+    operators.sort(
+        key=lambda item: (
+            -int(item.get("records_count") or 0),
+            item.get("operator_name") or UNKNOWN_OPERATOR_LABEL,
+        )
+    )
+    selected_operator_id = None
+    requested_operator_id = (operator_id or "").strip()
+    if requested_operator_id:
+        available_operator_ids = {
+            str(item.get("operator_id") or "").strip()
+            for item in operators
+        }
+        if requested_operator_id in available_operator_ids:
+            selected_operator_id = requested_operator_id
+    filtered_records = filter_saved_cycle_records_by_operator(records, selected_operator_id)
+    efficiencies = [float(record.get("efficiency_percent") or 0.0) for record in filtered_records]
     average_efficiency_percent = round(sum(efficiencies) / len(efficiencies), 1) if efficiencies else 0.0
 
     return {
         "view": "saved_modbus",
         "period": normalized_period,
         "machine_key": "laser1modbus",
-        "machine_label": MACHINE_DEFINITIONS.get("laser1modbus", {}).get("label", "LASER1MODBUS"),
-        "records_count": len(records),
-        "records": records,
+        "machine_label": machine_label,
+        "operators": operators,
+        "selected_operator_id": selected_operator_id,
+        "records_count": len(filtered_records),
+        "records": filtered_records,
         "efficiencies": efficiencies,
         "average_efficiency_percent": average_efficiency_percent,
         "window_started_at": window_start.isoformat(timespec="seconds"),
@@ -4031,6 +4119,7 @@ def finalize_pending_cycle(machine_key: str, current_snapshot: dict) -> None:
                         {
                             "pending_snapshot": pending_cycle.get("snapshot_json"),
                             "resume_snapshot": current_snapshot,
+                            "close_reason": "table_change_completed",
                         },
                         ensure_ascii=False,
                     ),
@@ -5054,8 +5143,9 @@ def saved_records():
 @app.route("/api/saved-records-modbus")
 def saved_records_modbus():
     period = request.args.get("period", "day")
+    operator_id = (request.args.get("operator_id") or "").strip() or None
     try:
-        return jsonify(build_saved_modbus_payload(period=period))
+        return jsonify(build_saved_modbus_payload(period=period, operator_id=operator_id))
     except ValueError as exc:
         return jsonify({"success": False, "message": str(exc)}), 400
 

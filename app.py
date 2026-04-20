@@ -2374,10 +2374,11 @@ def build_modbus_signal_state(config: dict, inputs: list[bool]) -> tuple[dict[st
         if target_signal in derived_signals:
             derived_signals[target_signal] = bool(bit_value)
 
-    # Unele controlere pot tine simultan "cutting" si "idle/abort".
-    # Pentru LASER1MODBUS tratam "cutting" ca prioritate, ca sa evitam idle fals.
-    if derived_signals["cutting_active"] and derived_signals["idle_abort"]:
+    # Unele controlere pot tine simultan mai multe stari.
+    # Pentru LASER1MODBUS tratam "cutting" ca prioritate, ca sa evitam stari conflictuale.
+    if derived_signals["cutting_active"]:
         derived_signals["idle_abort"] = False
+        derived_signals["table_change"] = False
 
     if derived_signals["cutting_active"] or derived_signals["table_change"] or derived_signals["idle_abort"]:
         derived_signals["machine_on"] = True

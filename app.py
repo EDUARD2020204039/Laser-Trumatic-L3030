@@ -2576,17 +2576,40 @@ def analyze_laser_modbus_live_snapshot(machine_key: str) -> dict | None:
             or (derived_signals["machine_on"] and not derived_signals["table_change"])
         )
     )
+
+    def resolve_previous_program_for_idle() -> str:
+        if not idle:
+            return ""
+        try:
+            runtime = get_machine_runtime(machine_key)
+        except Exception:
+            return ""
+
+        previous_program = normalize_context_token(resolve_snapshot_program(runtime.get("last_snapshot")))
+        if previous_program:
+            return previous_program
+
+        pending_cycle = runtime.get("pending_cycle") or {}
+        if isinstance(pending_cycle, dict):
+            return (
+                normalize_context_token(pending_cycle.get("selected_program"))
+                or normalize_context_token(pending_cycle.get("active_program"))
+            )
+        return ""
+
     ocr_snapshot = get_laser_ocr_snapshot(machine_key)
     if not ocr_snapshot.get("available"):
+        fallback_program = resolve_previous_program_for_idle()
+        fallback_program_status = "Idle / program anterior (fallback feed)" if fallback_program else "Feed indisponibil / Modbus activ"
         return {
             "available": True,
             "connected": True,
             "source": "modbus+ocr",
             "captured_at": now_local().isoformat(timespec="seconds"),
-            "selected_program": "Necitit",
-            "active_program": "Necitit",
+            "selected_program": fallback_program or "Necitit",
+            "active_program": fallback_program or "Necitit",
             "material": "Necitit",
-            "program_status": "Feed indisponibil / Modbus activ",
+            "program_status": fallback_program_status,
             "modbus_endpoint": config["endpoint"],
             "endpoint": config["endpoint"],
             "modbus_inputs": raw_inputs,
@@ -2600,8 +2623,27 @@ def analyze_laser_modbus_live_snapshot(machine_key: str) -> dict | None:
             "message": (
                 f"Bitii Modbus sunt activi si continua sa fie cititi din {config['endpoint']}, "
                 f"dar feedul pentru program nu raspunde acum: {ocr_snapshot.get('message')}"
+                + (
+                    f" Afisez ultimul program valid ({fallback_program}) deoarece utilajul este in idle."
+                    if fallback_program
+                    else ""
+                )
             ),
         }
+
+    selected_program = normalize_context_token(ocr_snapshot.get("selected_program"))
+    active_program = normalize_context_token(ocr_snapshot.get("active_program"))
+    if selected_program and not active_program:
+        active_program = selected_program
+    elif active_program and not selected_program:
+        selected_program = active_program
+
+    fallback_program = ""
+    if idle and not (selected_program or active_program):
+        fallback_program = resolve_previous_program_for_idle()
+        if fallback_program:
+            selected_program = fallback_program
+            active_program = fallback_program
 
     message = (
         f"Programul este citit din feed, iar timpii vin din Modbus {config['endpoint']}. "
@@ -2609,6 +2651,8 @@ def analyze_laser_modbus_live_snapshot(machine_key: str) -> dict | None:
     )
     if ocr_snapshot.get("warning_message"):
         message = f"{message} Banner galben detectat: {ocr_snapshot['warning_message']}."
+    if fallback_program:
+        message = f"{message} Feedul nu afiseaza program in idle, afisez ultimul program valid: {fallback_program}."
 
     return {
         **ocr_snapshot,
@@ -2616,6 +2660,13 @@ def analyze_laser_modbus_live_snapshot(machine_key: str) -> dict | None:
         "connected": True,
         "source": "modbus+ocr",
         "machine_mode": "laser1modbus",
+        "selected_program": selected_program or "Necitit",
+        "active_program": active_program or "Necitit",
+        "program_status": (
+            "Idle / program anterior (fallback feed)"
+            if fallback_program and str(ocr_snapshot.get("program_status") or "").strip().lower() in {"", "necitit"}
+            else ocr_snapshot.get("program_status") or "Necitit"
+        ),
         "endpoint": config["endpoint"],
         "modbus_endpoint": config["endpoint"],
         "modbus_inputs": raw_inputs,
@@ -4248,10 +4299,9 @@ def resolve_snapshot_program(snapshot: dict | None) -> str:
     if not snapshot:
         return ""
 
-    return (
-        (snapshot.get("selected_program") or "").strip()
-        or (snapshot.get("active_program") or "").strip()
-    )
+    selected_program = normalize_context_token(snapshot.get("selected_program"))
+    active_program = normalize_context_token(snapshot.get("active_program"))
+    return selected_program or active_program
 
 
 def save_cycle_on_program_change(

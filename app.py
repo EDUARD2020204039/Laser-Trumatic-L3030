@@ -62,6 +62,10 @@ def get_static_asset_version(filename: str) -> str:
         return "dev"
 
 
+def is_running_in_container() -> bool:
+    return Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
+
+
 def resolve_sqlite_path() -> Path:
     explicit_sqlite_path = os.getenv("LASER_SQLITE_PATH")
     if explicit_sqlite_path:
@@ -73,6 +77,9 @@ def resolve_sqlite_path() -> Path:
 
     legacy_path = BASE_DIR / "data" / DEFAULT_SQLITE_FILENAME
     persistent_path = Path("/data") / DEFAULT_SQLITE_FILENAME
+
+    if is_running_in_container():
+        return persistent_path
 
     if legacy_path.exists():
         return legacy_path
@@ -1584,27 +1591,35 @@ def serialize_machine_modbus_config(row: sqlite3.Row | dict | None) -> dict | No
     if not row:
         return None
 
-    signal_map = build_modbus_signal_map(row)
-    transport = normalize_modbus_transport(row["transport"] if "transport" in row.keys() else None)
-    serial_parity = normalize_modbus_serial_parity(row["serial_parity"] if "serial_parity" in row.keys() else "N")
-    serial_stopbits = int(row["serial_stopbits"] or 1) if "serial_stopbits" in row.keys() else 1
-    enabled = bool((row["serial_port"] or "").strip()) if transport == "rtu" else bool((row["host"] or "").strip())
+    row_data = row
+    machine_key = row_data["machine_key"] if "machine_key" in row_data.keys() else ""
+    locked_config = LOCKED_MACHINE_MODBUS_CONFIGS.get(machine_key)
+    if locked_config:
+        normalized = {key: row_data[key] for key in row_data.keys()}
+        normalized.update({key: value for key, value in locked_config.items() if key != "machine_key"})
+        row_data = normalized
+
+    signal_map = build_modbus_signal_map(row_data)
+    transport = normalize_modbus_transport(row_data["transport"] if "transport" in row_data.keys() else None)
+    serial_parity = normalize_modbus_serial_parity(row_data["serial_parity"] if "serial_parity" in row_data.keys() else "N")
+    serial_stopbits = int(row_data["serial_stopbits"] or 1) if "serial_stopbits" in row_data.keys() else 1
+    enabled = bool((row_data["serial_port"] or "").strip()) if transport == "rtu" else bool((row_data["host"] or "").strip())
     return {
-        "machine_key": row["machine_key"],
+        "machine_key": row_data["machine_key"],
         "transport": transport,
         "transport_options": get_modbus_transport_options(),
-        "host": (row["host"] or "").strip(),
-        "port": int(row["port"] or 502),
-        "serial_port": (row["serial_port"] or "").strip() if "serial_port" in row.keys() else "",
-        "serial_baudrate": int(row["serial_baudrate"] or 9600) if "serial_baudrate" in row.keys() else 9600,
+        "host": (row_data["host"] or "").strip(),
+        "port": int(row_data["port"] or 502),
+        "serial_port": (row_data["serial_port"] or "").strip() if "serial_port" in row_data.keys() else "",
+        "serial_baudrate": int(row_data["serial_baudrate"] or 9600) if "serial_baudrate" in row_data.keys() else 9600,
         "serial_parity": serial_parity,
         "serial_parity_options": get_modbus_serial_parity_options(),
         "serial_stopbits": serial_stopbits,
         "serial_stopbits_options": get_modbus_serial_stopbits_options(),
-        "unit_id": int(row["unit_id"] or 1),
-        "bit_source": (row["bit_source"] or "discrete_input").strip().lower(),
-        "start_address": int(row["start_address"] or 0),
-        "poll_timeout_seconds": float(row["poll_timeout_seconds"] or 1.5),
+        "unit_id": int(row_data["unit_id"] or 1),
+        "bit_source": (row_data["bit_source"] or "discrete_input").strip().lower(),
+        "start_address": int(row_data["start_address"] or 0),
+        "poll_timeout_seconds": float(row_data["poll_timeout_seconds"] or 1.5),
         "signal_map": signal_map,
         "inputs": [
             {"key": "in1", "label": "IN1", "signal": signal_map["in1"]},
@@ -1614,7 +1629,7 @@ def serialize_machine_modbus_config(row: sqlite3.Row | dict | None) -> dict | No
         ],
         "signal_options": get_modbus_signal_target_options(),
         "enabled": enabled,
-        "endpoint": build_modbus_endpoint(row),
+        "endpoint": build_modbus_endpoint(row_data),
     }
 
 

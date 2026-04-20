@@ -312,6 +312,7 @@
             eventsUrl: "{{ url_for('create_event') }}",
             operatorUrl: "{{ url_for('operator_status') }}",
             savedRecordsUrl: "{{ url_for('saved_records') }}",
+            savedModbusRecordsUrl: "{{ url_for('saved_records_modbus') }}",
             machinesUrl: "{{ url_for('machines_index') }}",
             defaultMachineKey: "{{ default_machine_key }}",
             initialMachines: {{ machines|tojson }}

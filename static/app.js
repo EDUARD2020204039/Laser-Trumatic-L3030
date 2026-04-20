@@ -8,10 +8,12 @@ const signalLabels = {
 const state = {
     dashboard: null,
     savedRecords: null,
+    savedModbusRecords: null,
     isSubmitting: false,
     selectedMachineKey: window.appConfig.defaultMachineKey || "laser1",
     currentView: window.localStorage.getItem("currentView") || "dashboard",
     savedPeriod: window.localStorage.getItem("savedPeriod") || "all",
+    savedModbusPeriod: window.localStorage.getItem("savedModbusPeriod") || "day",
     savedOperatorId: window.localStorage.getItem("savedOperatorId") || "",
     workcenterFeedback: null,
     modbusFeedback: null,
@@ -37,6 +39,13 @@ const savedPeriodReportLabelMap = {
     week: "Saptamanal",
     month: "Lunar"
 };
+
+if (!["dashboard", "saved", "saved_modbus"].includes(state.currentView)) {
+    state.currentView = "dashboard";
+}
+if (!["day", "week", "month"].includes(state.savedModbusPeriod)) {
+    state.savedModbusPeriod = "day";
+}
 
 function getMachineOnMetricLabel(machineKey) {
     return "Timp activ pe program";
@@ -140,6 +149,43 @@ function getSavedPeriodMeta(period) {
     };
 }
 
+function getSavedModbusPeriodMeta(period, payload) {
+    const windowLabel = payload?.window_label || "";
+    if (period === "day") {
+        return {
+            key: "day",
+            sectionTitle: "Date Salvate MODBUS - Zilnic",
+            subtitle: "Se folosesc doar ciclurile LASER1MODBUS din ziua curenta.",
+            hint: `Randamentul zilnic este media tuturor randamentelor salvate azi. ${windowLabel}`.trim(),
+            countLabel: "Cicluri MODBUS azi",
+            emptySummary: "Nu exista inca cicluri MODBUS salvate azi.",
+            emptyRecords: "Nu exista inca randamente MODBUS salvate azi."
+        };
+    }
+
+    if (period === "week") {
+        return {
+            key: "week",
+            sectionTitle: "Date Salvate MODBUS - Saptamanal",
+            subtitle: "Media saptamanala se calculeaza doar dupa o saptamana completa.",
+            hint: `Se afiseaza ultima saptamana completa incheiata. ${windowLabel}`.trim(),
+            countLabel: "Cicluri MODBUS saptamana",
+            emptySummary: "Nu exista cicluri MODBUS salvate in ultima saptamana completa.",
+            emptyRecords: "Nu exista randamente MODBUS in ultima saptamana completa."
+        };
+    }
+
+    return {
+        key: "month",
+        sectionTitle: "Date Salvate MODBUS - Lunar",
+        subtitle: "Media lunara se calculeaza doar dupa o luna completa.",
+        hint: `Se afiseaza ultima luna completa incheiata. ${windowLabel}`.trim(),
+        countLabel: "Cicluri MODBUS luna",
+        emptySummary: "Nu exista cicluri MODBUS salvate in ultima luna completa.",
+        emptyRecords: "Nu exista randamente MODBUS in ultima luna completa."
+    };
+}
+
 function filterSavedReportsByPeriod(reports, period) {
     if (period === "all") {
         return reports;
@@ -165,6 +211,9 @@ document.addEventListener("DOMContentLoaded", () => {
     if (state.currentView === "saved") {
         prepareSavedViewLoadingState();
         loadSavedRecords();
+    } else if (state.currentView === "saved_modbus") {
+        prepareSavedModbusViewLoadingState();
+        loadSavedModbusRecords();
     } else {
         syncSectionVisibility("dashboard");
         loadDashboard(state.selectedMachineKey);
@@ -176,6 +225,14 @@ document.addEventListener("DOMContentLoaded", () => {
                 return;
             }
             loadSavedRecords();
+            return;
+        }
+        if (state.currentView === "saved_modbus") {
+            const now = Date.now();
+            if (state.savedFetchInFlight || now - state.lastSavedRefreshMs < 15000) {
+                return;
+            }
+            loadSavedModbusRecords();
             return;
         }
         if (state.dashboardFetchInFlight) {
@@ -235,6 +292,17 @@ function prepareSavedViewLoadingState() {
     document.getElementById("saved-record-list").innerHTML = `<p class="empty-state">Se incarca istoricul ${periodMeta.countLabel.toLowerCase()}...</p>`;
 }
 
+function prepareSavedModbusViewLoadingState() {
+    const periodMeta = getSavedModbusPeriodMeta(state.savedModbusPeriod, null);
+    syncSectionVisibility("saved_modbus");
+    renderSavedModbusHeader(periodMeta);
+    renderSavedFilters(state.savedModbusPeriod, { includeAll: false });
+    document.getElementById("saved-summary").innerHTML = `<p class="empty-state">Se incarca sumarul MODBUS...</p>`;
+    document.getElementById("saved-reports").innerHTML = `<p class="empty-state">Se calculeaza media randamentelor MODBUS...</p>`;
+    document.getElementById("saved-machine-reports").innerHTML = `<p class="empty-state">Se pregateste intervalul complet pentru perioada selectata...</p>`;
+    document.getElementById("saved-record-list").innerHTML = `<p class="empty-state">Se incarca randamentele MODBUS salvate...</p>`;
+}
+
 function bindActions() {
     const machineSelector = document.getElementById("machine-selector");
     if (machineSelector) {
@@ -256,6 +324,18 @@ function bindActions() {
                 state.currentView = "saved";
                 window.localStorage.setItem("currentView", state.currentView);
                 await loadSavedRecords();
+                return;
+            }
+
+            if (nextView === "saved_modbus") {
+                if (state.currentView === "saved_modbus") {
+                    await loadSavedModbusRecords();
+                    return;
+                }
+
+                state.currentView = "saved_modbus";
+                window.localStorage.setItem("currentView", state.currentView);
+                await loadSavedModbusRecords();
                 return;
             }
 
@@ -285,7 +365,15 @@ function bindActions() {
                 return;
             }
 
-            state.savedPeriod = button.dataset.savedPeriod || "all";
+            const nextPeriod = button.dataset.savedPeriod || "all";
+            if (state.currentView === "saved_modbus") {
+                state.savedModbusPeriod = ["day", "week", "month"].includes(nextPeriod) ? nextPeriod : "day";
+                window.localStorage.setItem("savedModbusPeriod", state.savedModbusPeriod);
+                await loadSavedModbusRecords();
+                return;
+            }
+
+            state.savedPeriod = nextPeriod;
             window.localStorage.setItem("savedPeriod", state.savedPeriod);
             await loadSavedRecords();
         });
@@ -294,6 +382,9 @@ function bindActions() {
     const savedSummary = document.getElementById("saved-summary");
     if (savedSummary) {
         savedSummary.addEventListener("click", (event) => {
+            if (state.currentView !== "saved") {
+                return;
+            }
             const card = event.target.closest("[data-operator-id]");
             if (!card) {
                 return;
@@ -464,6 +555,51 @@ async function loadSavedRecords() {
             window.localStorage.removeItem("savedOperatorId");
         }
         renderSavedView(payload);
+    } catch (error) {
+        if (error.name === "AbortError") {
+            return;
+        }
+        console.error(error);
+        window.alert(error.message);
+    } finally {
+        if (requestId === state.savedRequestId) {
+            state.savedFetchInFlight = false;
+            state.savedAbortController = null;
+        }
+    }
+}
+
+async function loadSavedModbusRecords() {
+    const requestId = state.savedRequestId + 1;
+    state.savedRequestId = requestId;
+
+    if (state.savedAbortController) {
+        state.savedAbortController.abort();
+    }
+    state.savedAbortController = new AbortController();
+    state.savedFetchInFlight = true;
+
+    try {
+        const query = new URLSearchParams({ period: state.savedModbusPeriod });
+        const response = await fetch(
+            `${window.appConfig.savedModbusRecordsUrl}?${query.toString()}`,
+            { signal: state.savedAbortController.signal }
+        );
+        const payload = await response.json();
+        if (!response.ok) {
+            throw new Error(payload.message || "Nu am putut incarca datele salvate MODBUS.");
+        }
+        if (requestId !== state.savedRequestId) {
+            return;
+        }
+
+        state.savedModbusRecords = payload;
+        state.savedModbusPeriod = payload.period || state.savedModbusPeriod;
+        state.lastSavedRefreshMs = Date.now();
+        state.currentView = "saved_modbus";
+        window.localStorage.setItem("currentView", "saved_modbus");
+        window.localStorage.setItem("savedModbusPeriod", state.savedModbusPeriod);
+        renderSavedModbusView(payload);
     } catch (error) {
         if (error.name === "AbortError") {
             return;
@@ -705,10 +841,22 @@ function renderSavedView(payload) {
     renderSavedHeader(payload, periodMeta);
     renderMachineSelector(state.dashboard?.machines || window.appConfig.initialMachines || []);
     renderSavedSummary(payload, periodMeta);
-    renderSavedFilters(currentPeriod);
+    renderSavedFilters(currentPeriod, { includeAll: true });
     renderSavedReports(payload, currentPeriod, periodMeta);
     renderSavedMachineReports(payload, currentPeriod, periodMeta);
     renderSavedRecords(filteredRecords, periodMeta);
+}
+
+function renderSavedModbusView(payload) {
+    const currentPeriod = payload.period || state.savedModbusPeriod;
+    const periodMeta = getSavedModbusPeriodMeta(currentPeriod, payload);
+    syncSectionVisibility("saved_modbus");
+    renderSavedModbusHeader(periodMeta, payload);
+    renderMachineSelector(state.dashboard?.machines || window.appConfig.initialMachines || []);
+    renderSavedFilters(currentPeriod, { includeAll: false });
+    renderSavedModbusSummary(payload, periodMeta);
+    renderSavedModbusReports(payload, periodMeta);
+    renderSavedModbusRecords(payload, periodMeta);
 }
 
 function renderHeader(payload) {
@@ -722,6 +870,15 @@ function renderSavedHeader(payload, periodMeta) {
     document.getElementById("saved-section-title").textContent = periodMeta.sectionTitle;
     document.getElementById("saved-period-hint").textContent = periodMeta.hint;
     document.getElementById("saved-records-label").textContent = periodMeta.countLabel;
+}
+
+function renderSavedModbusHeader(periodMeta, payload = null) {
+    document.getElementById("dashboard-title").textContent = "Date Salvate MODBUS";
+    document.getElementById("dashboard-subtitle").textContent = periodMeta.subtitle;
+    document.getElementById("saved-section-title").textContent = periodMeta.sectionTitle;
+    document.getElementById("saved-period-hint").textContent = periodMeta.hint;
+    document.getElementById("saved-records-label").textContent = periodMeta.countLabel;
+    document.getElementById("saved-records-count").textContent = String(payload?.records_count || 0);
 }
 
 function renderMachineSelector(machines) {
@@ -753,7 +910,19 @@ function renderMachineSelector(machines) {
         </button>
     `;
 
-    selector.innerHTML = `${machineButtons}${savedButton}`;
+    const savedModbusButton = `
+        <button
+            class="machine-tab saved-tab ${state.currentView === "saved_modbus" ? "is-selected" : ""}"
+            data-view="saved_modbus"
+            type="button"
+        >
+            <small>Arhiva</small>
+            <strong>DATE SALVATE MODBUS</strong>
+            <span>Doar ciclurile LASER1MODBUS, cu medie pe zi, saptamana completa si luna completa.</span>
+        </button>
+    `;
+
+    selector.innerHTML = `${machineButtons}${savedButton}${savedModbusButton}`;
 }
 
 function renderMachineState(machine, machineState) {
@@ -1465,8 +1634,11 @@ function renderSavedSummary(payload, periodMeta) {
         .join("");
 }
 
-function renderSavedFilters(period) {
+function renderSavedFilters(period, options = { includeAll: true }) {
+    const includeAll = options.includeAll !== false;
     document.querySelectorAll("[data-saved-period]").forEach((button) => {
+        const isAllButton = button.dataset.savedPeriod === "all";
+        button.classList.toggle("is-hidden", isAllButton && !includeAll);
         button.classList.toggle("is-selected", button.dataset.savedPeriod === period);
     });
 }
@@ -1766,10 +1938,138 @@ function renderSavedRecords(records, periodMeta) {
         .join("");
 }
 
+function renderSavedModbusSummary(payload, periodMeta) {
+    const container = document.getElementById("saved-summary");
+    const count = document.getElementById("saved-records-count");
+    count.textContent = String(payload.records_count || 0);
+
+    if (!payload.records_count) {
+        container.innerHTML = `<p class="empty-state">${periodMeta.emptySummary}</p>`;
+        return;
+    }
+
+    container.innerHTML = `
+        <article class="saved-summary-card">
+            <small>${payload.machine_label || "LASER1MODBUS"}</small>
+            <strong>${roundToOneDecimal(payload.average_efficiency_percent || 0)}%</strong>
+            <p>Media randamentelor salvate in perioada selectata.</p>
+            <small>${payload.window_label || ""}</small>
+            <small>Interval: ${formatDateTime(payload.window_started_at)} - ${formatDateTime(payload.window_ended_at)}</small>
+        </article>
+    `;
+}
+
+function renderSavedModbusReports(payload, periodMeta) {
+    const reports = document.getElementById("saved-reports");
+    const machineReports = document.getElementById("saved-machine-reports");
+    const records = payload.records || [];
+    if (!records.length) {
+        reports.innerHTML = `<p class="empty-state">${periodMeta.emptyRecords}</p>`;
+        machineReports.innerHTML = `<p class="empty-state">${periodMeta.emptyRecords}</p>`;
+        return;
+    }
+
+    reports.innerHTML = `
+        <article class="saved-report-card">
+            <small>Formula</small>
+            <strong>${roundToOneDecimal(payload.average_efficiency_percent || 0)}%</strong>
+            <p>Media randamentelor individuale salvate pentru ciclurile MODBUS din interval.</p>
+            <div class="saved-report-metrics">
+                <span>Formula ciclu: (Cutting + Table change) / Timp activ pe program</span>
+                <span>Cicluri incluse: ${records.length}</span>
+                <span>${payload.is_closed_period ? "Perioada este completa (inchisa)." : "Perioada este in curs (zi curenta)."}</span>
+            </div>
+        </article>
+    `;
+
+    const byProgram = new Map();
+    records.forEach((record) => {
+        const key = record.selected_program || "Necitit";
+        const item = byProgram.get(key) || { program: key, efficiencies: [] };
+        item.efficiencies.push(Number(record.efficiency_percent || 0));
+        byProgram.set(key, item);
+    });
+
+    const programRows = Array.from(byProgram.values())
+        .map((item) => ({
+            program: item.program,
+            average: item.efficiencies.length
+                ? roundToOneDecimal(item.efficiencies.reduce((sum, value) => sum + value, 0) / item.efficiencies.length)
+                : 0,
+            count: item.efficiencies.length
+        }))
+        .sort((left, right) => right.average - left.average);
+
+    machineReports.innerHTML = `
+        <article class="saved-machine-report-card">
+            <small>Randament pe program</small>
+            <strong>${payload.machine_label || "LASER1MODBUS"}</strong>
+            <div class="saved-machine-period-list">
+                ${programRows.map((row) => `
+                    <div class="saved-machine-period-item">
+                        <span>${row.program}</span>
+                        <strong>${row.average}%</strong>
+                        <small>${row.count} cicluri</small>
+                    </div>
+                `).join("")}
+            </div>
+        </article>
+    `;
+}
+
+function renderSavedModbusRecords(payload, periodMeta) {
+    const container = document.getElementById("saved-record-list");
+    const records = payload.records || [];
+    if (!records.length) {
+        container.innerHTML = `<p class="empty-state">${periodMeta.emptyRecords}</p>`;
+        return;
+    }
+
+    const sortedRecords = [...records].sort(
+        (left, right) => new Date(right.table_change_ended_at || right.created_at || 0) - new Date(left.table_change_ended_at || left.created_at || 0)
+    );
+    container.innerHTML = sortedRecords
+        .map((record) => `
+            <article class="saved-record-card">
+                <div class="saved-record-top">
+                    <div>
+                        <small>${record.machine_label || "LASER1MODBUS"}</small>
+                        <strong>${record.selected_program || "Necitit"}</strong>
+                        <small>${record.operator_name || "Fara operator la salvare"}</small>
+                    </div>
+                    <div class="saved-record-meta">
+                        <small>${record.table_change_ended_at ? formatDateTime(record.table_change_ended_at) : formatDateTime(record.created_at)}</small>
+                        <strong>${roundToOneDecimal(record.efficiency_percent || 0)}%</strong>
+                        <small>Randament ciclu</small>
+                    </div>
+                </div>
+                <div class="saved-record-grid">
+                    <div>
+                        <span>Timp activ pe program</span>
+                        <strong>${record.machine_on_duration_label || "00:00:00"}</strong>
+                    </div>
+                    <div>
+                        <span>${record.activity_label || "Cutting"}</span>
+                        <strong>${record.cycle_duration_label || "00:00:00"}</strong>
+                    </div>
+                    <div>
+                        <span>${record.change_label || "Table change"}</span>
+                        <strong>${record.table_change_duration_label || "00:00:00"}</strong>
+                    </div>
+                    <div>
+                        <span>Idle</span>
+                        <strong>${record.idle_duration_label || "00:00:00"}</strong>
+                    </div>
+                </div>
+            </article>
+        `)
+        .join("");
+}
+
 function syncSectionVisibility(view) {
     document.getElementById("dashboard-overview-section").classList.toggle("is-hidden", view !== "dashboard");
     document.getElementById("dashboard-integrated-section").classList.toggle("is-hidden", view !== "dashboard");
-    document.getElementById("saved-section").classList.toggle("is-hidden", view !== "saved");
+    document.getElementById("saved-section").classList.toggle("is-hidden", !["saved", "saved_modbus"].includes(view));
 }
 
 function setWorkcenterFeedback(message, tone = "muted") {

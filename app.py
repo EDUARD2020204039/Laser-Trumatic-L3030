@@ -3657,6 +3657,58 @@ def resolve_saved_period(period: str | None) -> str:
     return candidate
 
 
+def resolve_saved_modbus_period(period: str | None) -> str:
+    candidate = (period or "day").strip().lower()
+    if candidate not in {"day", "week", "month"}:
+        raise ValueError(f"Unsupported saved MODBUS period: {candidate}")
+    return candidate
+
+
+def resolve_saved_modbus_window(period: str, now: datetime) -> tuple[datetime, datetime, bool, str]:
+    if period == "day":
+        start = datetime.combine(date.today(), time.min)
+        end = now
+        return start, end, False, "Ziua curenta (00:00 - acum)"
+
+    if period == "week":
+        current_week_start = datetime.combine(date.today(), time.min) - timedelta(days=date.today().weekday())
+        start = current_week_start - timedelta(days=7)
+        end = current_week_start
+        return start, end, True, "Saptamana completa anterioara (Luni - Duminica)"
+
+    current_month_start = datetime.combine(date.today().replace(day=1), time.min)
+    previous_month_last_day = current_month_start - timedelta(days=1)
+    start = datetime.combine(previous_month_last_day.replace(day=1).date(), time.min)
+    end = current_month_start
+    return start, end, True, "Luna completa anterioara"
+
+
+def build_saved_modbus_payload(period: str = "day") -> dict:
+    normalized_period = resolve_saved_modbus_period(period)
+    now = now_local()
+    window_start, window_end, is_closed_period, window_label = resolve_saved_modbus_window(normalized_period, now)
+    records = fetch_saved_cycles_between(window_start, window_end, machine_key="laser1modbus")
+    efficiencies = [float(record.get("efficiency_percent") or 0.0) for record in records]
+    average_efficiency_percent = round(sum(efficiencies) / len(efficiencies), 1) if efficiencies else 0.0
+
+    return {
+        "view": "saved_modbus",
+        "period": normalized_period,
+        "machine_key": "laser1modbus",
+        "machine_label": MACHINE_DEFINITIONS.get("laser1modbus", {}).get("label", "LASER1MODBUS"),
+        "records_count": len(records),
+        "records": records,
+        "efficiencies": efficiencies,
+        "average_efficiency_percent": average_efficiency_percent,
+        "window_started_at": window_start.isoformat(timespec="seconds"),
+        "window_ended_at": window_end.isoformat(timespec="seconds"),
+        "window_label": window_label,
+        "is_closed_period": is_closed_period,
+        "updated_at": now.isoformat(timespec="seconds"),
+        "data_source": "sqlite-fallback",
+    }
+
+
 def fetch_saved_cycles_for_period(machine_key: str | None, period: str) -> list[dict]:
     period = resolve_saved_period(period)
     now = now_local()
@@ -4995,6 +5047,15 @@ def saved_records():
 
     try:
         return jsonify(build_saved_cycles_payload(machine_key, period=period))
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 400
+
+
+@app.route("/api/saved-records-modbus")
+def saved_records_modbus():
+    period = request.args.get("period", "day")
+    try:
+        return jsonify(build_saved_modbus_payload(period=period))
     except ValueError as exc:
         return jsonify({"success": False, "message": str(exc)}), 400
 

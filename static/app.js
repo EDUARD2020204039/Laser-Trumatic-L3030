@@ -1071,8 +1071,9 @@ function computeDisplayedStats() {
     const sessionWindowSeconds = snapshot.signals.machine_on && snapshot.machine_on_changed_at
         ? Math.max(Math.floor((Date.now() - new Date(snapshot.machine_on_changed_at).getTime()) / 1000), 0)
         : 0;
+    const productiveSeconds = cuttingSeconds + tableChangeSeconds;
     const randamentPercent = machineOnSeconds > 0
-        ? roundToOneDecimal((cuttingSeconds / machineOnSeconds) * 100)
+        ? roundToOneDecimal((Math.min(productiveSeconds, machineOnSeconds) / machineOnSeconds) * 100)
         : 0;
     const availabilityPrefix = getAvailabilityPrefix(snapshot.machine_key);
 

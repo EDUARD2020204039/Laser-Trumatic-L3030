@@ -154,6 +154,27 @@ MACHINE_DEFINITIONS = {
     },
 }
 
+LOCKED_MACHINE_MODBUS_CONFIGS: dict[str, dict[str, object]] = {
+    "laser1modbus": {
+        "machine_key": "laser1modbus",
+        "transport": "tcp",
+        "host": "192.168.2.242",
+        "port": 502,
+        "serial_port": "",
+        "serial_baudrate": 9600,
+        "serial_parity": "N",
+        "serial_stopbits": 1,
+        "unit_id": 1,
+        "bit_source": "discrete_input",
+        "start_address": 0,
+        "poll_timeout_seconds": 1.5,
+        "in1_signal": "idle_abort",
+        "in2_signal": "table_change",
+        "in3_signal": "cutting_active",
+        "in4_signal": "machine_on",
+    }
+}
+
 DEFAULT_MACHINE_HMI_URLS = {
     "laser1": "https://laser.helpan.ro/",
     "laser1modbus": "https://laser.helpan.ro/",
@@ -1469,31 +1490,33 @@ def get_default_machine_profiles() -> list[dict]:
 def get_default_machine_modbus_configs() -> list[dict]:
     serial_port = get_machine_env_value("laser1modbus", "MODBUS_SERIAL_PORT")
     host = get_machine_env_value("laser1modbus", "MODBUS_HOST")
-    return [
-        {
-            "machine_key": "laser1modbus",
-            "transport": normalize_modbus_transport(
-                get_machine_env_value("laser1modbus", "MODBUS_TRANSPORT"),
-                fallback="rtu" if serial_port and not host else "tcp",
-            ),
-            "host": host,
-            "port": parse_optional_int(get_machine_env_value("laser1modbus", "MODBUS_PORT")) or 502,
-            "serial_port": serial_port,
-            "serial_baudrate": parse_optional_int(get_machine_env_value("laser1modbus", "MODBUS_SERIAL_BAUDRATE")) or 9600,
-            "serial_parity": normalize_modbus_serial_parity(
-                get_machine_env_value("laser1modbus", "MODBUS_SERIAL_PARITY") or "N"
-            ),
-            "serial_stopbits": parse_optional_int(get_machine_env_value("laser1modbus", "MODBUS_SERIAL_STOPBITS")) or 1,
-            "unit_id": parse_optional_int(get_machine_env_value("laser1modbus", "MODBUS_UNIT_ID")) or 1,
-            "bit_source": (get_machine_env_value("laser1modbus", "MODBUS_BIT_SOURCE") or "discrete_input").strip().lower(),
-            "start_address": parse_optional_int(get_machine_env_value("laser1modbus", "MODBUS_START_ADDRESS")) or 0,
-            "poll_timeout_seconds": parse_optional_float(get_machine_env_value("laser1modbus", "MODBUS_TIMEOUT_SECONDS")) or 1.5,
-            "in1_signal": (get_machine_env_value("laser1modbus", "MODBUS_IN1_SIGNAL") or "machine_on").strip().lower(),
-            "in2_signal": (get_machine_env_value("laser1modbus", "MODBUS_IN2_SIGNAL") or "table_change").strip().lower(),
-            "in3_signal": (get_machine_env_value("laser1modbus", "MODBUS_IN3_SIGNAL") or "cutting_active").strip().lower(),
-            "in4_signal": (get_machine_env_value("laser1modbus", "MODBUS_IN4_SIGNAL") or "idle_abort").strip().lower(),
-        }
-    ]
+    config = {
+        "machine_key": "laser1modbus",
+        "transport": normalize_modbus_transport(
+            get_machine_env_value("laser1modbus", "MODBUS_TRANSPORT"),
+            fallback="rtu" if serial_port and not host else "tcp",
+        ),
+        "host": host,
+        "port": parse_optional_int(get_machine_env_value("laser1modbus", "MODBUS_PORT")) or 502,
+        "serial_port": serial_port,
+        "serial_baudrate": parse_optional_int(get_machine_env_value("laser1modbus", "MODBUS_SERIAL_BAUDRATE")) or 9600,
+        "serial_parity": normalize_modbus_serial_parity(
+            get_machine_env_value("laser1modbus", "MODBUS_SERIAL_PARITY") or "N"
+        ),
+        "serial_stopbits": parse_optional_int(get_machine_env_value("laser1modbus", "MODBUS_SERIAL_STOPBITS")) or 1,
+        "unit_id": parse_optional_int(get_machine_env_value("laser1modbus", "MODBUS_UNIT_ID")) or 1,
+        "bit_source": (get_machine_env_value("laser1modbus", "MODBUS_BIT_SOURCE") or "discrete_input").strip().lower(),
+        "start_address": parse_optional_int(get_machine_env_value("laser1modbus", "MODBUS_START_ADDRESS")) or 0,
+        "poll_timeout_seconds": parse_optional_float(get_machine_env_value("laser1modbus", "MODBUS_TIMEOUT_SECONDS")) or 1.5,
+        "in1_signal": (get_machine_env_value("laser1modbus", "MODBUS_IN1_SIGNAL") or "machine_on").strip().lower(),
+        "in2_signal": (get_machine_env_value("laser1modbus", "MODBUS_IN2_SIGNAL") or "table_change").strip().lower(),
+        "in3_signal": (get_machine_env_value("laser1modbus", "MODBUS_IN3_SIGNAL") or "cutting_active").strip().lower(),
+        "in4_signal": (get_machine_env_value("laser1modbus", "MODBUS_IN4_SIGNAL") or "idle_abort").strip().lower(),
+    }
+    locked_config = LOCKED_MACHINE_MODBUS_CONFIGS.get("laser1modbus")
+    if locked_config:
+        config.update(locked_config)
+    return [config]
 
 
 def get_modbus_signal_target_options() -> list[dict[str, str]]:
@@ -1739,7 +1762,11 @@ def validate_machine_modbus_config(machine_key: str, data: dict) -> dict:
 
 
 def update_machine_modbus_config(machine_key: str, data: dict) -> dict:
-    config = validate_machine_modbus_config(machine_key, merge_machine_modbus_config_payload(machine_key, data))
+    merged_payload = merge_machine_modbus_config_payload(machine_key, data)
+    locked_config = LOCKED_MACHINE_MODBUS_CONFIGS.get(machine_key)
+    if locked_config:
+        merged_payload.update(locked_config)
+    config = validate_machine_modbus_config(machine_key, merged_payload)
     updated_at = now_local().isoformat(timespec="seconds")
     with get_sqlite_connection() as connection:
         connection.execute(
@@ -2105,6 +2132,49 @@ def init_db() -> None:
                     config["in3_signal"],
                     config["in4_signal"],
                     config["machine_key"],
+                ),
+            )
+
+        for machine_key, config in LOCKED_MACHINE_MODBUS_CONFIGS.items():
+            connection.execute(
+                """
+                UPDATE machine_modbus_configs
+                SET transport = ?,
+                    host = ?,
+                    port = ?,
+                    serial_port = ?,
+                    serial_baudrate = ?,
+                    serial_parity = ?,
+                    serial_stopbits = ?,
+                    unit_id = ?,
+                    bit_source = ?,
+                    start_address = ?,
+                    poll_timeout_seconds = ?,
+                    in1_signal = ?,
+                    in2_signal = ?,
+                    in3_signal = ?,
+                    in4_signal = ?,
+                    updated_at = ?
+                WHERE machine_key = ?
+                """,
+                (
+                    config["transport"],
+                    config["host"],
+                    config["port"],
+                    config["serial_port"],
+                    config["serial_baudrate"],
+                    config["serial_parity"],
+                    config["serial_stopbits"],
+                    config["unit_id"],
+                    config["bit_source"],
+                    config["start_address"],
+                    config["poll_timeout_seconds"],
+                    config["in1_signal"],
+                    config["in2_signal"],
+                    config["in3_signal"],
+                    config["in4_signal"],
+                    updated_at,
+                    machine_key,
                 ),
             )
 

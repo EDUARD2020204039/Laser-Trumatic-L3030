@@ -1616,6 +1616,63 @@ def get_machine_modbus_config(machine_key: str) -> dict:
     return serialize_machine_modbus_config(row)
 
 
+def merge_machine_modbus_config_payload(machine_key: str, data: dict | None) -> dict:
+    payload = dict(data or {})
+
+    try:
+        existing = get_machine_modbus_config(machine_key)
+    except ValueError:
+        return payload
+
+    existing_signal_map = existing.get("signal_map") or {}
+    merged = {
+        "transport": existing.get("transport"),
+        "host": existing.get("host"),
+        "port": existing.get("port"),
+        "serial_port": existing.get("serial_port"),
+        "serial_baudrate": existing.get("serial_baudrate"),
+        "serial_parity": existing.get("serial_parity"),
+        "serial_stopbits": existing.get("serial_stopbits"),
+        "unit_id": existing.get("unit_id"),
+        "bit_source": existing.get("bit_source"),
+        "start_address": existing.get("start_address"),
+        "poll_timeout_seconds": existing.get("poll_timeout_seconds"),
+        "in1_signal": existing_signal_map.get("in1", "unused"),
+        "in2_signal": existing_signal_map.get("in2", "unused"),
+        "in3_signal": existing_signal_map.get("in3", "unused"),
+        "in4_signal": existing_signal_map.get("in4", "unused"),
+    }
+
+    signal_map_payload = payload.get("signal_map")
+    if isinstance(signal_map_payload, dict):
+        for input_key in ("in1", "in2", "in3", "in4"):
+            mapped_value = signal_map_payload.get(input_key)
+            if mapped_value is None:
+                continue
+            mapped_text = str(mapped_value).strip()
+            if mapped_text:
+                merged[f"{input_key}_signal"] = mapped_text
+
+    for item in payload.get("inputs") or []:
+        if not isinstance(item, dict):
+            continue
+        input_key = (item.get("key") or "").strip().lower()
+        signal_value = (item.get("signal") or "").strip()
+        if input_key in {"in1", "in2", "in3", "in4"} and signal_value:
+            merged[f"{input_key}_signal"] = signal_value
+
+    for key, value in payload.items():
+        if key in {"signal_map", "inputs"}:
+            continue
+        if value is None:
+            continue
+        if key in {"host", "serial_port"} and isinstance(value, str) and not value.strip():
+            continue
+        merged[key] = value
+
+    return merged
+
+
 def validate_machine_modbus_config(machine_key: str, data: dict) -> dict:
     if not machine_uses_modbus(machine_key):
         raise ValueError(f"Machine does not use Modbus: {machine_key}")
@@ -1682,7 +1739,7 @@ def validate_machine_modbus_config(machine_key: str, data: dict) -> dict:
 
 
 def update_machine_modbus_config(machine_key: str, data: dict) -> dict:
-    config = validate_machine_modbus_config(machine_key, data)
+    config = validate_machine_modbus_config(machine_key, merge_machine_modbus_config_payload(machine_key, data))
     updated_at = now_local().isoformat(timespec="seconds")
     with get_sqlite_connection() as connection:
         connection.execute(
@@ -2646,6 +2703,20 @@ def fetch_recent_events(machine_key: str, limit: int = 18) -> list[dict]:
     ]
 
 
+def calculate_runtime_efficiency_percent(
+    machine_on_seconds: int,
+    cutting_seconds: int,
+    table_change_seconds: int,
+) -> float:
+    machine_on = max(int(machine_on_seconds or 0), 0)
+    if machine_on <= 0:
+        return 0.0
+
+    productive_seconds = max(int(cutting_seconds or 0), 0) + max(int(table_change_seconds or 0), 0)
+    productive_seconds = min(productive_seconds, machine_on)
+    return round((productive_seconds / machine_on) * 100, 1)
+
+
 def calculate_saved_cycle_metrics(
     machine_key: str,
     cutting_started_at: str | None,
@@ -2661,7 +2732,11 @@ def calculate_saved_cycle_metrics(
         table_change_seconds = max(int(fallback_table_change_seconds or 0), 0)
         machine_on_seconds = cutting_seconds + table_change_seconds
         idle_seconds = max(machine_on_seconds - cutting_seconds - table_change_seconds, 0)
-        efficiency_percent = round((cutting_seconds / machine_on_seconds) * 100, 1) if machine_on_seconds else 0.0
+        efficiency_percent = calculate_runtime_efficiency_percent(
+            machine_on_seconds,
+            cutting_seconds,
+            table_change_seconds,
+        )
         return {
             "machine_on_duration_seconds": machine_on_seconds,
             "cutting_duration_seconds": cutting_seconds,
@@ -2691,7 +2766,11 @@ def calculate_saved_cycle_metrics(
         machine_on_seconds = cutting_seconds + table_change_seconds
     if not machine_supports_idle_signal(machine_key):
         idle_seconds = max(machine_on_seconds - cutting_seconds - table_change_seconds, 0)
-    efficiency_percent = round((cutting_seconds / machine_on_seconds) * 100, 1) if machine_on_seconds else 0.0
+    efficiency_percent = calculate_runtime_efficiency_percent(
+        machine_on_seconds,
+        cutting_seconds,
+        table_change_seconds,
+    )
     return {
         "machine_on_duration_seconds": machine_on_seconds,
         "cutting_duration_seconds": cutting_seconds,
@@ -2926,10 +3005,12 @@ def build_efficiency_report(label: str, records: list[dict], machine_key: str | 
     total_cutting_seconds = sum(int(record.get("cycle_duration_seconds") or 0) for record in records)
     total_table_change_seconds = sum(int(record.get("table_change_duration_seconds") or 0) for record in records)
     productive_seconds = total_cutting_seconds + total_table_change_seconds
-    efficiency_percent = (
-        round((total_cutting_seconds / productive_seconds) * 100, 1)
-        if productive_seconds > 0
-        else 0.0
+    total_machine_on_seconds = sum(int(record.get("machine_on_duration_seconds") or 0) for record in records)
+    machine_on_seconds = max(total_machine_on_seconds, productive_seconds)
+    efficiency_percent = calculate_runtime_efficiency_percent(
+        machine_on_seconds,
+        total_cutting_seconds,
+        total_table_change_seconds,
     )
     resolved_machine_key = machine_key
     if resolved_machine_key is None and records:
@@ -2949,8 +3030,8 @@ def build_efficiency_report(label: str, records: list[dict], machine_key: str | 
         "table_change_seconds": total_table_change_seconds,
         "table_change_label": format_seconds(total_table_change_seconds),
         "table_change_display_label": table_change_meta.get("report_label", table_change_meta["label"]),
-        "productive_window_seconds": productive_seconds,
-        "productive_window_label": format_seconds(productive_seconds),
+        "productive_window_seconds": machine_on_seconds,
+        "productive_window_label": format_seconds(machine_on_seconds),
     }
 
 
@@ -3143,6 +3224,7 @@ def build_prometheus_operator_summaries() -> list[dict]:
                 target_period.setdefault(label_key, format_seconds(0))
             target_period["efficiency_percent"] = calculate_operator_efficiency_percent(
                 int(target_period.get("cutting_seconds", 0) or 0),
+                int(target_period.get("table_change_seconds", 0) or 0),
                 int(target_period.get("machine_on_seconds", 0) or 0),
             )
         operator_entry["machines"] = sorted(operator_entry.get("machines") or [])
@@ -3262,10 +3344,12 @@ def build_empty_operator_period_bucket() -> dict:
     }
 
 
-def calculate_operator_efficiency_percent(cutting_seconds: int, machine_on_seconds: int) -> float:
-    if machine_on_seconds <= 0:
-        return 0.0
-    return round((cutting_seconds / machine_on_seconds) * 100, 1)
+def calculate_operator_efficiency_percent(
+    cutting_seconds: int,
+    table_change_seconds: int,
+    machine_on_seconds: int,
+) -> float:
+    return calculate_runtime_efficiency_percent(machine_on_seconds, cutting_seconds, table_change_seconds)
 
 
 def build_operator_entry(operator_id: str, employee_id: str, operator_name: str) -> dict:
@@ -3402,7 +3486,11 @@ def apply_records_to_operator_period(operator_map: dict[str, dict], period_key: 
             {
                 "records_count": len(operator_records),
                 "setup_count": sum(1 for record in operator_records if bool(record.get("setup_changed"))),
-                "efficiency_percent": calculate_operator_efficiency_percent(cutting_seconds, machine_on_seconds),
+                "efficiency_percent": calculate_operator_efficiency_percent(
+                    cutting_seconds,
+                    table_change_seconds,
+                    machine_on_seconds,
+                ),
                 "machine_on_seconds": machine_on_seconds,
                 "machine_on_label": format_seconds(machine_on_seconds),
                 "cutting_seconds": cutting_seconds,
@@ -4089,6 +4177,11 @@ def build_today_stats(machine_key: str) -> dict:
         else max(machine_on_seconds - cutting_seconds - table_change_seconds, 0)
     )
     utilization = round((cutting_seconds / machine_on_seconds) * 100, 1) if machine_on_seconds else 0.0
+    randament = calculate_runtime_efficiency_percent(
+        machine_on_seconds,
+        cutting_seconds,
+        table_change_seconds,
+    )
     availability = round((cutting_seconds / machine_on_seconds) * 100, 1) if machine_on_seconds else 0.0
     cutting_meta = resolve_signal_definition(machine_key, "cutting_active")
     table_change_meta = resolve_signal_definition(machine_key, "table_change")
@@ -4110,7 +4203,7 @@ def build_today_stats(machine_key: str) -> dict:
         "idle_seconds": idle_seconds,
         "idle_label": format_seconds(idle_seconds),
         "utilization_percent": utilization,
-        "randament_percent": utilization,
+        "randament_percent": randament,
         "availability_percent": availability,
         "availability_label": f"{availability_prefix} {availability}%",
         "production_window_label": format_seconds(elapsed_seconds),

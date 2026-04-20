@@ -71,6 +71,9 @@ Aplicatia porneste implicit pe `http://localhost:3030`.
 - `SNAPSHOT_FRESHNESS_SECONDS=3` forteaza refresh live daca ultimul snapshot din runtime este prea vechi
 - `ABKANT_IDLE_STAGNATION_SECONDS=600` marcheaza Abkantul ca `Idle` daca programul si progresul ramin neschimbate mai mult de 10 minute
 - `ABKANT_FEED_STALE_SECONDS=120` spune dupa cite secunde fara colectare recenta snapshotul Abkant trebuie tratat ca `Feed indisponibil`
+- `MODBUS_TCP_RETRY_ATTEMPTS=3` reincearca citirea Modbus TCP de citeva ori inainte sa declare timeout
+- `MODBUS_TCP_RETRY_DELAY_SECONDS=0.15` pauza scurta intre incercarile de retry Modbus TCP
+- `MODBUS_SNAPSHOT_GRACE_SECONDS=18` pastreaza temporar ultimul snapshot valid LASER1MODBUS la intreruperi scurte, ca sa evite reseturi false
 - `PROMETHEUS_BASE_URL=http://localhost:9090` spune dashboard-ului de unde sa citeasca istoricul foilor salvate din Prometheus
 - paginile `Date salvate` si `Date Salvate MODBUS` incearca mai intii sa reconstruiasca ciclurile din Prometheus; daca Prometheus nu raspunde sau nu are inca seriile salvate, cad temporar pe SQLite
 - pentru persistenta reala dupa update, Prometheus trebuie sa aiba propriul director de date persistent si o retenție suficient de mare

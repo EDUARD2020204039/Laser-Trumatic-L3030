@@ -119,6 +119,13 @@ SAVED_RECORDS_PROMETHEUS_ENABLED = os.getenv("SAVED_RECORDS_PROMETHEUS_ENABLED",
 SNAPSHOT_FRESHNESS_SECONDS = max(int(os.getenv("SNAPSHOT_FRESHNESS_SECONDS", "3")), 1)
 ABKANT_IDLE_STAGNATION_SECONDS = max(int(os.getenv("ABKANT_IDLE_STAGNATION_SECONDS", "600")), 60)
 ABKANT_FEED_STALE_SECONDS = max(int(os.getenv("ABKANT_FEED_STALE_SECONDS", "120")), 15)
+MODBUS_TCP_RETRY_ATTEMPTS = max(int(os.getenv("MODBUS_TCP_RETRY_ATTEMPTS", "3")), 1)
+try:
+    MODBUS_TCP_RETRY_DELAY_SECONDS = float(os.getenv("MODBUS_TCP_RETRY_DELAY_SECONDS", "0.15") or 0.15)
+except (TypeError, ValueError):
+    MODBUS_TCP_RETRY_DELAY_SECONDS = 0.15
+MODBUS_TCP_RETRY_DELAY_SECONDS = min(max(MODBUS_TCP_RETRY_DELAY_SECONDS, 0.0), 2.0)
+MODBUS_SNAPSHOT_GRACE_SECONDS = max(int(os.getenv("MODBUS_SNAPSHOT_GRACE_SECONDS", "18")), 0)
 OPERATOR_CACHE_SECONDS = max(int(os.getenv("OPERATOR_CACHE_SECONDS", "20")), 3)
 PROMETHEUS_MAX_PARALLEL_QUERIES = max(int(os.getenv("PROMETHEUS_MAX_PARALLEL_QUERIES", "6")), 1)
 try:
@@ -2329,7 +2336,7 @@ def build_script_catalog() -> list[dict]:
     return catalog
 
 
-def read_modbus_tcp_bits(
+def _read_modbus_tcp_bits_once(
     host: str,
     port: int,
     unit_id: int,
@@ -2393,6 +2400,37 @@ def read_modbus_tcp_bits(
         data_byte = data_bytes[bit_index // 8]
         bits.append(bool((data_byte >> (bit_index % 8)) & 0x01))
     return bits
+
+
+def read_modbus_tcp_bits(
+    host: str,
+    port: int,
+    unit_id: int,
+    start_address: int,
+    count: int,
+    bit_source: str = "discrete_input",
+    timeout_seconds: float = 1.5,
+) -> list[bool]:
+    last_exception: Exception | None = None
+    for attempt in range(1, MODBUS_TCP_RETRY_ATTEMPTS + 1):
+        try:
+            return _read_modbus_tcp_bits_once(
+                host=host,
+                port=port,
+                unit_id=unit_id,
+                start_address=start_address,
+                count=count,
+                bit_source=bit_source,
+                timeout_seconds=timeout_seconds,
+            )
+        except Exception as exc:
+            last_exception = exc
+            if attempt < MODBUS_TCP_RETRY_ATTEMPTS and MODBUS_TCP_RETRY_DELAY_SECONDS > 0:
+                time_module.sleep(MODBUS_TCP_RETRY_DELAY_SECONDS)
+
+    if last_exception is None:
+        raise RuntimeError("Citirea Modbus TCP a esuat fara detalii.")
+    raise last_exception
 
 
 def read_modbus_rtu_bits(
@@ -2518,6 +2556,47 @@ def get_laser_ocr_snapshot(machine_key: str) -> dict:
     }
 
 
+def build_modbus_grace_snapshot(machine_key: str, error_message: str) -> dict | None:
+    if MODBUS_SNAPSHOT_GRACE_SECONDS <= 0:
+        return None
+
+    runtime = get_machine_runtime(machine_key)
+    previous_snapshot = runtime.get("last_snapshot")
+    if not isinstance(previous_snapshot, dict):
+        return None
+    if not previous_snapshot.get("available"):
+        return None
+    if previous_snapshot.get("machine_mode") != "laser1modbus":
+        return None
+    if not str(previous_snapshot.get("source") or "").startswith("modbus"):
+        return None
+
+    captured_at_raw = previous_snapshot.get("captured_at")
+    if not captured_at_raw:
+        return None
+    try:
+        captured_at = parse_timestamp(captured_at_raw)
+    except Exception:
+        return None
+
+    age_seconds = max(int((now_local() - captured_at).total_seconds()), 0)
+    if age_seconds > MODBUS_SNAPSHOT_GRACE_SECONDS:
+        return None
+
+    snapshot = dict(previous_snapshot)
+    snapshot["available"] = True
+    snapshot["connected"] = True
+    snapshot["captured_at"] = now_local().isoformat(timespec="seconds")
+    snapshot["source"] = "modbus+ocr-grace"
+    snapshot["grace_mode"] = True
+    snapshot["grace_snapshot_age_seconds"] = age_seconds
+    snapshot["message"] = (
+        f"{error_message} Pastrez temporar ultimul snapshot valid de acum {format_seconds(age_seconds)} "
+        f"ca sa evit reseturile false la intreruperi scurte."
+    )
+    return snapshot
+
+
 def analyze_laser_modbus_live_snapshot(machine_key: str) -> dict | None:
     config = get_machine_modbus_config(machine_key)
     if not config.get("enabled"):
@@ -2560,12 +2639,16 @@ def analyze_laser_modbus_live_snapshot(machine_key: str) -> dict | None:
             )
     except Exception as exc:
         transport_label = "Modbus RTU" if config.get("transport") == "rtu" else "Modbus TCP"
+        error_message = f"Nu pot citi {transport_label} de la {config['endpoint']}. Motiv: {exc}"
+        grace_snapshot = build_modbus_grace_snapshot(machine_key, error_message)
+        if grace_snapshot:
+            return grace_snapshot
         return {
             "available": False,
             "connected": False,
             "source": "modbus",
             "endpoint": config["endpoint"],
-            "message": f"Nu pot citi {transport_label} de la {config['endpoint']}. Motiv: {exc}",
+            "message": error_message,
         }
 
     derived_signals, raw_inputs = build_modbus_signal_state(config, inputs)

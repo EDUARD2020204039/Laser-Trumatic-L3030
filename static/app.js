@@ -157,7 +157,7 @@ function getSavedModbusPeriodMeta(period, payload) {
             key: "day",
             sectionTitle: "Date Salvate MODBUS - Zilnic",
             subtitle: "Se folosesc doar ciclurile LASER1MODBUS din ziua curenta si se actualizeaza dupa fiecare program finalizat.",
-            hint: `Randamentul zilnic este media tuturor randamentelor salvate azi. Se recalculeaza automat cand apare un ciclu nou. ${windowLabel}`.trim(),
+            hint: `Randamentul zilnic este media tuturor randamentelor salvate azi. Regula provizorie: daca durata de Table change depaseste 01:30, timpul care depaseste pragul se penalizeaza in randament ca timp de tip idle, fara sa modifice indicatorul Idle afisat separat. Urmeaza seturi de reguli pe grosimea tablei. ${windowLabel}`.trim(),
             countLabel: "Cicluri MODBUS azi",
             emptySummary: "Nu exista inca cicluri MODBUS salvate azi.",
             emptyRecords: "Nu exista inca randamente MODBUS salvate azi."

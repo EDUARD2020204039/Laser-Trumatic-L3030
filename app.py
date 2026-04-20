@@ -3339,32 +3339,44 @@ def build_prometheus_base_url_candidates() -> list[str]:
             append_candidate(f"http://{host_name}:9090")
             append_candidate(f"https://{host_name}:9090")
 
+    if is_running_in_container():
+        append_candidate("http://172.17.0.1:9090")
+
     append_candidate("http://localhost:9090")
     append_candidate("http://127.0.0.1:9090")
     return candidates
 
 
 def fetch_prometheus_vector(query: str) -> list[dict]:
-    last_error: Exception | None = None
+    errors_by_endpoint: list[str] = []
     encoded_query = urllib.parse.quote(query, safe="")
+    timeout_candidates = [PROMETHEUS_QUERY_TIMEOUT_SECONDS]
+    extended_timeout_seconds = min(max(PROMETHEUS_QUERY_TIMEOUT_SECONDS * 2, 5.0), 20.0)
+    if abs(extended_timeout_seconds - PROMETHEUS_QUERY_TIMEOUT_SECONDS) > 1e-9:
+        timeout_candidates.append(extended_timeout_seconds)
 
     for base_url in build_prometheus_base_url_candidates():
         request_url = f"{base_url}/api/v1/query?query={encoded_query}"
-        request_obj = urllib.request.Request(
-            request_url,
-            headers={"User-Agent": "HABA-Production-Monitor/1.0"},
-        )
-        try:
-            with urllib.request.urlopen(request_obj, timeout=PROMETHEUS_QUERY_TIMEOUT_SECONDS) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-            if payload.get("status") != "success":
-                raise RuntimeError(payload.get("error") or "Prometheus query failed.")
-            result = payload.get("data", {}).get("result") or []
-            return result if isinstance(result, list) else []
-        except Exception as exc:
-            last_error = exc
+        endpoint_error: Exception | None = None
+        for timeout_seconds in timeout_candidates:
+            request_obj = urllib.request.Request(
+                request_url,
+                headers={"User-Agent": "HABA-Production-Monitor/1.0"},
+            )
+            try:
+                with urllib.request.urlopen(request_obj, timeout=timeout_seconds) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+                if payload.get("status") != "success":
+                    raise RuntimeError(payload.get("error") or "Prometheus query failed.")
+                result = payload.get("data", {}).get("result") or []
+                return result if isinstance(result, list) else []
+            except Exception as exc:
+                endpoint_error = exc
+        errors_by_endpoint.append(f"{base_url} -> {endpoint_error}")
 
-    raise RuntimeError(f"Prometheus query failed for all configured endpoints: {last_error}")
+    raise RuntimeError(
+        "Prometheus query failed for all configured endpoints: " + " | ".join(errors_by_endpoint)
+    )
 
 
 def fetch_prometheus_query_map(query_map: dict[str, str]) -> dict[str, list[dict]]:
@@ -3869,7 +3881,7 @@ def resolve_selected_operator_id(
         if requested_operator_id in available_operator_ids:
             return requested_operator_id
 
-    return operators[0]["operator_id"]
+    return None
 
 
 def resolve_saved_period(period: str | None) -> str:
@@ -4061,23 +4073,51 @@ def build_saved_cycles_payload(machine_key: str | None = None, period: str = "al
     operator_id = (request.args.get("operator_id") or "").strip() or None
     if SAVED_RECORDS_PROMETHEUS_ENABLED:
         try:
+            records = build_prometheus_saved_records(normalized_period, operator_id=None)
+            if machine_key:
+                records = [
+                    record
+                    for record in records
+                    if str(record.get("machine_key") or "").strip() == machine_key
+                ]
+
+            operator_entries_from_records: dict[str, dict] = {}
+            for record in records:
+                record_operator_name = (record.get("operator_name") or UNKNOWN_OPERATOR_LABEL).strip() or UNKNOWN_OPERATOR_LABEL
+                record_employee_id = str(record.get("operator_id") or "").strip()
+                record_operator_id = record_employee_id or f"name:{record_operator_name}"
+                entry = operator_entries_from_records.setdefault(
+                    record_operator_id,
+                    build_operator_entry(record_operator_id, record_employee_id, record_operator_name),
+                )
+                entry["machines"].add(record.get("machine_label") or record.get("machine_key") or "")
+
+            try:
+                operator_entries = build_prometheus_operator_summaries()
+            except Exception:
+                operator_entries = []
+
             operators = finalize_operator_entries(
                 merge_operator_seed_entries(
-                    build_prometheus_operator_summaries(),
+                    merge_operator_seed_entries(
+                        operator_entries,
+                        list(operator_entries_from_records.values()),
+                    ),
                     build_workcenter_operator_summaries(),
                 )
             )
+
             selected_operator_id = resolve_selected_operator_id(operator_id, operators)
-            records = build_prometheus_saved_records(normalized_period, selected_operator_id)
-            if operators:
+            filtered_records = filter_saved_cycle_records_by_operator(records, selected_operator_id)
+            if operators or filtered_records:
                 return {
                     "view": "saved",
                     "selected_machine_key": machine_key,
                     "period": normalized_period,
                     "operators": operators,
                     "selected_operator_id": selected_operator_id,
-                    "records": records,
-                    "records_count": len(records),
+                    "records": filtered_records,
+                    "records_count": len(filtered_records),
                     "data_source": "prometheus",
                     "updated_at": now_local().isoformat(timespec="seconds"),
                 }

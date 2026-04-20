@@ -66,13 +66,13 @@ Aplicatia porneste implicit pe `http://localhost:3030`.
 - `BACKGROUND_SYNC_ENABLED=1` porneste pollerul din fundal care urmareste utilajele chiar daca nu ai pagina deschisa
 - `BACKGROUND_SYNC_INTERVAL_SECONDS=3` controleaza la cite secunde se face sincronizarea live si salvarea automata in istoricul local
 - `REQUEST_LIVE_SYNC_ENABLED=0` pastreaza dashboard-ul rapid si evita sync-ul live direct in request cind exista deja pollerul din fundal; seteaza `1` doar daca vrei fallback sincron in request
-- `SAVED_RECORDS_PROMETHEUS_ENABLED=0` face pagina `Date salvate` sa raspunda rapid direct din SQLite; seteaza `1` doar daca vrei sa fortezi citirea din Prometheus inainte de fallback
+- `SAVED_RECORDS_PROMETHEUS_ENABLED=1` (recomandat in productie) reconstruieste istoricul din Prometheus cind SQLite local este gol dupa un update/redeploy
 - `PROMETHEUS_QUERY_TIMEOUT_SECONDS=2.5` scurteaza timpul de asteptare pe fiecare query Prometheus inainte sa se treaca mai departe sau sa se cada pe fallback
 - `SNAPSHOT_FRESHNESS_SECONDS=3` forteaza refresh live daca ultimul snapshot din runtime este prea vechi
 - `ABKANT_IDLE_STAGNATION_SECONDS=600` marcheaza Abkantul ca `Idle` daca programul si progresul ramin neschimbate mai mult de 10 minute
 - `ABKANT_FEED_STALE_SECONDS=120` spune dupa cite secunde fara colectare recenta snapshotul Abkant trebuie tratat ca `Feed indisponibil`
 - `PROMETHEUS_BASE_URL=http://localhost:9090` spune dashboard-ului de unde sa citeasca istoricul foilor salvate din Prometheus
-- pagina `Date salvate` incearca mai intii sa reconstruiasca operatorii si foile din Prometheus; daca Prometheus nu raspunde sau nu are inca seriile salvate, cade temporar pe SQLite
+- paginile `Date salvate` si `Date Salvate MODBUS` incearca mai intii sa reconstruiasca ciclurile din Prometheus; daca Prometheus nu raspunde sau nu are inca seriile salvate, cad temporar pe SQLite
 - pentru persistenta reala dupa update, Prometheus trebuie sa aiba propriul director de date persistent si o retenție suficient de mare
 
 ## Bridge Modbus RTU -> TCP pentru PC separat
@@ -218,6 +218,22 @@ docker run -d \
 ```
 
 Pe Unraid, monteaza `/data` ca volum persistent. Acolo ramin `laser_monitor.db`, timpii, randamentele si toate datele salvate dupa update.
+
+### Update sigur cu Watchtower
+
+Repo-ul include un exemplu gata de folosit: `deploy/docker-compose.watchtower.yml`.
+
+Pornire:
+
+```bash
+docker compose -f deploy/docker-compose.watchtower.yml up -d
+```
+
+Cheia este volumul persistent:
+
+- `lasertrumaticl3030_data:/data`
+
+Atit timp cit `/data` ramine acelasi volum, update-urile Watchtower nu mai sterg randamentele, setarile MODBUS si istoricul salvat.
 
 ## GitHub Container Registry
 

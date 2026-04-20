@@ -1865,6 +1865,15 @@ def serialize_machine_profile(row: sqlite3.Row, selected_machine_key: str | None
 def init_db() -> None:
     migrate_legacy_sqlite_if_needed()
     print(f"SQLite storage path: {SQLITE_PATH}")
+    if is_running_in_container() and str(SQLITE_PATH).startswith("/data/"):
+        try:
+            if not Path("/data").is_mount():
+                print(
+                    "WARNING: /data nu este montat ca volum persistent. "
+                    "Datele (randamente, setari MODBUS, istoric) se pot pierde la update/redeploy."
+                )
+        except OSError:
+            pass
     with get_sqlite_connection() as connection:
         connection.executescript(
             """
@@ -3249,6 +3258,40 @@ def escape_prometheus_label_matcher(value: str) -> str:
     return str(value).replace("\\", "\\\\").replace('"', '\\"')
 
 
+def build_prometheus_saved_cycle_label_filter(
+    operator_id: str | None = None,
+    machine_key: str | None = None,
+) -> str:
+    matchers: list[str] = []
+    if machine_key:
+        matchers.append(f'machine_key="{escape_prometheus_label_matcher(machine_key)}"')
+    if operator_id:
+        if operator_id.startswith("name:"):
+            matchers.append(f'operator_name="{escape_prometheus_label_matcher(operator_id[5:])}"')
+        else:
+            matchers.append(f'operator_id="{escape_prometheus_label_matcher(operator_id)}"')
+    if not matchers:
+        return ""
+    return "{" + ",".join(matchers) + "}"
+
+
+def build_prometheus_cycle_series_key(labels: dict) -> str | None:
+    cycle_id = str(labels.get("cycle_id") or "").strip()
+    if not cycle_id:
+        return None
+
+    parts = [
+        cycle_id,
+        str(labels.get("machine_key") or "").strip(),
+        str(labels.get("completed_at") or "").strip(),
+        str(labels.get("table_change_started_at") or "").strip(),
+        str(labels.get("operator_id") or "").strip(),
+        str(labels.get("operator_name") or "").strip(),
+        str(labels.get("selected_program") or "").strip(),
+    ]
+    return "|".join(parts)
+
+
 def build_prometheus_operator_summaries() -> list[dict]:
     periods = ("day", "week", "month")
     operator_map: dict[str, dict] = {}
@@ -3347,24 +3390,29 @@ def build_prometheus_operator_summaries() -> list[dict]:
     return output
 
 
-def build_prometheus_saved_records(period: str, operator_id: str | None = None) -> list[dict]:
-    period_range = prometheus_period_range(period)
-    label_filter = ""
-    if operator_id:
-        if operator_id.startswith("name:"):
-            label_filter = f'{{operator_name="{escape_prometheus_label_matcher(operator_id[5:])}"}}'
-        else:
-            label_filter = f'{{operator_id="{escape_prometheus_label_matcher(operator_id)}"}}'
-
+def build_prometheus_saved_records_for_range(
+    period_range: str,
+    operator_id: str | None = None,
+    machine_key: str | None = None,
+) -> list[dict]:
+    label_filter = build_prometheus_saved_cycle_label_filter(operator_id=operator_id, machine_key=machine_key)
     base_query = f"max_over_time(haba_saved_cycle_completed{label_filter}[{period_range}])"
     base_records: dict[str, dict] = {}
+
     for series in fetch_prometheus_vector(base_query):
         labels = series.get("metric") or {}
-        cycle_id = labels.get("cycle_id")
+        cycle_id = str(labels.get("cycle_id") or "").strip()
         if not cycle_id:
             continue
-        base_records[cycle_id] = {
-            "id": int(cycle_id),
+        series_key = build_prometheus_cycle_series_key(labels)
+        if not series_key:
+            continue
+        try:
+            numeric_cycle_id = int(cycle_id)
+        except (TypeError, ValueError):
+            continue
+        base_records[series_key] = {
+            "id": numeric_cycle_id,
             "machine_key": labels.get("machine_key") or "",
             "machine_label": labels.get("machine_label") or labels.get("machine_key") or "",
             "workcenter_id": parse_optional_int(labels.get("workcenter_id")),
@@ -3381,6 +3429,9 @@ def build_prometheus_saved_records(period: str, operator_id: str | None = None) 
             "cutting_started_at": labels.get("cutting_started_at") or None,
             "table_change_started_at": labels.get("table_change_started_at") or labels.get("completed_at") or None,
             "table_change_ended_at": labels.get("completed_at") or None,
+            "close_reason": labels.get("close_reason") or "",
+            "close_reason_label": labels.get("close_reason_label") or "",
+            "next_program": labels.get("next_program") or None,
             "source": labels.get("source") or "prometheus",
             "created_at": labels.get("completed_at") or "",
         }
@@ -3400,23 +3451,23 @@ def build_prometheus_saved_records(period: str, operator_id: str | None = None) 
     for field_name, result_series in fetch_prometheus_query_map(metric_query_map).items():
         for series in result_series:
             labels = series.get("metric") or {}
-            cycle_id = labels.get("cycle_id")
-            if not cycle_id or cycle_id not in base_records:
+            series_key = build_prometheus_cycle_series_key(labels)
+            if not series_key or series_key not in base_records:
                 continue
             numeric_value = float((series.get("value") or [None, "0"])[1] or 0)
             if field_name.endswith("_seconds"):
-                base_records[cycle_id][field_name] = int(round(numeric_value))
-                base_records[cycle_id][field_name.replace("_seconds", "_label")] = format_seconds(int(round(numeric_value)))
+                base_records[series_key][field_name] = int(round(numeric_value))
+                base_records[series_key][field_name.replace("_seconds", "_label")] = format_seconds(int(round(numeric_value)))
             elif field_name == "setup_changed":
-                base_records[cycle_id][field_name] = bool(round(numeric_value))
+                base_records[series_key][field_name] = bool(round(numeric_value))
             else:
-                base_records[cycle_id][field_name] = round(numeric_value, 1)
+                base_records[series_key][field_name] = round(numeric_value, 1)
 
-    records = []
+    records: list[dict] = []
     for record in base_records.values():
-        machine_key = record["machine_key"]
-        cutting_meta = resolve_signal_definition(machine_key or DEFAULT_MACHINE_KEY, "cutting_active")
-        table_change_meta = resolve_signal_definition(machine_key or DEFAULT_MACHINE_KEY, "table_change")
+        record_machine_key = record["machine_key"]
+        cutting_meta = resolve_signal_definition(record_machine_key or DEFAULT_MACHINE_KEY, "cutting_active")
+        table_change_meta = resolve_signal_definition(record_machine_key or DEFAULT_MACHINE_KEY, "table_change")
         record.setdefault("machine_on_duration_seconds", 0)
         record.setdefault("machine_on_duration_label", format_seconds(0))
         record.setdefault("cycle_duration_seconds", 0)
@@ -3427,12 +3478,28 @@ def build_prometheus_saved_records(period: str, operator_id: str | None = None) 
         record.setdefault("table_change_duration_label", format_seconds(0))
         record.setdefault("efficiency_percent", 0.0)
         record.setdefault("setup_changed", False)
+        if not record.get("close_reason"):
+            if "program schimbat" in str(record.get("program_status") or "").lower():
+                record["close_reason"] = "program_change"
+            else:
+                record["close_reason"] = "table_change_completed"
+        if not record.get("close_reason_label"):
+            record["close_reason_label"] = (
+                "Program schimbat"
+                if record.get("close_reason") == "program_change"
+                else "Table change finalizat"
+            )
         record["activity_label"] = cutting_meta.get("report_label", cutting_meta["label"])
         record["change_label"] = table_change_meta.get("report_label", table_change_meta["label"])
         records.append(record)
 
     records.sort(key=lambda item: item.get("table_change_ended_at") or item.get("created_at") or "", reverse=True)
     return records
+
+
+def build_prometheus_saved_records(period: str, operator_id: str | None = None) -> list[dict]:
+    period_range = prometheus_period_range(period)
+    return build_prometheus_saved_records_for_range(period_range, operator_id=operator_id)
 
 
 def build_empty_operator_period_bucket() -> dict:
@@ -3704,11 +3771,51 @@ def resolve_saved_modbus_window(period: str, now: datetime) -> tuple[datetime, d
     return start, end, True, "Luna completa anterioara"
 
 
+def resolve_saved_modbus_prometheus_range(period: str) -> str:
+    normalized = resolve_saved_modbus_period(period)
+    return {
+        "day": "2d",
+        "week": "21d",
+        "month": "70d",
+    }[normalized]
+
+
 def build_saved_modbus_payload(period: str = "day", operator_id: str | None = None) -> dict:
     normalized_period = resolve_saved_modbus_period(period)
     now = now_local()
     window_start, window_end, is_closed_period, window_label = resolve_saved_modbus_window(normalized_period, now)
-    records = fetch_saved_cycles_between(window_start, window_end, machine_key="laser1modbus")
+    records: list[dict] = []
+    data_source = "sqlite-fallback"
+    if SAVED_RECORDS_PROMETHEUS_ENABLED:
+        try:
+            period_range = resolve_saved_modbus_prometheus_range(normalized_period)
+            prometheus_records = build_prometheus_saved_records_for_range(
+                period_range,
+                machine_key="laser1modbus",
+            )
+            filtered_prometheus_records: list[dict] = []
+            for record in prometheus_records:
+                completed_at_raw = (
+                    record.get("table_change_ended_at")
+                    or record.get("created_at")
+                    or record.get("table_change_started_at")
+                )
+                if not completed_at_raw:
+                    continue
+                try:
+                    completed_at = parse_timestamp(completed_at_raw)
+                except (TypeError, ValueError):
+                    continue
+                if window_start <= completed_at <= window_end:
+                    filtered_prometheus_records.append(record)
+            if filtered_prometheus_records:
+                records = filtered_prometheus_records
+                data_source = "prometheus"
+        except Exception:
+            pass
+
+    if not records:
+        records = fetch_saved_cycles_between(window_start, window_end, machine_key="laser1modbus")
     machine_label = MACHINE_DEFINITIONS.get("laser1modbus", {}).get("label", "LASER1MODBUS")
     machine_profile = get_machine_profile("laser1modbus")
     operator_snapshot = fetch_current_operator(machine_profile.get("workcenter_id"))
@@ -3793,7 +3900,7 @@ def build_saved_modbus_payload(period: str = "day", operator_id: str | None = No
         "window_label": window_label,
         "is_closed_period": is_closed_period,
         "updated_at": now.isoformat(timespec="seconds"),
-        "data_source": "sqlite-fallback",
+        "data_source": data_source,
     }
 
 
@@ -4577,6 +4684,9 @@ def build_prometheus_metrics() -> str:
             "cutting_started_at": record["cutting_started_at"] or "",
             "table_change_started_at": record["table_change_started_at"] or "",
             "completed_at": record["table_change_ended_at"] or record["created_at"] or "",
+            "close_reason": record.get("close_reason") or "",
+            "close_reason_label": record.get("close_reason_label") or "",
+            "next_program": record.get("next_program") or "",
             "source": record["source"] or "",
         }
         append_prometheus_metric(lines, "haba_saved_cycle_completed", 1, cycle_labels)

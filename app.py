@@ -2660,30 +2660,50 @@ def analyze_laser_modbus_live_snapshot(machine_key: str) -> dict | None:
         )
     )
 
-    def resolve_previous_program_for_idle() -> str:
-        if not idle:
-            return ""
+    def resolve_previous_context_for_fallback() -> dict[str, str]:
+        fallback_context = {"program": "", "material": ""}
         try:
             runtime = get_machine_runtime(machine_key)
         except Exception:
-            return ""
+            return fallback_context
 
-        previous_program = normalize_context_token(resolve_snapshot_program(runtime.get("last_snapshot")))
-        if previous_program:
-            return previous_program
+        previous_snapshot = runtime.get("last_snapshot") or {}
+        if isinstance(previous_snapshot, dict):
+            previous_program = normalize_context_token(resolve_snapshot_program(previous_snapshot))
+            previous_material = normalize_context_token(previous_snapshot.get("material"))
+            if previous_program or previous_material:
+                return {
+                    "program": previous_program,
+                    "material": previous_material,
+                }
 
         pending_cycle = runtime.get("pending_cycle") or {}
         if isinstance(pending_cycle, dict):
-            return (
-                normalize_context_token(pending_cycle.get("selected_program"))
-                or normalize_context_token(pending_cycle.get("active_program"))
-            )
-        return ""
+            return {
+                "program": (
+                    normalize_context_token(pending_cycle.get("selected_program"))
+                    or normalize_context_token(pending_cycle.get("active_program"))
+                ),
+                "material": normalize_context_token(pending_cycle.get("material")),
+            }
+        return fallback_context
 
     ocr_snapshot = get_laser_ocr_snapshot(machine_key)
     if not ocr_snapshot.get("available"):
-        fallback_program = resolve_previous_program_for_idle()
-        fallback_program_status = "Idle / program anterior (fallback feed)" if fallback_program else "Feed indisponibil / Modbus activ"
+        fallback_context = (
+            resolve_previous_context_for_fallback()
+            if derived_signals["machine_on"]
+            else {"program": "", "material": ""}
+        )
+        fallback_program = fallback_context["program"]
+        fallback_material = fallback_context["material"]
+        fallback_program_status = (
+            "Idle / program anterior (fallback feed)"
+            if fallback_program and idle
+            else "Program anterior (fallback feed)"
+            if fallback_program
+            else "Feed indisponibil / Modbus activ"
+        )
         return {
             "available": True,
             "connected": True,
@@ -2691,7 +2711,7 @@ def analyze_laser_modbus_live_snapshot(machine_key: str) -> dict | None:
             "captured_at": now_local().isoformat(timespec="seconds"),
             "selected_program": fallback_program or "Necitit",
             "active_program": fallback_program or "Necitit",
-            "material": "Necitit",
+            "material": fallback_material or "Necitit",
             "program_status": fallback_program_status,
             "modbus_endpoint": config["endpoint"],
             "endpoint": config["endpoint"],
@@ -2707,7 +2727,7 @@ def analyze_laser_modbus_live_snapshot(machine_key: str) -> dict | None:
                 f"Bitii Modbus sunt activi si continua sa fie cititi din {config['endpoint']}, "
                 f"dar feedul pentru program nu raspunde acum: {ocr_snapshot.get('message')}"
                 + (
-                    f" Afisez ultimul program valid ({fallback_program}) deoarece utilajul este in idle."
+                    f" Afisez ultimul program valid ({fallback_program}) deoarece feedul nu raspunde."
                     if fallback_program
                     else ""
                 )
@@ -2716,17 +2736,26 @@ def analyze_laser_modbus_live_snapshot(machine_key: str) -> dict | None:
 
     selected_program = normalize_context_token(ocr_snapshot.get("selected_program"))
     active_program = normalize_context_token(ocr_snapshot.get("active_program"))
+    material = normalize_context_token(ocr_snapshot.get("material"))
     if selected_program and not active_program:
         active_program = selected_program
     elif active_program and not selected_program:
         selected_program = active_program
 
     fallback_program = ""
-    if idle and not (selected_program or active_program):
-        fallback_program = resolve_previous_program_for_idle()
+    fallback_material = ""
+    fallback_context = {"program": "", "material": ""}
+    if derived_signals["machine_on"] and (not (selected_program or active_program) or not material):
+        fallback_context = resolve_previous_context_for_fallback()
+    if not (selected_program or active_program):
+        fallback_program = fallback_context["program"]
         if fallback_program:
             selected_program = fallback_program
             active_program = fallback_program
+    if not material:
+        fallback_material = fallback_context["material"]
+        if fallback_material:
+            material = fallback_material
 
     message = (
         f"Programul este citit din feed, iar timpii vin din Modbus {config['endpoint']}. "
@@ -2735,7 +2764,9 @@ def analyze_laser_modbus_live_snapshot(machine_key: str) -> dict | None:
     if ocr_snapshot.get("warning_message"):
         message = f"{message} Banner galben detectat: {ocr_snapshot['warning_message']}."
     if fallback_program:
-        message = f"{message} Feedul nu afiseaza program in idle, afisez ultimul program valid: {fallback_program}."
+        message = f"{message} Feedul nu afiseaza program, afisez ultimul program valid: {fallback_program}."
+    if fallback_material:
+        message = f"{message} Feedul nu afiseaza material, pastrez ultimul material valid: {fallback_material}."
 
     return {
         **ocr_snapshot,
@@ -2745,8 +2776,9 @@ def analyze_laser_modbus_live_snapshot(machine_key: str) -> dict | None:
         "machine_mode": "laser1modbus",
         "selected_program": selected_program or "Necitit",
         "active_program": active_program or "Necitit",
+        "material": material or "Necitit",
         "program_status": (
-            "Idle / program anterior (fallback feed)"
+            ("Idle / program anterior (fallback feed)" if idle else "Program anterior (fallback feed)")
             if fallback_program and str(ocr_snapshot.get("program_status") or "").strip().lower() in {"", "necitit"}
             else ocr_snapshot.get("program_status") or "Necitit"
         ),
@@ -4434,6 +4466,7 @@ def save_cycle_on_program_change(
     current_snapshot: dict,
     operator_snapshot: dict,
     current_signals: dict[str, dict],
+    previous_stats_anchor: dict | None = None,
 ) -> None:
     previous_program = resolve_snapshot_program(previous_snapshot)
     current_program = resolve_snapshot_program(current_snapshot)
@@ -4446,12 +4479,21 @@ def save_cycle_on_program_change(
     ):
         return
 
-    if not bool(previous_snapshot.get("derived_signals", {}).get("cutting_active")):
-        return
-
     operator = operator_snapshot.get("primary_operator") or {}
     change_detected_at = now_local()
+    previous_anchor_started_at_raw = ""
+    if isinstance(previous_stats_anchor, dict):
+        anchor_candidate = str(previous_stats_anchor.get("started_at") or "").strip()
+        if anchor_candidate:
+            try:
+                anchor_started_at = parse_timestamp(anchor_candidate)
+                if anchor_started_at <= change_detected_at:
+                    previous_anchor_started_at_raw = anchor_started_at.isoformat(timespec="seconds")
+            except Exception:
+                previous_anchor_started_at_raw = ""
+
     cutting_started_at_raw = current_signals["cutting_active"]["changed_at"] if current_signals["cutting_active"]["active"] else None
+    cycle_window_start_raw = cutting_started_at_raw or previous_anchor_started_at_raw
     cycle_duration_seconds = None
     if cutting_started_at_raw:
         cycle_duration_seconds = max(
@@ -4460,12 +4502,19 @@ def save_cycle_on_program_change(
         )
     cycle_metrics = calculate_saved_cycle_metrics(
         machine_key=machine_key,
-        cutting_started_at=cutting_started_at_raw,
+        cutting_started_at=cycle_window_start_raw,
         table_change_started_at=change_detected_at.isoformat(timespec="seconds"),
         table_change_ended_at=change_detected_at.isoformat(timespec="seconds"),
         fallback_cutting_seconds=cycle_duration_seconds,
         fallback_table_change_seconds=0,
     )
+    if (
+        int(cycle_metrics["machine_on_duration_seconds"] or 0) <= 0
+        and int(cycle_metrics["cutting_duration_seconds"] or 0) <= 0
+        and int(cycle_metrics["idle_duration_seconds"] or 0) <= 0
+        and int(cycle_metrics["table_change_duration_seconds"] or 0) <= 0
+    ):
+        return
 
     recent_cutoff_iso = datetime.fromtimestamp(change_detected_at.timestamp() - 45).isoformat(timespec="seconds")
     with get_sqlite_connection() as connection:
@@ -4528,11 +4577,11 @@ def save_cycle_on_program_change(
                     previous_snapshot.get("lower_tool"),
                     resolve_abkant_tool_signature(previous_snapshot),
                     0,
-                    cutting_started_at_raw,
+                    cycle_window_start_raw,
                     change_detected_at.isoformat(timespec="seconds"),
                     change_detected_at.isoformat(timespec="seconds"),
                     0,
-                    cycle_duration_seconds,
+                    cycle_metrics["cutting_duration_seconds"],
                     cycle_metrics["machine_on_duration_seconds"],
                     cycle_metrics["idle_duration_seconds"],
                     cycle_metrics["efficiency_percent"],
@@ -5037,6 +5086,7 @@ def sync_machine_events_from_live_snapshot(machine_key: str) -> dict | None:
             snapshot,
             operator_snapshot,
             current_signals,
+            runtime.get("stats_anchor"),
         )
 
     old_table_change = bool(current_signals["table_change"]["active"])

@@ -4211,7 +4211,9 @@ def context_requires_stats_reset(
     previous_signals = (previous_snapshot or {}).get("derived_signals") or {}
     current_signals = (current_snapshot or {}).get("derived_signals") or {}
     machine_restarted = not bool(previous_signals.get("machine_on")) and bool(current_signals.get("machine_on"))
-    if machine_key in {"laser1", "laser1modbus"}:
+    if machine_key == "laser1modbus":
+        return previous_context["program"] != current_context["program"]
+    if machine_key == "laser1":
         return previous_context["program"] != current_context["program"] or machine_restarted
     return previous_context != current_context or machine_restarted
 
@@ -4333,6 +4335,24 @@ def open_pending_cycle(
         "snapshot_json": snapshot,
     }
     runtime = get_machine_runtime(machine_key)
+    stats_anchor = runtime.get("stats_anchor") or {}
+    cycle_window_started_at = ""
+    anchor_started_at_raw = str(stats_anchor.get("started_at") or "").strip()
+    if anchor_started_at_raw:
+        try:
+            anchor_started_at = parse_timestamp(anchor_started_at_raw)
+            table_change_started_at = parse_timestamp(pending_cycle["table_change_started_at"])
+            if anchor_started_at <= table_change_started_at:
+                cycle_window_started_at = anchor_started_at.isoformat(timespec="seconds")
+        except Exception:
+            cycle_window_started_at = ""
+    if not cycle_window_started_at:
+        cycle_window_started_at = (
+            current_signals["machine_on"]["changed_at"]
+            if current_signals["machine_on"]["active"]
+            else None
+        ) or pending_cycle.get("cutting_started_at") or pending_cycle["table_change_started_at"]
+    pending_cycle["cycle_window_started_at"] = cycle_window_started_at
     save_machine_runtime(machine_key, runtime.get("last_snapshot"), pending_cycle)
 
 
@@ -4350,6 +4370,19 @@ def finalize_pending_cycle(machine_key: str, current_snapshot: dict) -> None:
     )
 
     cutting_started_at_raw = pending_cycle.get("cutting_started_at")
+    cycle_window_started_at_raw = str(pending_cycle.get("cycle_window_started_at") or "").strip()
+    if cycle_window_started_at_raw:
+        try:
+            cycle_window_started_at = parse_timestamp(cycle_window_started_at_raw)
+            if cycle_window_started_at > table_change_ended_at:
+                cycle_window_started_at_raw = ""
+        except Exception:
+            cycle_window_started_at_raw = ""
+    cycle_window_start_raw = (
+        cycle_window_started_at_raw
+        or cutting_started_at_raw
+        or pending_cycle.get("table_change_started_at")
+    )
     cycle_duration_seconds = None
     if cutting_started_at_raw:
         cycle_duration_seconds = max(
@@ -4358,7 +4391,7 @@ def finalize_pending_cycle(machine_key: str, current_snapshot: dict) -> None:
         )
     cycle_metrics = calculate_saved_cycle_metrics(
         machine_key=machine_key,
-        cutting_started_at=cutting_started_at_raw,
+        cutting_started_at=cycle_window_start_raw,
         table_change_started_at=pending_cycle.get("table_change_started_at"),
         table_change_ended_at=table_change_ended_at.isoformat(timespec="seconds"),
         fallback_cutting_seconds=cycle_duration_seconds,
@@ -4426,11 +4459,11 @@ def finalize_pending_cycle(machine_key: str, current_snapshot: dict) -> None:
                     pending_cycle.get("lower_tool"),
                     pending_cycle.get("setup_signature"),
                     1 if pending_cycle.get("setup_changed") else 0,
-                    pending_cycle.get("cutting_started_at"),
+                    cycle_window_start_raw,
                     pending_cycle.get("table_change_started_at"),
                     table_change_ended_at.isoformat(timespec="seconds"),
                     table_change_duration_seconds,
-                    cycle_duration_seconds,
+                    cycle_metrics["cutting_duration_seconds"],
                     cycle_metrics["machine_on_duration_seconds"],
                     cycle_metrics["idle_duration_seconds"],
                     cycle_metrics["efficiency_percent"],

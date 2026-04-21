@@ -829,6 +829,11 @@ body.dark-mode .saved-operator-period span {
     gap: 10px;
 }
 
+.saved-machine-period-list--modbus {
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 12px;
+}
+
 .saved-machine-period-item {
     border-top: 1px solid rgba(128, 0, 0, 0.1);
     padding-top: 10px;
@@ -840,6 +845,113 @@ body.dark-mode .saved-machine-period-item {
 
 .saved-machine-period-item span,
 .saved-machine-period-item small {
+    display: block;
+}
+
+.saved-machine-period-card {
+    width: 100%;
+    text-align: left;
+    font: inherit;
+    background: transparent;
+    color: inherit;
+    border: 1px solid rgba(128, 0, 0, 0.2);
+    border-left: 3px solid rgba(128, 0, 0, 0.65);
+    border-radius: 10px;
+    padding: 12px;
+    cursor: pointer;
+    transition: border-color 0.2s ease, background-color 0.2s ease, transform 0.2s ease;
+}
+
+.saved-machine-period-card:hover {
+    transform: translateY(-1px);
+}
+
+.saved-machine-period-card.is-active {
+    background: rgba(128, 0, 0, 0.06);
+    border-color: rgba(128, 0, 0, 0.45);
+}
+
+.saved-machine-period-card small {
+    display: block;
+}
+
+.saved-machine-period-card-top {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: flex-start;
+}
+
+.saved-machine-period-card-top span {
+    font-size: 17px;
+    font-weight: 700;
+}
+
+.saved-machine-period-card-top strong {
+    margin: 0 !important;
+    font-size: 25px;
+}
+
+.saved-machine-period-detail {
+    margin-top: 16px;
+    border-top: 1px solid rgba(128, 0, 0, 0.15);
+    padding-top: 14px;
+}
+
+.saved-machine-period-detail-head p {
+    margin-bottom: 14px !important;
+}
+
+.saved-machine-detail-grid {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 12px;
+    margin-bottom: 14px;
+}
+
+.saved-machine-detail-grid span {
+    display: block;
+    margin-bottom: 6px;
+    color: #7a5a5a;
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.saved-machine-detail-grid strong {
+    margin: 0 !important;
+    font-size: 20px;
+}
+
+.saved-machine-operator-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 12px;
+}
+
+.saved-machine-operator-card {
+    border: 1px solid rgba(128, 0, 0, 0.18);
+    border-radius: 10px;
+    padding: 12px;
+}
+
+.saved-machine-operator-card strong {
+    margin-bottom: 4px !important;
+    font-size: 19px;
+}
+
+.saved-machine-operator-metrics {
+    margin-top: 8px;
+    display: grid;
+    gap: 4px;
+}
+
+.saved-machine-operator-metrics span {
+    color: #7a5a5a;
+    font-size: 13px;
+}
+
+.saved-machine-operator-card small {
     display: block;
 }
 
@@ -856,6 +968,29 @@ body.dark-mode .saved-machine-period-item {
 
 body.dark-mode .saved-report-metrics span {
     color: #cfcfcf;
+}
+
+body.dark-mode .saved-machine-period-card {
+    border-color: #555;
+    border-left-color: #80dfff;
+}
+
+body.dark-mode .saved-machine-period-card.is-active {
+    background: rgba(128, 223, 255, 0.1);
+    border-color: rgba(128, 223, 255, 0.5);
+}
+
+body.dark-mode .saved-machine-period-detail {
+    border-top-color: #555;
+}
+
+body.dark-mode .saved-machine-detail-grid span,
+body.dark-mode .saved-machine-operator-metrics span {
+    color: #cfcfcf;
+}
+
+body.dark-mode .saved-machine-operator-card {
+    border-color: #555;
 }
 
 .saved-record-list {
@@ -979,7 +1114,8 @@ body.dark-mode .saved-record-grid span {
     .saved-summary-grid,
     .saved-report-grid,
     .saved-machine-report-grid,
-    .saved-record-grid {
+    .saved-record-grid,
+    .saved-machine-detail-grid {
         grid-template-columns: 1fr;
     }
 }

@@ -32,7 +32,8 @@ const state = {
     savedAbortController: null,
     renderedFeedsSignature: "",
     liveExtractionLayoutKey: "",
-    feedRefreshTimers: []
+    feedRefreshTimers: [],
+    savedModbusExpandedProgram: ""
 };
 
 const savedPeriodReportLabelMap = {
@@ -2044,37 +2045,188 @@ function renderSavedModbusReports(payload, periodMeta) {
 
     const byProgram = new Map();
     records.forEach((record) => {
-        const key = record.selected_program || "Necitit";
-        const item = byProgram.get(key) || { program: key, efficiencies: [] };
-        item.efficiencies.push(Number(record.efficiency_percent || 0));
-        byProgram.set(key, item);
+        const programKey = String(record.selected_program || "Necitit").trim() || "Necitit";
+        const machineOnSeconds = Number(record.machine_on_duration_seconds || parseDurationLabel(record.machine_on_duration_label || "00:00:00"));
+        const cuttingSeconds = Number(record.cycle_duration_seconds || parseDurationLabel(record.cycle_duration_label || "00:00:00"));
+        const tableChangeSeconds = Number(record.table_change_duration_seconds || parseDurationLabel(record.table_change_duration_label || "00:00:00"));
+        const idleSeconds = Number(record.idle_duration_seconds || parseDurationLabel(record.idle_duration_label || "00:00:00"));
+        const material = String(record.material || "Necitit").trim() || "Necitit";
+        const efficiency = Number(record.efficiency_percent || 0);
+
+        const item = byProgram.get(programKey) || {
+            program: programKey,
+            materials: new Set(),
+            efficiencies: [],
+            recordsCount: 0,
+            machineOnSeconds: 0,
+            cuttingSeconds: 0,
+            tableChangeSeconds: 0,
+            idleSeconds: 0,
+            latestCompletedAtRaw: "",
+            latestCompletedAtMs: 0,
+            operators: new Map()
+        };
+
+        item.materials.add(material);
+        item.efficiencies.push(efficiency);
+        item.recordsCount += 1;
+        item.machineOnSeconds += machineOnSeconds;
+        item.cuttingSeconds += cuttingSeconds;
+        item.tableChangeSeconds += tableChangeSeconds;
+        item.idleSeconds += idleSeconds;
+
+        const completedAtRaw = record.table_change_ended_at || record.created_at || "";
+        const completedAtMs = completedAtRaw ? new Date(completedAtRaw).getTime() : 0;
+        if (completedAtMs >= item.latestCompletedAtMs) {
+            item.latestCompletedAtMs = completedAtMs;
+            item.latestCompletedAtRaw = completedAtRaw;
+        }
+
+        const operatorName = String(record.operator_name || "Fara operator la salvare").trim() || "Fara operator la salvare";
+        const employeeId = String(record.operator_id || "").trim();
+        const operatorKey = employeeId || `name:${operatorName}`;
+        const operatorItem = item.operators.get(operatorKey) || {
+            key: operatorKey,
+            operator_name: operatorName,
+            employee_id: employeeId,
+            records_count: 0,
+            machine_on_seconds: 0,
+            cutting_seconds: 0,
+            table_change_seconds: 0,
+            idle_seconds: 0,
+            efficiencies: []
+        };
+        operatorItem.records_count += 1;
+        operatorItem.machine_on_seconds += machineOnSeconds;
+        operatorItem.cutting_seconds += cuttingSeconds;
+        operatorItem.table_change_seconds += tableChangeSeconds;
+        operatorItem.idle_seconds += idleSeconds;
+        operatorItem.efficiencies.push(efficiency);
+        item.operators.set(operatorKey, operatorItem);
+
+        byProgram.set(programKey, item);
     });
 
     const programRows = Array.from(byProgram.values())
-        .map((item) => ({
-            program: item.program,
-            average: item.efficiencies.length
-                ? roundToOneDecimal(item.efficiencies.reduce((sum, value) => sum + value, 0) / item.efficiencies.length)
-                : 0,
-            count: item.efficiencies.length
-        }))
-        .sort((left, right) => right.average - left.average);
+        .map((item) => {
+            const operators = Array.from(item.operators.values())
+                .map((operatorItem) => ({
+                    ...operatorItem,
+                    average_efficiency: operatorItem.efficiencies.length
+                        ? roundToOneDecimal(operatorItem.efficiencies.reduce((sum, value) => sum + value, 0) / operatorItem.efficiencies.length)
+                        : 0
+                }))
+                .sort((left, right) => right.records_count - left.records_count || right.average_efficiency - left.average_efficiency);
+
+            return {
+                program: item.program,
+                materialLabel: item.materials.size === 1 ? Array.from(item.materials)[0] : "Material mixt",
+                average: item.efficiencies.length
+                    ? roundToOneDecimal(item.efficiencies.reduce((sum, value) => sum + value, 0) / item.efficiencies.length)
+                    : 0,
+                count: item.recordsCount,
+                machineOnSeconds: item.machineOnSeconds,
+                cuttingSeconds: item.cuttingSeconds,
+                tableChangeSeconds: item.tableChangeSeconds,
+                idleSeconds: item.idleSeconds,
+                latestCompletedAtRaw: item.latestCompletedAtRaw,
+                operators
+            };
+        })
+        .sort((left, right) => right.count - left.count || right.average - left.average);
+
+    if (!programRows.length) {
+        machineReports.innerHTML = `<p class="empty-state">${periodMeta.emptyRecords}</p>`;
+        return;
+    }
+
+    const selectedProgram = programRows.some((row) => row.program === state.savedModbusExpandedProgram)
+        ? state.savedModbusExpandedProgram
+        : programRows[0].program;
+    state.savedModbusExpandedProgram = selectedProgram;
+    const selectedRow = programRows.find((row) => row.program === selectedProgram) || programRows[0];
 
     machineReports.innerHTML = `
         <article class="saved-machine-report-card">
-            <small>Randament pe program</small>
+            <small>Randament pe program / material</small>
             <strong>${payload.machine_label || "LASER1MODBUS"}</strong>
-            <div class="saved-machine-period-list">
+            <div class="saved-machine-period-list saved-machine-period-list--modbus">
                 ${programRows.map((row) => `
-                    <div class="saved-machine-period-item">
-                        <span>${row.program}</span>
-                        <strong>${row.average}%</strong>
+                    <button
+                        type="button"
+                        class="saved-machine-period-card js-saved-modbus-program ${row.program === selectedProgram ? "is-active" : ""}"
+                        data-program="${encodeURIComponent(row.program)}"
+                    >
+                        <div class="saved-machine-period-card-top">
+                            <span>${row.program}</span>
+                            <strong>${row.average}%</strong>
+                        </div>
+                        <small>${row.materialLabel}</small>
                         <small>${row.count} cicluri</small>
-                    </div>
+                    </button>
                 `).join("")}
+            </div>
+            <div class="saved-machine-period-detail">
+                <div class="saved-machine-period-detail-head">
+                    <small>Detaliu selectie</small>
+                    <strong>${selectedRow.program}</strong>
+                    <p>Material: ${selectedRow.materialLabel}. Ultima salvare: ${selectedRow.latestCompletedAtRaw ? formatDateTime(selectedRow.latestCompletedAtRaw) : "necunoscuta"}.</p>
+                </div>
+                <div class="saved-machine-detail-grid">
+                    <div>
+                        <span>Cicluri</span>
+                        <strong>${selectedRow.count}</strong>
+                    </div>
+                    <div>
+                        <span>Timp activ pe program</span>
+                        <strong>${formatSeconds(selectedRow.machineOnSeconds)}</strong>
+                    </div>
+                    <div>
+                        <span>Cutting</span>
+                        <strong>${formatSeconds(selectedRow.cuttingSeconds)}</strong>
+                    </div>
+                    <div>
+                        <span>Table change</span>
+                        <strong>${formatSeconds(selectedRow.tableChangeSeconds)}</strong>
+                    </div>
+                    <div>
+                        <span>Idle</span>
+                        <strong>${formatSeconds(selectedRow.idleSeconds)}</strong>
+                    </div>
+                </div>
+                <div class="saved-machine-operator-list">
+                    ${selectedRow.operators.map((operatorItem) => `
+                        <article class="saved-machine-operator-card">
+                            <div>
+                                <small>Operator</small>
+                                <strong>${operatorItem.operator_name}</strong>
+                                <small>${operatorItem.employee_id ? `ID ${operatorItem.employee_id}` : "ID indisponibil"}</small>
+                            </div>
+                            <div class="saved-machine-operator-metrics">
+                                <span>${operatorItem.records_count} cicluri</span>
+                                <span>Randament mediu ${operatorItem.average_efficiency}%</span>
+                                <span>Timp activ ${formatSeconds(operatorItem.machine_on_seconds)}</span>
+                                <span>Cutting ${formatSeconds(operatorItem.cutting_seconds)}</span>
+                                <span>Table change ${formatSeconds(operatorItem.table_change_seconds)}</span>
+                                <span>Idle ${formatSeconds(operatorItem.idle_seconds)}</span>
+                            </div>
+                        </article>
+                    `).join("")}
+                </div>
             </div>
         </article>
     `;
+
+    machineReports.querySelectorAll(".js-saved-modbus-program").forEach((button) => {
+        button.addEventListener("click", () => {
+            const nextProgram = button.dataset.program ? decodeURIComponent(button.dataset.program) : "";
+            if (!nextProgram || nextProgram === state.savedModbusExpandedProgram) {
+                return;
+            }
+            state.savedModbusExpandedProgram = nextProgram;
+            renderSavedModbusReports(payload, periodMeta);
+        });
+    });
 }
 
 function renderSavedModbusRecords(payload, periodMeta) {

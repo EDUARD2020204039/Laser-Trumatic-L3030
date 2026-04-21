@@ -33,7 +33,7 @@ const state = {
     renderedFeedsSignature: "",
     liveExtractionLayoutKey: "",
     feedRefreshTimers: [],
-    savedModbusExpandedProgram: ""
+    savedModbusMaterial: window.localStorage.getItem("savedModbusMaterial") || ""
 };
 
 const savedPeriodReportLabelMap = {
@@ -2043,19 +2043,25 @@ function renderSavedModbusReports(payload, periodMeta) {
         </article>
     `;
 
-    const byProgram = new Map();
+    const normalizeMaterial = (value) => {
+        const material = String(value || "").trim();
+        return material || "Necitit";
+    };
+
+    const byMaterial = new Map();
     records.forEach((record) => {
+        const material = normalizeMaterial(record.material);
         const programKey = String(record.selected_program || "Necitit").trim() || "Necitit";
         const machineOnSeconds = Number(record.machine_on_duration_seconds || parseDurationLabel(record.machine_on_duration_label || "00:00:00"));
         const cuttingSeconds = Number(record.cycle_duration_seconds || parseDurationLabel(record.cycle_duration_label || "00:00:00"));
         const tableChangeSeconds = Number(record.table_change_duration_seconds || parseDurationLabel(record.table_change_duration_label || "00:00:00"));
         const idleSeconds = Number(record.idle_duration_seconds || parseDurationLabel(record.idle_duration_label || "00:00:00"));
-        const material = String(record.material || "Necitit").trim() || "Necitit";
         const efficiency = Number(record.efficiency_percent || 0);
+        const completedAtRaw = record.table_change_ended_at || record.created_at || "";
+        const completedAtMs = completedAtRaw ? new Date(completedAtRaw).getTime() : 0;
 
-        const item = byProgram.get(programKey) || {
-            program: programKey,
-            materials: new Set(),
+        const item = byMaterial.get(material) || {
+            material,
             efficiencies: [],
             recordsCount: 0,
             machineOnSeconds: 0,
@@ -2064,19 +2070,17 @@ function renderSavedModbusReports(payload, periodMeta) {
             idleSeconds: 0,
             latestCompletedAtRaw: "",
             latestCompletedAtMs: 0,
-            operators: new Map()
+            operators: new Map(),
+            programs: new Map(),
+            history: []
         };
 
-        item.materials.add(material);
         item.efficiencies.push(efficiency);
         item.recordsCount += 1;
         item.machineOnSeconds += machineOnSeconds;
         item.cuttingSeconds += cuttingSeconds;
         item.tableChangeSeconds += tableChangeSeconds;
         item.idleSeconds += idleSeconds;
-
-        const completedAtRaw = record.table_change_ended_at || record.created_at || "";
-        const completedAtMs = completedAtRaw ? new Date(completedAtRaw).getTime() : 0;
         if (completedAtMs >= item.latestCompletedAtMs) {
             item.latestCompletedAtMs = completedAtMs;
             item.latestCompletedAtRaw = completedAtRaw;
@@ -2104,10 +2108,32 @@ function renderSavedModbusReports(payload, periodMeta) {
         operatorItem.efficiencies.push(efficiency);
         item.operators.set(operatorKey, operatorItem);
 
-        byProgram.set(programKey, item);
+        const programItem = item.programs.get(programKey) || {
+            program: programKey,
+            records_count: 0,
+            efficiencies: []
+        };
+        programItem.records_count += 1;
+        programItem.efficiencies.push(efficiency);
+        item.programs.set(programKey, programItem);
+
+        item.history.push({
+            program: programKey,
+            operator_name: operatorName,
+            employee_id: employeeId,
+            completed_at_raw: completedAtRaw,
+            completed_at_ms: completedAtMs,
+            machine_on_seconds: machineOnSeconds,
+            cutting_seconds: cuttingSeconds,
+            table_change_seconds: tableChangeSeconds,
+            idle_seconds: idleSeconds,
+            efficiency
+        });
+
+        byMaterial.set(material, item);
     });
 
-    const programRows = Array.from(byProgram.values())
+    const materialRows = Array.from(byMaterial.values())
         .map((item) => {
             const operators = Array.from(item.operators.values())
                 .map((operatorItem) => ({
@@ -2118,9 +2144,21 @@ function renderSavedModbusReports(payload, periodMeta) {
                 }))
                 .sort((left, right) => right.records_count - left.records_count || right.average_efficiency - left.average_efficiency);
 
+            const programs = Array.from(item.programs.values())
+                .map((programItem) => ({
+                    ...programItem,
+                    average_efficiency: programItem.efficiencies.length
+                        ? roundToOneDecimal(programItem.efficiencies.reduce((sum, value) => sum + value, 0) / programItem.efficiencies.length)
+                        : 0
+                }))
+                .sort((left, right) => right.records_count - left.records_count || right.average_efficiency - left.average_efficiency);
+
+            const history = [...item.history]
+                .sort((left, right) => right.completed_at_ms - left.completed_at_ms)
+                .slice(0, 12);
+
             return {
-                program: item.program,
-                materialLabel: item.materials.size === 1 ? Array.from(item.materials)[0] : "Material mixt",
+                material: item.material,
                 average: item.efficiencies.length
                     ? roundToOneDecimal(item.efficiencies.reduce((sum, value) => sum + value, 0) / item.efficiencies.length)
                     : 0,
@@ -2130,47 +2168,86 @@ function renderSavedModbusReports(payload, periodMeta) {
                 tableChangeSeconds: item.tableChangeSeconds,
                 idleSeconds: item.idleSeconds,
                 latestCompletedAtRaw: item.latestCompletedAtRaw,
-                operators
+                operators,
+                programs,
+                history
             };
         })
         .sort((left, right) => right.count - left.count || right.average - left.average);
 
-    if (!programRows.length) {
+    if (!materialRows.length) {
         machineReports.innerHTML = `<p class="empty-state">${periodMeta.emptyRecords}</p>`;
         return;
     }
 
-    const selectedProgram = programRows.some((row) => row.program === state.savedModbusExpandedProgram)
-        ? state.savedModbusExpandedProgram
-        : programRows[0].program;
-    state.savedModbusExpandedProgram = selectedProgram;
-    const selectedRow = programRows.find((row) => row.program === selectedProgram) || programRows[0];
+    let selectedMaterial = normalizeMaterial(state.savedModbusMaterial);
+    if (!materialRows.some((row) => row.material === selectedMaterial)) {
+        selectedMaterial = materialRows[0].material;
+    }
+    state.savedModbusMaterial = selectedMaterial;
+    window.localStorage.setItem("savedModbusMaterial", selectedMaterial);
+
+    const selectedRow = materialRows.find((row) => row.material === selectedMaterial) || materialRows[0];
+    const materialOptions = materialRows.map((row) => row.material);
+    const materialChips = materialRows.slice(0, 12);
 
     machineReports.innerHTML = `
         <article class="saved-machine-report-card">
-            <small>Randament pe program / material</small>
+            <small>Filtru material</small>
             <strong>${payload.machine_label || "LASER1MODBUS"}</strong>
-            <div class="saved-machine-period-list saved-machine-period-list--modbus">
-                ${programRows.map((row) => `
+            <div class="saved-modbus-material-filter">
+                <label class="form-label field-label" for="saved-modbus-material-input">Material</label>
+                <div class="saved-modbus-material-controls">
+                    <select id="saved-modbus-material-select" class="form-select form-select-sm">
+                        ${materialOptions.map((material) => `
+                            <option value="${material}" ${material === selectedMaterial ? "selected" : ""}>${material}</option>
+                        `).join("")}
+                    </select>
+                    <input
+                        id="saved-modbus-material-input"
+                        class="form-control"
+                        list="saved-modbus-material-options"
+                        value="${selectedMaterial}"
+                        placeholder="Scrie materialul (ex: 1.4301-10)"
+                    >
+                    <datalist id="saved-modbus-material-options">
+                        ${materialOptions.map((material) => `<option value="${material}"></option>`).join("")}
+                    </datalist>
                     <button
                         type="button"
-                        class="saved-machine-period-card js-saved-modbus-program ${row.program === selectedProgram ? "is-active" : ""}"
-                        data-program="${encodeURIComponent(row.program)}"
+                        class="btn action-btn secondary-btn js-saved-modbus-material-apply"
                     >
-                        <div class="saved-machine-period-card-top">
-                            <span>${row.program}</span>
-                            <strong>${row.average}%</strong>
-                        </div>
-                        <small>${row.materialLabel}</small>
-                        <small>${row.count} cicluri</small>
+                        Afiseaza
                     </button>
-                `).join("")}
+                    <button
+                        type="button"
+                        class="btn action-btn secondary-btn js-saved-modbus-material-reset"
+                    >
+                        Reset
+                    </button>
+                </div>
+                <div class="saved-modbus-material-chip-list">
+                    ${materialChips.map((row) => `
+                        <button
+                            type="button"
+                            class="saved-machine-period-card saved-machine-period-chip js-saved-modbus-material-chip ${row.material === selectedMaterial ? "is-active" : ""}"
+                            data-material="${encodeURIComponent(row.material)}"
+                        >
+                            <div class="saved-machine-period-card-top">
+                                <span>${row.material}</span>
+                                <strong>${row.average}%</strong>
+                            </div>
+                            <small>${row.count} cicluri</small>
+                        </button>
+                    `).join("")}
+                </div>
+                <small>${materialRows.length} materiale detectate in perioada selectata.</small>
             </div>
             <div class="saved-machine-period-detail">
                 <div class="saved-machine-period-detail-head">
-                    <small>Detaliu selectie</small>
-                    <strong>${selectedRow.program}</strong>
-                    <p>Material: ${selectedRow.materialLabel}. Ultima salvare: ${selectedRow.latestCompletedAtRaw ? formatDateTime(selectedRow.latestCompletedAtRaw) : "necunoscuta"}.</p>
+                    <small>Material selectat</small>
+                    <strong>${selectedRow.material}</strong>
+                    <p>Ultima salvare: ${selectedRow.latestCompletedAtRaw ? formatDateTime(selectedRow.latestCompletedAtRaw) : "necunoscuta"}.</p>
                 </div>
                 <div class="saved-machine-detail-grid">
                     <div>
@@ -2178,12 +2255,12 @@ function renderSavedModbusReports(payload, periodMeta) {
                         <strong>${selectedRow.count}</strong>
                     </div>
                     <div>
-                        <span>Timp activ pe program</span>
-                        <strong>${formatSeconds(selectedRow.machineOnSeconds)}</strong>
+                        <span>Randament mediu</span>
+                        <strong>${selectedRow.average}%</strong>
                     </div>
                     <div>
-                        <span>Cutting</span>
-                        <strong>${formatSeconds(selectedRow.cuttingSeconds)}</strong>
+                        <span>Timp activ pe program</span>
+                        <strong>${formatSeconds(selectedRow.machineOnSeconds)}</strong>
                     </div>
                     <div>
                         <span>Table change</span>
@@ -2213,17 +2290,110 @@ function renderSavedModbusReports(payload, periodMeta) {
                         </article>
                     `).join("")}
                 </div>
+                <div class="saved-modbus-program-list">
+                    ${selectedRow.programs.slice(0, 10).map((programItem) => `
+                        <article class="saved-modbus-program-item">
+                            <div>
+                                <small>Program</small>
+                                <strong>${programItem.program}</strong>
+                            </div>
+                            <div class="saved-modbus-program-meta">
+                                <span>${programItem.records_count} cicluri</span>
+                                <span>Medie ${programItem.average_efficiency}%</span>
+                            </div>
+                        </article>
+                    `).join("")}
+                </div>
+                <div class="saved-modbus-material-history">
+                    ${selectedRow.history.map((historyItem) => `
+                        <article class="saved-modbus-history-item">
+                            <div class="saved-modbus-history-top">
+                                <div>
+                                    <strong>${historyItem.program}</strong>
+                                    <small>${historyItem.operator_name}${historyItem.employee_id ? ` (ID ${historyItem.employee_id})` : ""}</small>
+                                </div>
+                                <div class="saved-modbus-history-meta">
+                                    <small>${historyItem.completed_at_raw ? formatDateTime(historyItem.completed_at_raw) : "Necunoscut"}</small>
+                                    <strong>${roundToOneDecimal(historyItem.efficiency)}%</strong>
+                                </div>
+                            </div>
+                            <div class="saved-modbus-history-grid">
+                                <span>Activ ${formatSeconds(historyItem.machine_on_seconds)}</span>
+                                <span>Cutting ${formatSeconds(historyItem.cutting_seconds)}</span>
+                                <span>Table ${formatSeconds(historyItem.table_change_seconds)}</span>
+                                <span>Idle ${formatSeconds(historyItem.idle_seconds)}</span>
+                            </div>
+                        </article>
+                    `).join("")}
+                </div>
             </div>
         </article>
     `;
 
-    machineReports.querySelectorAll(".js-saved-modbus-program").forEach((button) => {
-        button.addEventListener("click", () => {
-            const nextProgram = button.dataset.program ? decodeURIComponent(button.dataset.program) : "";
-            if (!nextProgram || nextProgram === state.savedModbusExpandedProgram) {
+    const materialInput = machineReports.querySelector("#saved-modbus-material-input");
+    const materialSelect = machineReports.querySelector("#saved-modbus-material-select");
+    const applyButton = machineReports.querySelector(".js-saved-modbus-material-apply");
+    const resetButton = machineReports.querySelector(".js-saved-modbus-material-reset");
+
+    const applyMaterialSelection = (rawValue) => {
+        const typedValue = String(rawValue || "").trim();
+        if (!typedValue) {
+            return;
+        }
+        const exactMatch = materialRows.find((row) => row.material.toLowerCase() === typedValue.toLowerCase());
+        const partialMatch = exactMatch || materialRows.find((row) => row.material.toLowerCase().includes(typedValue.toLowerCase()));
+        if (!partialMatch) {
+            return;
+        }
+        state.savedModbusMaterial = partialMatch.material;
+        window.localStorage.setItem("savedModbusMaterial", partialMatch.material);
+        renderSavedModbusReports(payload, periodMeta);
+    };
+
+    if (materialSelect && materialInput) {
+        materialSelect.addEventListener("change", () => {
+            materialInput.value = materialSelect.value;
+        });
+    }
+
+    if (applyButton && materialInput && materialSelect) {
+        applyButton.addEventListener("click", () => {
+            const candidate = String(materialInput.value || "").trim() || String(materialSelect.value || "").trim();
+            applyMaterialSelection(candidate);
+        });
+    }
+
+    if (materialInput) {
+        materialInput.addEventListener("keydown", (event) => {
+            if (event.key !== "Enter") {
                 return;
             }
-            state.savedModbusExpandedProgram = nextProgram;
+            event.preventDefault();
+            applyMaterialSelection(materialInput.value);
+        });
+    }
+
+    if (resetButton) {
+        resetButton.addEventListener("click", () => {
+            const firstMaterial = materialRows[0]?.material || "";
+            state.savedModbusMaterial = firstMaterial;
+            if (firstMaterial) {
+                window.localStorage.setItem("savedModbusMaterial", firstMaterial);
+            } else {
+                window.localStorage.removeItem("savedModbusMaterial");
+            }
+            renderSavedModbusReports(payload, periodMeta);
+        });
+    }
+
+    machineReports.querySelectorAll(".js-saved-modbus-material-chip").forEach((button) => {
+        button.addEventListener("click", () => {
+            const nextMaterial = button.dataset.material ? decodeURIComponent(button.dataset.material) : "";
+            if (!nextMaterial || nextMaterial === state.savedModbusMaterial) {
+                return;
+            }
+            state.savedModbusMaterial = nextMaterial;
+            window.localStorage.setItem("savedModbusMaterial", nextMaterial);
             renderSavedModbusReports(payload, periodMeta);
         });
     });

@@ -834,6 +834,24 @@ body.dark-mode .saved-operator-period span {
     gap: 12px;
 }
 
+.saved-modbus-material-filter {
+    margin: 8px 0 14px;
+}
+
+.saved-modbus-material-controls {
+    display: grid;
+    grid-template-columns: minmax(180px, 260px) minmax(200px, 1fr) auto auto;
+    gap: 10px;
+    align-items: center;
+    margin-bottom: 10px;
+}
+
+.saved-modbus-material-chip-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 10px;
+}
+
 .saved-machine-period-item {
     border-top: 1px solid rgba(128, 0, 0, 0.1);
     padding-top: 10px;
@@ -860,6 +878,10 @@ body.dark-mode .saved-machine-period-item {
     padding: 12px;
     cursor: pointer;
     transition: border-color 0.2s ease, background-color 0.2s ease, transform 0.2s ease;
+}
+
+.saved-machine-period-chip {
+    padding: 10px;
 }
 
 .saved-machine-period-card:hover {
@@ -955,6 +977,73 @@ body.dark-mode .saved-machine-period-item {
     display: block;
 }
 
+.saved-modbus-program-list {
+    margin-top: 12px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 10px;
+}
+
+.saved-modbus-program-item {
+    border: 1px solid rgba(128, 0, 0, 0.18);
+    border-radius: 10px;
+    padding: 10px 12px;
+}
+
+.saved-modbus-program-item strong {
+    margin-bottom: 2px !important;
+    font-size: 18px;
+}
+
+.saved-modbus-program-meta {
+    display: grid;
+    gap: 3px;
+}
+
+.saved-modbus-program-meta span {
+    color: #7a5a5a;
+    font-size: 13px;
+}
+
+.saved-modbus-material-history {
+    margin-top: 12px;
+    display: grid;
+    gap: 10px;
+}
+
+.saved-modbus-history-item {
+    border: 1px solid rgba(128, 0, 0, 0.15);
+    border-radius: 10px;
+    padding: 10px 12px;
+}
+
+.saved-modbus-history-top {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.saved-modbus-history-top strong {
+    margin-bottom: 2px !important;
+    font-size: 18px;
+}
+
+.saved-modbus-history-meta {
+    text-align: right;
+}
+
+.saved-modbus-history-grid {
+    margin-top: 8px;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.saved-modbus-history-grid span {
+    color: #7a5a5a;
+    font-size: 13px;
+}
+
 .saved-report-metrics {
     display: flex;
     flex-direction: column;
@@ -991,6 +1080,16 @@ body.dark-mode .saved-machine-operator-metrics span {
 
 body.dark-mode .saved-machine-operator-card {
     border-color: #555;
+}
+
+body.dark-mode .saved-modbus-program-item,
+body.dark-mode .saved-modbus-history-item {
+    border-color: #555;
+}
+
+body.dark-mode .saved-modbus-program-meta span,
+body.dark-mode .saved-modbus-history-grid span {
+    color: #cfcfcf;
 }
 
 .saved-record-list {
@@ -1115,7 +1214,9 @@ body.dark-mode .saved-record-grid span {
     .saved-report-grid,
     .saved-machine-report-grid,
     .saved-record-grid,
-    .saved-machine-detail-grid {
+    .saved-machine-detail-grid,
+    .saved-modbus-material-controls,
+    .saved-modbus-history-grid {
         grid-template-columns: 1fr;
     }
 }

@@ -692,6 +692,17 @@ body.dark-mode .timeline-item {
     margin: 0 0 24px;
 }
 
+#saved-section.is-modbus-layout #saved-reports,
+#saved-section.is-modbus-layout #saved-machine-reports {
+    grid-template-columns: 1fr;
+}
+
+#saved-section.is-modbus-layout #saved-reports .saved-report-card,
+#saved-section.is-modbus-layout #saved-machine-reports .saved-machine-report-card {
+    width: 100%;
+    padding: 18px;
+}
+
 .saved-filter-row {
     display: flex;
     flex-wrap: wrap;

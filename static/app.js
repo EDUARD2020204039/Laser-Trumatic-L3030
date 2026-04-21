@@ -870,6 +870,7 @@ function renderSavedView(payload) {
     const periodMeta = getSavedPeriodMeta(currentPeriod);
     const filteredRecords = getFilteredSavedRecords(payload);
     syncSectionVisibility("saved");
+    document.getElementById("saved-section").classList.remove("is-modbus-layout");
     renderSavedHeader(payload, periodMeta);
     renderMachineSelector(state.dashboard?.machines || window.appConfig.initialMachines || []);
     renderSavedSummary(payload, periodMeta);
@@ -884,6 +885,7 @@ function renderSavedModbusView(payload) {
     const currentPeriod = payload.period || state.savedModbusPeriod;
     const periodMeta = getSavedModbusPeriodMeta(currentPeriod, payload);
     syncSectionVisibility("saved_modbus");
+    document.getElementById("saved-section").classList.add("is-modbus-layout");
     renderSavedModbusHeader(periodMeta, payload);
     renderMachineSelector(state.dashboard?.machines || window.appConfig.initialMachines || []);
     renderSavedFilters(currentPeriod, { includeAll: false });
@@ -2047,10 +2049,12 @@ function renderSavedModbusReports(payload, periodMeta) {
         const material = String(value || "").trim();
         return material || "Necitit";
     };
+    const canonicalizeMaterial = (value) => normalizeMaterial(value).toUpperCase();
 
     const byMaterial = new Map();
     records.forEach((record) => {
-        const material = normalizeMaterial(record.material);
+        const materialRaw = normalizeMaterial(record.material);
+        const materialKey = canonicalizeMaterial(materialRaw);
         const programKey = String(record.selected_program || "Necitit").trim() || "Necitit";
         const machineOnSeconds = Number(record.machine_on_duration_seconds || parseDurationLabel(record.machine_on_duration_label || "00:00:00"));
         const cuttingSeconds = Number(record.cycle_duration_seconds || parseDurationLabel(record.cycle_duration_label || "00:00:00"));
@@ -2060,8 +2064,9 @@ function renderSavedModbusReports(payload, periodMeta) {
         const completedAtRaw = record.table_change_ended_at || record.created_at || "";
         const completedAtMs = completedAtRaw ? new Date(completedAtRaw).getTime() : 0;
 
-        const item = byMaterial.get(material) || {
-            material,
+        const item = byMaterial.get(materialKey) || {
+            material_key: materialKey,
+            material_display: materialKey,
             efficiencies: [],
             recordsCount: 0,
             machineOnSeconds: 0,
@@ -2130,7 +2135,14 @@ function renderSavedModbusReports(payload, periodMeta) {
             efficiency
         });
 
-        byMaterial.set(material, item);
+        if (
+            item.material_display === "NECITIT"
+            && materialRaw.toLowerCase() !== "necitit"
+        ) {
+            item.material_display = materialRaw;
+        }
+
+        byMaterial.set(materialKey, item);
     });
 
     const materialRows = Array.from(byMaterial.values())
@@ -2158,7 +2170,8 @@ function renderSavedModbusReports(payload, periodMeta) {
                 .slice(0, 12);
 
             return {
-                material: item.material,
+                material: item.material_display,
+                material_key: item.material_key,
                 average: item.efficiencies.length
                     ? roundToOneDecimal(item.efficiencies.reduce((sum, value) => sum + value, 0) / item.efficiencies.length)
                     : 0,
@@ -2181,13 +2194,14 @@ function renderSavedModbusReports(payload, periodMeta) {
     }
 
     let selectedMaterial = normalizeMaterial(state.savedModbusMaterial);
-    if (!materialRows.some((row) => row.material === selectedMaterial)) {
+    let selectedMaterialKey = canonicalizeMaterial(selectedMaterial);
+    if (!materialRows.some((row) => row.material_key === selectedMaterialKey)) {
         selectedMaterial = materialRows[0].material;
+        selectedMaterialKey = materialRows[0].material_key;
     }
-    state.savedModbusMaterial = selectedMaterial;
-    window.localStorage.setItem("savedModbusMaterial", selectedMaterial);
-
-    const selectedRow = materialRows.find((row) => row.material === selectedMaterial) || materialRows[0];
+    const selectedRow = materialRows.find((row) => row.material_key === selectedMaterialKey) || materialRows[0];
+    state.savedModbusMaterial = selectedRow.material;
+    window.localStorage.setItem("savedModbusMaterial", selectedRow.material);
     const materialOptions = materialRows.map((row) => row.material);
     const materialChips = materialRows.slice(0, 12);
 
@@ -2200,14 +2214,14 @@ function renderSavedModbusReports(payload, periodMeta) {
                 <div class="saved-modbus-material-controls">
                     <select id="saved-modbus-material-select" class="form-select form-select-sm">
                         ${materialOptions.map((material) => `
-                            <option value="${material}" ${material === selectedMaterial ? "selected" : ""}>${material}</option>
+                            <option value="${material}" ${canonicalizeMaterial(material) === selectedRow.material_key ? "selected" : ""}>${material}</option>
                         `).join("")}
                     </select>
                     <input
                         id="saved-modbus-material-input"
                         class="form-control"
                         list="saved-modbus-material-options"
-                        value="${selectedMaterial}"
+                        value="${selectedRow.material}"
                         placeholder="Scrie materialul (ex: 1.4301-10)"
                     >
                     <datalist id="saved-modbus-material-options">
@@ -2230,7 +2244,7 @@ function renderSavedModbusReports(payload, periodMeta) {
                     ${materialChips.map((row) => `
                         <button
                             type="button"
-                            class="saved-machine-period-card saved-machine-period-chip js-saved-modbus-material-chip ${row.material === selectedMaterial ? "is-active" : ""}"
+                            class="saved-machine-period-card saved-machine-period-chip js-saved-modbus-material-chip ${row.material_key === selectedRow.material_key ? "is-active" : ""}"
                             data-material="${encodeURIComponent(row.material)}"
                         >
                             <div class="saved-machine-period-card-top">
@@ -2340,8 +2354,9 @@ function renderSavedModbusReports(payload, periodMeta) {
         if (!typedValue) {
             return;
         }
-        const exactMatch = materialRows.find((row) => row.material.toLowerCase() === typedValue.toLowerCase());
-        const partialMatch = exactMatch || materialRows.find((row) => row.material.toLowerCase().includes(typedValue.toLowerCase()));
+        const normalizedTyped = typedValue.toLowerCase();
+        const exactMatch = materialRows.find((row) => row.material.toLowerCase() === normalizedTyped || row.material_key.toLowerCase() === normalizedTyped);
+        const partialMatch = exactMatch || materialRows.find((row) => row.material.toLowerCase().includes(normalizedTyped) || row.material_key.toLowerCase().includes(normalizedTyped));
         if (!partialMatch) {
             return;
         }
@@ -2389,7 +2404,7 @@ function renderSavedModbusReports(payload, periodMeta) {
     machineReports.querySelectorAll(".js-saved-modbus-material-chip").forEach((button) => {
         button.addEventListener("click", () => {
             const nextMaterial = button.dataset.material ? decodeURIComponent(button.dataset.material) : "";
-            if (!nextMaterial || nextMaterial === state.savedModbusMaterial) {
+            if (!nextMaterial || canonicalizeMaterial(nextMaterial) === canonicalizeMaterial(state.savedModbusMaterial)) {
                 return;
             }
             state.savedModbusMaterial = nextMaterial;

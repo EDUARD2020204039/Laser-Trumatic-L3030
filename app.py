@@ -4198,7 +4198,12 @@ def resolve_snapshot_context(snapshot: dict | None) -> dict[str, str]:
     }
 
 
-def context_requires_stats_reset(previous_snapshot: dict | None, current_snapshot: dict | None) -> bool:
+def context_requires_stats_reset(
+    machine_key: str,
+    previous_snapshot: dict | None,
+    current_snapshot: dict | None,
+) -> bool:
+    machine_key = ensure_machine_key(machine_key)
     previous_context = resolve_snapshot_context(previous_snapshot)
     current_context = resolve_snapshot_context(current_snapshot)
     if not (current_context["program"] or current_context["material"] or current_context["setup_signature"]):
@@ -4206,6 +4211,8 @@ def context_requires_stats_reset(previous_snapshot: dict | None, current_snapsho
     previous_signals = (previous_snapshot or {}).get("derived_signals") or {}
     current_signals = (current_snapshot or {}).get("derived_signals") or {}
     machine_restarted = not bool(previous_signals.get("machine_on")) and bool(current_signals.get("machine_on"))
+    if machine_key in {"laser1", "laser1modbus"}:
+        return previous_context["program"] != current_context["program"] or machine_restarted
     return previous_context != current_context or machine_restarted
 
 
@@ -5044,7 +5051,7 @@ def sync_machine_events_from_live_snapshot(machine_key: str) -> dict | None:
     if machine_key == "abkant":
         snapshot = enrich_abkant_snapshot_with_setup_state(snapshot, previous_snapshot, current_signals)
     current_context = resolve_snapshot_context(snapshot)
-    if snapshot.get("available") and context_requires_stats_reset(previous_snapshot, snapshot):
+    if snapshot.get("available") and context_requires_stats_reset(machine_key, previous_snapshot, snapshot):
         stats_anchor = {
             "started_at": now_local().isoformat(timespec="seconds"),
             "context": current_context,

@@ -33,7 +33,8 @@ const state = {
     renderedFeedsSignature: "",
     liveExtractionLayoutKey: "",
     feedRefreshTimers: [],
-    savedModbusMaterial: window.localStorage.getItem("savedModbusMaterial") || ""
+    savedModbusMaterial: window.localStorage.getItem("savedModbusMaterial") || "",
+    savedModbusMaterialOperatorId: window.localStorage.getItem("savedModbusMaterialOperatorId") || ""
 };
 
 const savedPeriodReportLabelMap = {
@@ -330,6 +331,7 @@ function bindActions() {
 
                 state.currentView = "saved";
                 window.localStorage.setItem("currentView", state.currentView);
+                prepareSavedViewLoadingState();
                 await loadSavedRecords();
                 return;
             }
@@ -342,6 +344,7 @@ function bindActions() {
 
                 state.currentView = "saved_modbus";
                 window.localStorage.setItem("currentView", state.currentView);
+                prepareSavedModbusViewLoadingState();
                 await loadSavedModbusRecords();
                 return;
             }
@@ -2166,8 +2169,7 @@ function renderSavedModbusReports(payload, periodMeta) {
                 .sort((left, right) => right.records_count - left.records_count || right.average_efficiency - left.average_efficiency);
 
             const history = [...item.history]
-                .sort((left, right) => right.completed_at_ms - left.completed_at_ms)
-                .slice(0, 12);
+                .sort((left, right) => right.completed_at_ms - left.completed_at_ms);
 
             return {
                 material: item.material_display,
@@ -2204,6 +2206,83 @@ function renderSavedModbusReports(payload, periodMeta) {
     window.localStorage.setItem("savedModbusMaterial", selectedRow.material);
     const materialOptions = materialRows.map((row) => row.material);
     const materialChips = materialRows.slice(0, 12);
+    const resolveOperatorKey = (record) => {
+        const employeeId = String(record.employee_id || record.operator_id || "").trim();
+        const operatorName = String(record.operator_name || "Fara operator la salvare").trim() || "Fara operator la salvare";
+        return employeeId || `name:${operatorName}`;
+    };
+    const materialOperators = selectedRow.operators || [];
+    const requestedOperatorId = String(payload.selected_operator_id || "").trim();
+    let selectedMaterialOperatorId = requestedOperatorId || String(state.savedModbusMaterialOperatorId || "").trim();
+    if (
+        selectedMaterialOperatorId
+        && !materialOperators.some((operatorItem) => operatorItem.key === selectedMaterialOperatorId)
+    ) {
+        selectedMaterialOperatorId = "";
+    }
+    if (!selectedMaterialOperatorId && materialOperators.length) {
+        selectedMaterialOperatorId = materialOperators[0].key;
+    }
+    state.savedModbusMaterialOperatorId = selectedMaterialOperatorId;
+    if (selectedMaterialOperatorId) {
+        window.localStorage.setItem("savedModbusMaterialOperatorId", selectedMaterialOperatorId);
+    } else {
+        window.localStorage.removeItem("savedModbusMaterialOperatorId");
+    }
+
+    const selectedOperatorItem = materialOperators.find((operatorItem) => operatorItem.key === selectedMaterialOperatorId) || null;
+    const visibleOperators = selectedOperatorItem ? [selectedOperatorItem] : materialOperators;
+    const visibleHistoryAll = selectedOperatorItem
+        ? selectedRow.history.filter((historyItem) => resolveOperatorKey(historyItem) === selectedOperatorItem.key)
+        : selectedRow.history;
+    const visibleHistory = visibleHistoryAll.slice(0, 12);
+    const visiblePrograms = (() => {
+        if (!selectedOperatorItem) {
+            return selectedRow.programs.slice(0, 10);
+        }
+        const byProgram = new Map();
+        visibleHistoryAll.forEach((historyItem) => {
+            const program = String(historyItem.program || "Necitit").trim() || "Necitit";
+            const existing = byProgram.get(program) || {
+                program,
+                records_count: 0,
+                efficiencies: []
+            };
+            existing.records_count += 1;
+            existing.efficiencies.push(Number(historyItem.efficiency || 0));
+            byProgram.set(program, existing);
+        });
+        return Array.from(byProgram.values())
+            .map((programItem) => ({
+                ...programItem,
+                average_efficiency: programItem.efficiencies.length
+                    ? roundToOneDecimal(programItem.efficiencies.reduce((sum, value) => sum + value, 0) / programItem.efficiencies.length)
+                    : 0
+            }))
+            .sort((left, right) => right.records_count - left.records_count || right.average_efficiency - left.average_efficiency)
+            .slice(0, 10);
+    })();
+    const detailStats = selectedOperatorItem
+        ? {
+            count: selectedOperatorItem.records_count,
+            average: selectedOperatorItem.average_efficiency,
+            machineOnSeconds: selectedOperatorItem.machine_on_seconds,
+            cuttingSeconds: selectedOperatorItem.cutting_seconds,
+            tableChangeSeconds: selectedOperatorItem.table_change_seconds,
+            idleSeconds: selectedOperatorItem.idle_seconds
+        }
+        : {
+            count: selectedRow.count,
+            average: selectedRow.average,
+            machineOnSeconds: selectedRow.machineOnSeconds,
+            cuttingSeconds: selectedRow.cuttingSeconds,
+            tableChangeSeconds: selectedRow.tableChangeSeconds,
+            idleSeconds: selectedRow.idleSeconds
+        };
+    const selectedOperatorLabel = selectedOperatorItem
+        ? `${selectedOperatorItem.operator_name}${selectedOperatorItem.employee_id ? ` (ID ${selectedOperatorItem.employee_id})` : ""}`
+        : "Fara operator";
+    const latestCompletedAtRaw = visibleHistoryAll[0]?.completed_at_raw || selectedRow.latestCompletedAtRaw;
 
     machineReports.innerHTML = `
         <article class="saved-machine-report-card">
@@ -2224,6 +2303,15 @@ function renderSavedModbusReports(payload, periodMeta) {
                         value="${selectedRow.material}"
                         placeholder="Scrie materialul (ex: 1.4301-10)"
                     >
+                    <select id="saved-modbus-material-operator-select" class="form-select form-select-sm" aria-label="Filtru operator material">
+                        ${materialOperators.length
+        ? materialOperators.map((operatorItem) => `
+                            <option value="${operatorItem.key}" ${operatorItem.key === selectedMaterialOperatorId ? "selected" : ""}>
+                                ${operatorItem.operator_name}${operatorItem.employee_id ? ` (ID ${operatorItem.employee_id})` : ""}
+                            </option>
+                        `).join("")
+        : `<option value="">Fara operator disponibil</option>`}
+                    </select>
                     <datalist id="saved-modbus-material-options">
                         ${materialOptions.map((material) => `<option value="${material}"></option>`).join("")}
                     </datalist>
@@ -2261,32 +2349,37 @@ function renderSavedModbusReports(payload, periodMeta) {
                 <div class="saved-machine-period-detail-head">
                     <small>Material selectat</small>
                     <strong>${selectedRow.material}</strong>
-                    <p>Ultima salvare: ${selectedRow.latestCompletedAtRaw ? formatDateTime(selectedRow.latestCompletedAtRaw) : "necunoscuta"}.</p>
+                    <small>Operator selectat: ${selectedOperatorLabel}</small>
+                    <p>Ultima salvare: ${latestCompletedAtRaw ? formatDateTime(latestCompletedAtRaw) : "necunoscuta"}.</p>
                 </div>
                 <div class="saved-machine-detail-grid">
                     <div>
                         <span>Cicluri</span>
-                        <strong>${selectedRow.count}</strong>
+                        <strong>${detailStats.count}</strong>
                     </div>
                     <div>
                         <span>Randament mediu</span>
-                        <strong>${selectedRow.average}%</strong>
+                        <strong>${detailStats.average}%</strong>
                     </div>
                     <div>
                         <span>Timp activ pe program</span>
-                        <strong>${formatSeconds(selectedRow.machineOnSeconds)}</strong>
+                        <strong>${formatSeconds(detailStats.machineOnSeconds)}</strong>
+                    </div>
+                    <div>
+                        <span>Cutting</span>
+                        <strong>${formatSeconds(detailStats.cuttingSeconds)}</strong>
                     </div>
                     <div>
                         <span>Table change</span>
-                        <strong>${formatSeconds(selectedRow.tableChangeSeconds)}</strong>
+                        <strong>${formatSeconds(detailStats.tableChangeSeconds)}</strong>
                     </div>
                     <div>
                         <span>Idle</span>
-                        <strong>${formatSeconds(selectedRow.idleSeconds)}</strong>
+                        <strong>${formatSeconds(detailStats.idleSeconds)}</strong>
                     </div>
                 </div>
                 <div class="saved-machine-operator-list">
-                    ${selectedRow.operators.map((operatorItem) => `
+                    ${visibleOperators.map((operatorItem) => `
                         <article class="saved-machine-operator-card">
                             <div>
                                 <small>Operator</small>
@@ -2305,7 +2398,7 @@ function renderSavedModbusReports(payload, periodMeta) {
                     `).join("")}
                 </div>
                 <div class="saved-modbus-program-list">
-                    ${selectedRow.programs.slice(0, 10).map((programItem) => `
+                    ${visiblePrograms.map((programItem) => `
                         <article class="saved-modbus-program-item">
                             <div>
                                 <small>Program</small>
@@ -2319,7 +2412,7 @@ function renderSavedModbusReports(payload, periodMeta) {
                     `).join("")}
                 </div>
                 <div class="saved-modbus-material-history">
-                    ${selectedRow.history.map((historyItem) => `
+                    ${visibleHistory.map((historyItem) => `
                         <article class="saved-modbus-history-item">
                             <div class="saved-modbus-history-top">
                                 <div>
@@ -2346,6 +2439,7 @@ function renderSavedModbusReports(payload, periodMeta) {
 
     const materialInput = machineReports.querySelector("#saved-modbus-material-input");
     const materialSelect = machineReports.querySelector("#saved-modbus-material-select");
+    const materialOperatorSelect = machineReports.querySelector("#saved-modbus-material-operator-select");
     const applyButton = machineReports.querySelector(".js-saved-modbus-material-apply");
     const resetButton = machineReports.querySelector(".js-saved-modbus-material-reset");
 
@@ -2368,6 +2462,18 @@ function renderSavedModbusReports(payload, periodMeta) {
     if (materialSelect && materialInput) {
         materialSelect.addEventListener("change", () => {
             materialInput.value = materialSelect.value;
+        });
+    }
+
+    if (materialOperatorSelect) {
+        materialOperatorSelect.addEventListener("change", () => {
+            state.savedModbusMaterialOperatorId = materialOperatorSelect.value || "";
+            if (state.savedModbusMaterialOperatorId) {
+                window.localStorage.setItem("savedModbusMaterialOperatorId", state.savedModbusMaterialOperatorId);
+            } else {
+                window.localStorage.removeItem("savedModbusMaterialOperatorId");
+            }
+            renderSavedModbusReports(payload, periodMeta);
         });
     }
 

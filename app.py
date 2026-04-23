@@ -3996,7 +3996,13 @@ def build_saved_modbus_payload(period: str = "day", operator_id: str | None = No
         records = fetch_saved_cycles_between(window_start, window_end, machine_key="laser1modbus")
     machine_label = MACHINE_DEFINITIONS.get("laser1modbus", {}).get("label", "LASER1MODBUS")
     machine_profile = get_machine_profile("laser1modbus")
-    operator_snapshot = fetch_current_operator(machine_profile.get("workcenter_id"))
+    cached_operator_snapshot = _operator_snapshot_cache.get(machine_profile.get("workcenter_id"))
+    operator_snapshot = (
+        cached_operator_snapshot.get("payload", {})
+        if cached_operator_snapshot
+        and (time_module.time() - float(cached_operator_snapshot.get("cached_at", 0))) < OPERATOR_CACHE_SECONDS
+        else {}
+    )
     operator_map: dict[str, dict] = {}
 
     for operator in operator_snapshot.get("operators", []):

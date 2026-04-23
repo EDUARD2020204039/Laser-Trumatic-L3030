@@ -851,7 +851,7 @@ body.dark-mode .saved-operator-period span {
 
 .saved-modbus-material-controls {
     display: grid;
-    grid-template-columns: minmax(180px, 260px) minmax(200px, 1fr) auto auto;
+    grid-template-columns: minmax(180px, 240px) minmax(200px, 1fr) minmax(200px, 260px) auto auto;
     gap: 10px;
     align-items: center;
     margin-bottom: 10px;
@@ -937,7 +937,7 @@ body.dark-mode .saved-machine-period-item {
 
 .saved-machine-detail-grid {
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
     gap: 12px;
     margin-bottom: 14px;
 }

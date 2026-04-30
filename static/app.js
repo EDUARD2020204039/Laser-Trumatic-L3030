@@ -26,15 +26,19 @@ const state = {
     lastStatsSyncMs: 0,
     dashboardRequestId: 0,
     savedRequestId: 0,
+    environmentRequestId: 0,
     dashboardFetchInFlight: false,
     savedFetchInFlight: false,
+    environmentFetchInFlight: false,
     dashboardAbortController: null,
     savedAbortController: null,
+    environmentAbortController: null,
     renderedFeedsSignature: "",
     liveExtractionLayoutKey: "",
     feedRefreshTimers: [],
     savedModbusMaterial: window.localStorage.getItem("savedModbusMaterial") || "",
-    savedModbusMaterialOperatorId: window.localStorage.getItem("savedModbusMaterialOperatorId") || ""
+    savedModbusMaterialOperatorId: window.localStorage.getItem("savedModbusMaterialOperatorId") || "",
+    environmentSnapshot: null
 };
 
 const savedPeriodReportLabelMap = {
@@ -200,6 +204,15 @@ function filterSavedReportsByPeriod(reports, period) {
 
 document.addEventListener("DOMContentLoaded", () => {
     initThemeToggle();
+    renderEnvironmentSnapshot({
+        connected: false,
+        status: "pending",
+        temperature_c: null,
+        humidity_percent: null,
+        message: "Se incearca conexiunea cu ESP32...",
+        updated_at: null
+    });
+    loadEnvironmentSnapshot();
 
     const savedMachineKey = window.localStorage.getItem("selectedMachineKey");
     if (savedMachineKey) {
@@ -243,6 +256,12 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         loadDashboard(state.selectedMachineKey);
     }, 3000);
+    window.setInterval(() => {
+        if (state.environmentFetchInFlight) {
+            return;
+        }
+        loadEnvironmentSnapshot();
+    }, 7000);
 });
 
 function initThemeToggle() {
@@ -537,6 +556,50 @@ async function loadDashboard(machineKey = state.selectedMachineKey) {
         if (requestId === state.dashboardRequestId) {
             state.dashboardFetchInFlight = false;
             state.dashboardAbortController = null;
+        }
+    }
+}
+
+async function loadEnvironmentSnapshot() {
+    const requestId = state.environmentRequestId + 1;
+    state.environmentRequestId = requestId;
+
+    if (state.environmentAbortController) {
+        state.environmentAbortController.abort();
+    }
+    state.environmentAbortController = new AbortController();
+    state.environmentFetchInFlight = true;
+
+    try {
+        const response = await fetch(window.appConfig.environmentUrl, {
+            signal: state.environmentAbortController.signal
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+            throw new Error(payload.message || "Nu am putut citi senzorul ESP32.");
+        }
+        if (requestId !== state.environmentRequestId) {
+            return;
+        }
+        state.environmentSnapshot = payload;
+        renderEnvironmentSnapshot(payload);
+    } catch (error) {
+        if (error.name === "AbortError") {
+            return;
+        }
+        console.error(error);
+        renderEnvironmentSnapshot({
+            connected: false,
+            status: "offline",
+            temperature_c: null,
+            humidity_percent: null,
+            message: error.message || "Conexiunea cu ESP32 a esuat.",
+            updated_at: new Date().toISOString()
+        });
+    } finally {
+        if (requestId === state.environmentRequestId) {
+            state.environmentFetchInFlight = false;
+            state.environmentAbortController = null;
         }
     }
 }
@@ -918,6 +981,47 @@ function renderSavedModbusHeader(periodMeta, payload = null) {
     document.getElementById("saved-period-hint").textContent = periodMeta.hint;
     document.getElementById("saved-records-label").textContent = periodMeta.countLabel;
     document.getElementById("saved-records-count").textContent = String(payload?.records_count || 0);
+}
+
+function renderEnvironmentSnapshot(snapshot) {
+    const badge = document.getElementById("environment-badge");
+    const temperature = document.getElementById("environment-temperature");
+    const humidity = document.getElementById("environment-humidity");
+    const updatedAt = document.getElementById("environment-updated-at");
+    const message = document.getElementById("environment-message");
+
+    if (!badge || !temperature || !humidity || !updatedAt || !message) {
+        return;
+    }
+
+    const status = String(snapshot?.status || "pending").toLowerCase();
+    const isOnline = Boolean(snapshot?.connected);
+    const hasTemperature = Number.isFinite(Number(snapshot?.temperature_c));
+    const hasHumidity = Number.isFinite(Number(snapshot?.humidity_percent));
+    const updatedLabel = snapshot?.updated_at ? formatDateTime(snapshot.updated_at) : "--:--:--";
+
+    if (isOnline) {
+        badge.textContent = "Online";
+        badge.className = "environment-badge is-online";
+    } else if (status === "pending") {
+        badge.textContent = "Se verifica";
+        badge.className = "environment-badge is-pending";
+    } else if (status === "not_configured") {
+        badge.textContent = "Neconfigurat";
+        badge.className = "environment-badge is-offline";
+    } else {
+        badge.textContent = "Offline";
+        badge.className = "environment-badge is-offline";
+    }
+
+    temperature.textContent = hasTemperature
+        ? `${Number(snapshot.temperature_c).toFixed(1)} C`
+        : "--.- C";
+    humidity.textContent = hasHumidity
+        ? `${Number(snapshot.humidity_percent).toFixed(1)} %`
+        : "--.- %";
+    updatedAt.textContent = updatedLabel;
+    message.textContent = snapshot?.message || "Se asteapta date de la ESP32.";
 }
 
 function renderMachineSelector(machines) {

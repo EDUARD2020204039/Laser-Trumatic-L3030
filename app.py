@@ -136,6 +136,12 @@ PROMETHEUS_QUERY_TIMEOUT_SECONDS = min(max(PROMETHEUS_QUERY_TIMEOUT_SECONDS, 0.5
 _background_sync_started = False
 RUNTIME_VALUE_UNCHANGED = object()
 PROMETHEUS_BASE_URL = (os.getenv("PROMETHEUS_BASE_URL", "http://localhost:9090") or "http://localhost:9090").rstrip("/")
+ESP32_DHT_URL = (os.getenv("ESP32_DHT_URL", "") or "").strip()
+try:
+    ESP32_DHT_TIMEOUT_SECONDS = float(os.getenv("ESP32_DHT_TIMEOUT_SECONDS", "2.5") or 2.5)
+except (TypeError, ValueError):
+    ESP32_DHT_TIMEOUT_SECONDS = 2.5
+ESP32_DHT_TIMEOUT_SECONDS = min(max(ESP32_DHT_TIMEOUT_SECONDS, 0.5), 15.0)
 UNKNOWN_OPERATOR_LABEL = "Fara operator la salvare"
 SAVED_CYCLE_INSERT_PLACEHOLDERS = ", ".join(["?"] * 23)
 _operator_snapshot_cache: dict[int, dict] = {}
@@ -864,6 +870,105 @@ def fetch_camera_feed_content(machine_key: str, timeout: float = 8.0) -> tuple[b
             return response.read(), "", response.headers.get("Content-Type")
     except Exception as exc:
         return None, f"{exc.__class__.__name__}: {exc}", None
+
+
+def fetch_esp32_environment_snapshot() -> dict:
+    timestamp = now_local().isoformat(timespec="seconds")
+    if not ESP32_DHT_URL:
+        return {
+            "success": True,
+            "connected": False,
+            "status": "not_configured",
+            "temperature_c": None,
+            "humidity_percent": None,
+            "message": "Seteaza ESP32_DHT_URL in .env pentru a citi senzorul DHT11.",
+            "source_url": "",
+            "updated_at": timestamp,
+        }
+
+    request_obj = urllib.request.Request(
+        ESP32_DHT_URL,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "HABA-Production-Monitor/1.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request_obj, timeout=ESP32_DHT_TIMEOUT_SECONDS) as response:
+            payload_raw = response.read().decode("utf-8", errors="replace")
+    except Exception as exc:
+        return {
+            "success": True,
+            "connected": False,
+            "status": "offline",
+            "temperature_c": None,
+            "humidity_percent": None,
+            "message": f"Nu ma pot conecta la ESP32: {exc.__class__.__name__}: {exc}",
+            "source_url": ESP32_DHT_URL,
+            "updated_at": timestamp,
+        }
+
+    try:
+        payload = json.loads(payload_raw)
+    except json.JSONDecodeError:
+        return {
+            "success": True,
+            "connected": False,
+            "status": "invalid_payload",
+            "temperature_c": None,
+            "humidity_percent": None,
+            "message": "ESP32 a raspuns, dar payload-ul nu este JSON valid.",
+            "source_url": ESP32_DHT_URL,
+            "updated_at": timestamp,
+        }
+
+    if not isinstance(payload, dict):
+        return {
+            "success": True,
+            "connected": False,
+            "status": "invalid_payload",
+            "temperature_c": None,
+            "humidity_percent": None,
+            "message": "ESP32 a raspuns, dar payload-ul nu este un obiect JSON.",
+            "source_url": ESP32_DHT_URL,
+            "updated_at": timestamp,
+        }
+
+    def coerce_float(value):
+        try:
+            return parse_optional_float(value)
+        except (TypeError, ValueError):
+            return None
+
+    temperature_c = coerce_float(payload.get("temperature_c"))
+    if temperature_c is None:
+        temperature_c = coerce_float(payload.get("temperature"))
+
+    humidity_percent = coerce_float(payload.get("humidity_percent"))
+    if humidity_percent is None:
+        humidity_percent = coerce_float(payload.get("humidity"))
+
+    status = str(payload.get("status", "")).strip().lower()
+    has_measurement = temperature_c is not None or humidity_percent is not None
+    is_connected = status in {"ok", "online", "ready", "success"} or has_measurement
+    message = str(payload.get("message") or "").strip()
+    if not message:
+        message = (
+            "Conexiune activa cu ESP32."
+            if is_connected
+            else "ESP32 a raspuns, dar nu a trimis inca valori valide de la DHT11."
+        )
+
+    return {
+        "success": True,
+        "connected": is_connected,
+        "status": status or ("ok" if is_connected else "unknown"),
+        "temperature_c": round(temperature_c, 1) if temperature_c is not None else None,
+        "humidity_percent": round(humidity_percent, 1) if humidity_percent is not None else None,
+        "message": message,
+        "source_url": ESP32_DHT_URL,
+        "updated_at": timestamp,
+    }
 
 
 def read_ocr_zone(image, zone: tuple[int, int, int, int], whitelist: str, psm: int = 7) -> str:
@@ -5501,6 +5606,11 @@ def dashboard():
     except ValueError as exc:
         return jsonify({"success": False, "message": str(exc)}), 400
     return jsonify(payload)
+
+
+@app.route("/api/environment")
+def environment_snapshot():
+    return jsonify(fetch_esp32_environment_snapshot())
 
 
 @app.route("/api/saved-records")

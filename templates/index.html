@@ -29,6 +29,29 @@
                         </p>
                     </div>
                 </div>
+                <div class="environment-strip" id="environment-strip">
+                    <div class="environment-headline">
+                        <p class="page-kicker">Senzor ambient ESP32</p>
+                        <span class="environment-badge is-pending" id="environment-badge">Se verifica</span>
+                    </div>
+                    <div class="environment-grid">
+                        <div class="environment-item">
+                            <span>Temperatura</span>
+                            <strong id="environment-temperature">--.- C</strong>
+                        </div>
+                        <div class="environment-item">
+                            <span>Umiditate</span>
+                            <strong id="environment-humidity">--.- %</strong>
+                        </div>
+                        <div class="environment-item">
+                            <span>Ultima citire</span>
+                            <strong id="environment-updated-at">--:--:--</strong>
+                        </div>
+                    </div>
+                    <p class="feedback-text compact" id="environment-message">
+                        Se asteapta prima citire de la ESP32.
+                    </p>
+                </div>
             </section>
 
             <section class="surface-section machine-section">
@@ -317,6 +340,7 @@
             dashboardUrl: "{{ url_for('dashboard') }}",
             eventsUrl: "{{ url_for('create_event') }}",
             operatorUrl: "{{ url_for('operator_status') }}",
+            environmentUrl: "{{ url_for('environment_snapshot') }}",
             savedRecordsUrl: "{{ url_for('saved_records') }}",
             savedModbusRecordsUrl: "{{ url_for('saved_records_modbus') }}",
             machinesUrl: "{{ url_for('machines_index') }}",

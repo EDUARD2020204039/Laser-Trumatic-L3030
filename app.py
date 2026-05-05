@@ -247,7 +247,7 @@ REAL_DATA_FEEDS = {
     "laser1": {
         "script_name": "laserFeed.py",
         "display_name": "laserFeed OCR bridge",
-        "endpoint": "https://laser.helpan.ro/",
+        "endpoint": "http://laserbvision-1:8081",
         "transport": "Redis + MQTT",
         "left_panel": [
             {"label": "OCR program", "value": "da"},
@@ -280,7 +280,7 @@ REAL_DATA_FEEDS = {
     "laser1modbus": {
         "script_name": "app.py",
         "display_name": "Laser1 Modbus bridge",
-        "endpoint": "https://laser.helpan.ro/",
+        "endpoint": "http://laserbvision-1:8081",
         "transport": "Modbus TCP/RTU + OCR din feed",
         "left_panel": [
             {"label": "OCR program", "value": "da"},

@@ -50,7 +50,7 @@ Aplicatia porneste implicit pe `http://localhost:3030`.
 - fara volum persistent montat, se pierd la update: timpii, randamentele, evenimentele si ciclurile salvate
 - `LASER_REAL_DATA_NAME` numele sursei reale care va trimite date spre dashboard
 - `LASER_REAL_DATA_ENDPOINT` endpointul sau descrierea sursei reale, pentru afisare in UI
-- `LASER1_REAL_DATA_ENDPOINT`, `LASER2_REAL_DATA_ENDPOINT`, `ABKANT_REAL_DATA_ENDPOINT` pentru endpoint separat pe fiecare utilaj
+- `LASER1_REAL_DATA_ENDPOINT`, `LASER1MODBUS_REAL_DATA_ENDPOINT`, `LASER2_REAL_DATA_ENDPOINT`, `ABKANT_REAL_DATA_ENDPOINT` pentru endpoint separat pe fiecare utilaj (pentru OCR la laser foloseste streamul dedicat, ex. `http://laserbvision-1:8081`)
 - `LASER1_CAMERA_FEED_URL`, `LASER2_CAMERA_FEED_URL`, `ABKANT_CAMERA_FEED_URL` pentru feedul video pe care vrei sa-l vezi in dashboard
 - `LASER1_CAMERA_FEED_MODE`, `LASER2_CAMERA_FEED_MODE`, `ABKANT_CAMERA_FEED_MODE` cu `image` sau `page`, daca feedul camerei trebuie afisat ca imagine sau ca pagina embed-uita
 - `LASER1_CAMERA_FEED_USERNAME`, `LASER2_CAMERA_FEED_USERNAME`, `ABKANT_CAMERA_FEED_USERNAME` daca feedul camerei cere autentificare
@@ -187,10 +187,12 @@ docker run -d \
   -p 3030:3030 \
   -e BACKGROUND_SYNC_ENABLED=1 \
   -e BACKGROUND_SYNC_INTERVAL_SECONDS=10 \
-  -e LASER1_REAL_DATA_ENDPOINT='https://laser.helpan.ro/' \
+  -e LASER1_REAL_DATA_ENDPOINT='http://laserbvision-1:8081' \
+  -e LASER1MODBUS_REAL_DATA_ENDPOINT='http://laserbvision-1:8081' \
   -e LASER2_REAL_DATA_ENDPOINT='' \
   -e ABKANT_REAL_DATA_ENDPOINT='https://abkant.helpan.ro/' \
-  -e LASER1_CAMERA_FEED_URL='https://laser.helpan.ro/' \
+  -e LASER1_CAMERA_FEED_URL='http://192.168.2.140/ISAPI/Streaming/channels/101/picture' \
+  -e LASER1MODBUS_CAMERA_FEED_URL='http://192.168.2.140/ISAPI/Streaming/channels/101/picture' \
   -e LASER2_CAMERA_FEED_URL='' \
   -e ABKANT_CAMERA_FEED_URL='https://abkant.helpan.ro/' \
   -e LASER1_CAMERA_FEED_MODE='image' \

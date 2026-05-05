@@ -10,7 +10,7 @@ const state = {
     savedRecords: null,
     savedModbusRecords: null,
     isSubmitting: false,
-    selectedMachineKey: window.appConfig.defaultMachineKey || "laser1",
+    selectedMachineKey: window.appConfig.defaultMachineKey || "laser1modbus",
     currentView: window.localStorage.getItem("currentView") || "dashboard",
     savedPeriod: window.localStorage.getItem("savedPeriod") || "all",
     savedModbusPeriod: window.localStorage.getItem("savedModbusPeriod") || "day",

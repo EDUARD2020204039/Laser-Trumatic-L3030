@@ -109,7 +109,8 @@ DEFAULT_ODBC_DRIVER = (
 )
 APP_TITLE = "HABA Production Monitor"
 DASHBOARD_TITLE = "Laser TruMatic L3030"
-DEFAULT_MACHINE_KEY = "laser1"
+DEFAULT_MACHINE_KEY = "laser1modbus"
+HIDDEN_MACHINE_KEYS = {"laser1"}
 MANUAL_SOURCE_PREFIX = "manual"
 OCR_AVAILABLE = cv2 is not None and np is not None and pytesseract is not None
 BACKGROUND_SYNC_ENABLED = os.getenv("BACKGROUND_SYNC_ENABLED", "1") != "0"
@@ -2404,7 +2405,11 @@ def get_machine_profiles() -> list[dict]:
             ORDER BY sort_order ASC, machine_key ASC
             """
         ).fetchall()
-    return [serialize_machine_profile(row) for row in rows]
+    return [
+        serialize_machine_profile(row)
+        for row in rows
+        if row["machine_key"] not in HIDDEN_MACHINE_KEYS
+    ]
 
 
 def get_machine_profile(machine_key: str) -> dict:
@@ -5525,6 +5530,8 @@ def snapshot_is_stale(snapshot: dict | None, max_age_seconds: int = SNAPSHOT_FRE
 
 def build_dashboard_payload(machine_key: str = DEFAULT_MACHINE_KEY) -> dict:
     machine_key = ensure_machine_key(machine_key)
+    if machine_key in HIDDEN_MACHINE_KEYS:
+        machine_key = DEFAULT_MACHINE_KEY
     machine_profile = get_machine_profile(machine_key)
     if BACKGROUND_SYNC_ENABLED:
         runtime = get_machine_runtime(machine_key)

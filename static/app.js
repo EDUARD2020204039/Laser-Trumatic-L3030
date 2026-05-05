@@ -919,6 +919,7 @@ function renderDashboard(payload) {
     renderHeader(payload);
     renderMachineSelector(payload.machines);
     renderMachineState(payload.machine, payload.current_state);
+    renderTableSheetStatus(payload.machine, payload.live_extraction);
     renderSignals(payload.current_signals);
     renderButtons(payload.current_signals);
     renderWorkcenter(payload.machine);
@@ -1128,6 +1129,20 @@ function renderTableSheetPresence(snapshot) {
         return "NU";
     }
     return "Necunoscut";
+}
+
+function renderTableSheetStatus(machine, snapshot) {
+    const node = document.getElementById("table-sheet-presence");
+    if (!node) {
+        return;
+    }
+
+    if (!machine || machine.key !== "laser1modbus") {
+        node.textContent = "";
+        return;
+    }
+
+    node.textContent = `Tabla pe masa de schimb: ${renderTableSheetPresence(snapshot)}`;
 }
 
 function collectModbusDraftFromDom() {

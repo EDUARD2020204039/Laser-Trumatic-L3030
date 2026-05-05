@@ -1120,6 +1120,16 @@ function renderModbusInputValue(modbusInputs, inputKey) {
     return `${input.active ? "1" : "0"} / ${input.signal || "unused"}`;
 }
 
+function renderTableSheetPresence(snapshot) {
+    if (snapshot?.table_sheet_on_change_table === true) {
+        return "DA";
+    }
+    if (snapshot?.table_sheet_on_change_table === false) {
+        return "NU";
+    }
+    return "Necunoscut";
+}
+
 function collectModbusDraftFromDom() {
     return {
         transport: document.getElementById("modbus-transport-input")?.value || "tcp",
@@ -1492,6 +1502,7 @@ function renderLiveExtraction(snapshot) {
             { slot: "active_program", label: "Active program", value: snapshot.active_program || "Necitit" },
             { slot: "material", label: "Material", value: snapshot.material || "Necitit" },
             { slot: "program_status", label: "Program status", value: snapshot.program_status || "Necitit" },
+            { slot: "table_sheet", label: "Tabla pe masa de schimb", value: renderTableSheetPresence(snapshot) },
             { slot: "in1", label: "IN1", value: renderModbusInputValue(snapshot.modbus_inputs, "in1") },
             { slot: "in2", label: "IN2", value: renderModbusInputValue(snapshot.modbus_inputs, "in2") },
             { slot: "in3", label: "IN3", value: renderModbusInputValue(snapshot.modbus_inputs, "in3") },

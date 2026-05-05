@@ -54,6 +54,16 @@ load_dotenv(BASE_DIR / ".env")
 DEFAULT_SQLITE_FILENAME = "laser_monitor.db"
 
 
+def read_env_float(name: str, fallback: float) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return fallback
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return fallback
+
+
 def get_static_asset_version(filename: str) -> str:
     asset_path = BASE_DIR / "static" / filename
     try:
@@ -113,6 +123,7 @@ DEFAULT_MACHINE_KEY = "laser1modbus"
 HIDDEN_MACHINE_KEYS = {"laser1"}
 MANUAL_SOURCE_PREFIX = "manual"
 OCR_AVAILABLE = cv2 is not None and np is not None and pytesseract is not None
+CV_IMAGE_AVAILABLE = cv2 is not None and np is not None
 BACKGROUND_SYNC_ENABLED = os.getenv("BACKGROUND_SYNC_ENABLED", "1") != "0"
 BACKGROUND_SYNC_INTERVAL_SECONDS = max(int(os.getenv("BACKGROUND_SYNC_INTERVAL_SECONDS", "3")), 1)
 REQUEST_LIVE_SYNC_ENABLED = os.getenv("REQUEST_LIVE_SYNC_ENABLED", "0") == "1"
@@ -134,6 +145,12 @@ try:
 except (TypeError, ValueError):
     PROMETHEUS_QUERY_TIMEOUT_SECONDS = 2.5
 PROMETHEUS_QUERY_TIMEOUT_SECONDS = min(max(PROMETHEUS_QUERY_TIMEOUT_SECONDS, 0.5), 30.0)
+TABLE_SHEET_ROI_X1_RATIO = min(max(read_env_float("TABLE_SHEET_ROI_X1_RATIO", 0.24), 0.0), 0.95)
+TABLE_SHEET_ROI_X2_RATIO = min(max(read_env_float("TABLE_SHEET_ROI_X2_RATIO", 0.64), 0.05), 1.0)
+TABLE_SHEET_ROI_Y1_RATIO = min(max(read_env_float("TABLE_SHEET_ROI_Y1_RATIO", 0.22), 0.0), 0.95)
+TABLE_SHEET_ROI_Y2_RATIO = min(max(read_env_float("TABLE_SHEET_ROI_Y2_RATIO", 0.92), 0.05), 1.0)
+TABLE_SHEET_EDGE_DENSITY_THRESHOLD = min(max(read_env_float("TABLE_SHEET_EDGE_DENSITY_THRESHOLD", 0.13), 0.02), 0.45)
+TABLE_SHEET_BRIGHTNESS_THRESHOLD = min(max(read_env_float("TABLE_SHEET_BRIGHTNESS_THRESHOLD", 90.0), 30.0), 220.0)
 _background_sync_started = False
 RUNTIME_VALUE_UNCHANGED = object()
 PROMETHEUS_BASE_URL = (os.getenv("PROMETHEUS_BASE_URL", "http://localhost:9090") or "http://localhost:9090").rstrip("/")
@@ -948,6 +965,80 @@ def fetch_camera_feed_content(machine_key: str, feed_key: str = "camera", timeou
             return response.read(), "", response.headers.get("Content-Type")
     except Exception as exc:
         return None, f"{exc.__class__.__name__}: {exc}", None
+
+
+def fetch_camera_feed_frame(machine_key: str, feed_key: str = "camera", timeout: float = 3.0):
+    if not CV_IMAGE_AVAILABLE:
+        return None, "Lipseste stack-ul OpenCV/Numpy necesar pentru analiza imaginii."
+
+    content, error_message, _ = fetch_camera_feed_content(machine_key, feed_key=feed_key, timeout=timeout)
+    if content is None:
+        return None, error_message or "Nu am putut citi camera."
+
+    image = cv2.imdecode(np.frombuffer(content, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if image is None:
+        return None, "Fluxul camerei a raspuns, dar cadrul nu a putut fi decodat."
+    return image, None
+
+
+def detect_sheet_on_change_table(machine_key: str) -> dict:
+    detection = {
+        "available": False,
+        "present": None,
+        "confidence": 0.0,
+        "message": "",
+        "feed_key": "camera_2",
+        "edge_density": None,
+        "mean_brightness": None,
+    }
+
+    image, error_message = fetch_camera_feed_frame(machine_key, feed_key="camera_2", timeout=2.5)
+    if image is None:
+        detection["message"] = error_message or "Nu am putut citi camera de masa."
+        return detection
+
+    height, width = image.shape[:2]
+    x1 = int(width * TABLE_SHEET_ROI_X1_RATIO)
+    x2 = int(width * TABLE_SHEET_ROI_X2_RATIO)
+    y1 = int(height * TABLE_SHEET_ROI_Y1_RATIO)
+    y2 = int(height * TABLE_SHEET_ROI_Y2_RATIO)
+    x1 = max(0, min(x1, width - 1))
+    x2 = max(x1 + 1, min(x2, width))
+    y1 = max(0, min(y1, height - 1))
+    y2 = max(y1 + 1, min(y2, height))
+
+    roi = image[y1:y2, x1:x2]
+    if roi.size == 0:
+        detection["message"] = "ROI invalida pentru detectia tablei."
+        return detection
+
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blurred, threshold1=60, threshold2=140)
+    edge_density = float(np.count_nonzero(edges)) / float(edges.size)
+    mean_brightness = float(np.mean(gray))
+
+    is_present = edge_density <= TABLE_SHEET_EDGE_DENSITY_THRESHOLD and mean_brightness >= TABLE_SHEET_BRIGHTNESS_THRESHOLD
+    edge_score = (TABLE_SHEET_EDGE_DENSITY_THRESHOLD - edge_density) / max(TABLE_SHEET_EDGE_DENSITY_THRESHOLD, 1e-6)
+    brightness_score = (mean_brightness - TABLE_SHEET_BRIGHTNESS_THRESHOLD) / max(255.0 - TABLE_SHEET_BRIGHTNESS_THRESHOLD, 1.0)
+    combined = 0.5 + (0.35 * edge_score) + (0.15 * brightness_score)
+    confidence = max(0.0, min(1.0, combined))
+
+    detection.update(
+        {
+            "available": True,
+            "present": bool(is_present),
+            "confidence": round(confidence, 2),
+            "edge_density": round(edge_density, 4),
+            "mean_brightness": round(mean_brightness, 1),
+            "message": (
+                "Tabla detectata pe masa de schimb."
+                if is_present
+                else "Nu detectez tabla pe masa de schimb."
+            ),
+        }
+    )
+    return detection
 
 
 def fetch_esp32_environment_snapshot() -> dict:
@@ -2846,6 +2937,7 @@ def analyze_laser_modbus_live_snapshot(machine_key: str) -> dict | None:
             or (derived_signals["machine_on"] and not derived_signals["table_change"])
         )
     )
+    table_sheet_detection = detect_sheet_on_change_table(machine_key)
 
     def resolve_previous_context_for_fallback() -> dict[str, str]:
         fallback_context = {"program": "", "material": ""}
@@ -2910,6 +3002,8 @@ def analyze_laser_modbus_live_snapshot(machine_key: str) -> dict | None:
                 "idle_abort": derived_signals["idle_abort"],
                 "idle": idle,
             },
+            "table_sheet_on_change_table": table_sheet_detection.get("present"),
+            "table_sheet_detection": table_sheet_detection,
             "message": (
                 f"Bitii Modbus sunt activi si continua sa fie cititi din {config['endpoint']}, "
                 f"dar feedul pentru program nu raspunde acum: {ocr_snapshot.get('message')}"
@@ -2917,6 +3011,11 @@ def analyze_laser_modbus_live_snapshot(machine_key: str) -> dict | None:
                     f" Afisez ultimul program valid ({fallback_program}) deoarece feedul nu raspunde."
                     if fallback_program
                     else ""
+                )
+                + (
+                    f" Tabla pe masa de schimb: {'DA' if table_sheet_detection.get('present') else 'NU'}."
+                    if table_sheet_detection.get("available")
+                    else f" Detectie tabla indisponibila: {table_sheet_detection.get('message')}."
                 )
             ),
         }
@@ -2954,6 +3053,10 @@ def analyze_laser_modbus_live_snapshot(machine_key: str) -> dict | None:
         message = f"{message} Feedul nu afiseaza program, afisez ultimul program valid: {fallback_program}."
     if fallback_material:
         message = f"{message} Feedul nu afiseaza material, pastrez ultimul material valid: {fallback_material}."
+    if table_sheet_detection.get("available"):
+        message = f"{message} Tabla pe masa de schimb: {'DA' if table_sheet_detection.get('present') else 'NU'}."
+    else:
+        message = f"{message} Detectie tabla indisponibila: {table_sheet_detection.get('message')}."
 
     return {
         **ocr_snapshot,
@@ -2979,6 +3082,8 @@ def analyze_laser_modbus_live_snapshot(machine_key: str) -> dict | None:
             "idle_abort": derived_signals["idle_abort"],
             "idle": idle,
         },
+        "table_sheet_on_change_table": table_sheet_detection.get("present"),
+        "table_sheet_detection": table_sheet_detection,
         "message": message,
     }
 

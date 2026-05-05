@@ -216,6 +216,16 @@ DEFAULT_MACHINE_CAMERA_FEEDS = {
         "username": "admin",
         "password": "HELPAN2011$",
         "auth": "digest",
+        "extra_feeds": [
+            {
+                "key": "camera_2",
+                "url": "http://192.168.2.10/ISAPI/Streaming/channels/101/picture",
+                "mode": "image",
+                "username": "admin",
+                "password": "HELPAN321$",
+                "auth": "digest",
+            }
+        ],
     },
     "laser2": {
         "url": "",
@@ -754,6 +764,63 @@ def resolve_machine_camera_feed_credentials(machine_key: str) -> tuple[str, str,
     return username, password, auth_type
 
 
+def resolve_machine_camera_feed_configs(machine_key: str) -> list[dict]:
+    machine_key = ensure_machine_key(machine_key)
+    primary_url = resolve_machine_camera_feed_url(machine_key)
+    primary_mode = resolve_machine_camera_feed_mode(machine_key)
+    primary_username, primary_password, primary_auth = resolve_machine_camera_feed_credentials(machine_key)
+
+    feeds = [
+        {
+            "key": "camera",
+            "url": primary_url,
+            "mode": primary_mode,
+            "username": primary_username,
+            "password": primary_password,
+            "auth": primary_auth,
+        }
+    ]
+
+    defaults = DEFAULT_MACHINE_CAMERA_FEEDS.get(machine_key, {})
+    extra_defaults = defaults.get("extra_feeds", [])
+    for index, default_feed in enumerate(extra_defaults, start=2):
+        key = (default_feed.get("key") or f"camera_{index}").strip()
+        if not key:
+            key = f"camera_{index}"
+        prefix = key.upper()
+        feed_url = get_machine_env_value(machine_key, f"{prefix}_URL") or (default_feed.get("url", "").strip())
+        feed_mode = (
+            get_machine_env_value(machine_key, f"{prefix}_MODE")
+            or (default_feed.get("mode", "image") or "image")
+        ).strip().lower()
+        if feed_mode not in {"image", "page"}:
+            feed_mode = "image"
+        feed_username = get_machine_env_value(machine_key, f"{prefix}_USERNAME") or (default_feed.get("username", "").strip())
+        feed_password = get_machine_env_value(machine_key, f"{prefix}_PASSWORD") or (default_feed.get("password", "").strip())
+        feed_auth = (get_machine_env_value(machine_key, f"{prefix}_AUTH") or default_feed.get("auth", "basic")).strip().lower()
+        if feed_auth not in {"basic", "digest"}:
+            feed_auth = "basic"
+        feeds.append(
+            {
+                "key": key,
+                "url": feed_url,
+                "mode": feed_mode,
+                "username": feed_username,
+                "password": feed_password,
+                "auth": feed_auth,
+            }
+        )
+    return feeds
+
+
+def resolve_machine_camera_feed_config(machine_key: str, feed_key: str = "camera") -> dict | None:
+    normalized_key = (feed_key or "camera").strip().lower().replace("-", "_")
+    for config in resolve_machine_camera_feed_configs(machine_key):
+        if config.get("key", "").strip().lower() == normalized_key:
+            return config
+    return None
+
+
 def resolve_machine_hmi_feed_url(machine_key: str) -> str:
     return get_machine_env_value(machine_key, "HMI_FEED_URL") or DEFAULT_MACHINE_HMI_URLS.get(machine_key, "")
 
@@ -763,40 +830,44 @@ def build_machine_feeds(machine_key: str) -> list[dict]:
     if machine_key == "laser2" and not machine_has_dedicated_live_source(machine_key):
         return []
 
-    camera_url = resolve_machine_camera_feed_url(machine_key)
-    camera_mode = resolve_machine_camera_feed_mode(machine_key)
-    camera_username, camera_password, _ = resolve_machine_camera_feed_credentials(machine_key)
     hmi_url = resolve_machine_hmi_feed_url(machine_key)
-    camera_refresh_ms = None
-    if machine_key in {"laser1", "laser1modbus"} and camera_mode == "image" and (
-        camera_url.strip().lower().endswith("/picture")
-        or (camera_username and camera_password)
-    ):
-        camera_refresh_ms = 1500
-    if camera_mode == "image" and should_proxy_camera_feed(machine_key, camera_url, camera_username, camera_password):
-        camera_url = f"/api/camera-feed/{machine_key}"
+    camera_configs = resolve_machine_camera_feed_configs(machine_key)
+    feeds = []
+    for config in camera_configs:
+        camera_key = config.get("key", "camera")
+        camera_url = config.get("url", "")
+        camera_mode = config.get("mode", "image")
+        camera_username = config.get("username", "")
+        camera_password = config.get("password", "")
+        camera_refresh_ms = None
+        if machine_key in {"laser1", "laser1modbus"} and camera_mode == "image" and (
+            camera_url.strip().lower().endswith("/picture")
+            or (camera_username and camera_password)
+        ):
+            camera_refresh_ms = 1500
 
-    if machine_key == "abkant":
-        return [
+        rendered_url = camera_url
+        if camera_mode == "image" and should_proxy_camera_feed(machine_key, camera_url, camera_username, camera_password):
+            if camera_key == "camera":
+                rendered_url = f"/api/camera-feed/{machine_key}"
+            else:
+                rendered_url = f"/api/camera-feed/{machine_key}/{camera_key}"
+
+        feeds.append(
             {
-                "key": "camera",
+                "key": camera_key,
                 "mode": camera_mode,
-                "url": camera_url,
+                "url": rendered_url,
                 "open_url": camera_url,
                 "display_url": urllib.parse.urlsplit(camera_url).netloc or camera_url,
-                "refresh_ms": None,
+                "refresh_ms": camera_refresh_ms,
             }
-        ]
+        )
 
-    feeds = [
-        {
-            "key": "camera",
-            "mode": camera_mode,
-            "url": camera_url,
-            "open_url": resolve_machine_camera_feed_url(machine_key),
-            "display_url": urllib.parse.urlsplit(resolve_machine_camera_feed_url(machine_key)).netloc or resolve_machine_camera_feed_url(machine_key),
-            "refresh_ms": camera_refresh_ms,
-        },
+    if machine_key == "abkant":
+        return feeds
+
+    feeds.append(
         {
             "key": "hmi",
             "mode": "page",
@@ -804,8 +875,8 @@ def build_machine_feeds(machine_key: str) -> list[dict]:
             "open_url": hmi_url,
             "display_url": urllib.parse.urlsplit(hmi_url).netloc or hmi_url,
             "refresh_ms": None,
-        },
-    ]
+        }
+    )
     return feeds
 
 
@@ -839,13 +910,19 @@ def fetch_mjpeg_frame(url: str, timeout: float = 2.0):
     return None, "Fluxul MJPEG nu a livrat niciun cadru valid."
 
 
-def fetch_camera_feed_content(machine_key: str, timeout: float = 8.0) -> tuple[bytes | None, str, str | None]:
-    camera_url = resolve_machine_camera_feed_url(machine_key)
+def fetch_camera_feed_content(machine_key: str, feed_key: str = "camera", timeout: float = 8.0) -> tuple[bytes | None, str, str | None]:
+    feed_config = resolve_machine_camera_feed_config(machine_key, feed_key)
+    if not feed_config:
+        return None, "Camera feed inexistent pentru utilajul selectat.", None
+
+    camera_url = (feed_config.get("url") or "").strip()
     if not camera_url:
         return None, "Camera feed URL nu este configurat.", None
 
     request_obj = urllib.request.Request(camera_url, headers={"User-Agent": "HABA-Production-Monitor/1.0"})
-    camera_username, camera_password, auth_type = resolve_machine_camera_feed_credentials(machine_key)
+    camera_username = (feed_config.get("username") or "").strip()
+    camera_password = (feed_config.get("password") or "").strip()
+    auth_type = (feed_config.get("auth") or "basic").strip().lower()
 
     try:
         if camera_username and camera_password:
@@ -5639,14 +5716,15 @@ def saved_records_modbus():
         return jsonify({"success": False, "message": str(exc)}), 400
 
 
-@app.route("/api/camera-feed/<machine_key>")
-def camera_feed(machine_key: str):
+@app.route("/api/camera-feed/<machine_key>", defaults={"feed_key": "camera"})
+@app.route("/api/camera-feed/<machine_key>/<feed_key>")
+def camera_feed(machine_key: str, feed_key: str):
     try:
         machine_key = ensure_machine_key(machine_key)
     except ValueError as exc:
         return jsonify({"success": False, "message": str(exc)}), 400
 
-    content, error_message, content_type = fetch_camera_feed_content(machine_key)
+    content, error_message, content_type = fetch_camera_feed_content(machine_key, feed_key=feed_key)
     if content is None:
         return jsonify({"success": False, "message": error_message or "Nu am putut citi camera."}), 502
 

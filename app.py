@@ -151,6 +151,7 @@ TABLE_SHEET_ROI_Y1_RATIO = min(max(read_env_float("TABLE_SHEET_ROI_Y1_RATIO", 0.
 TABLE_SHEET_ROI_Y2_RATIO = min(max(read_env_float("TABLE_SHEET_ROI_Y2_RATIO", 0.92), 0.05), 1.0)
 TABLE_SHEET_EDGE_DENSITY_THRESHOLD = min(max(read_env_float("TABLE_SHEET_EDGE_DENSITY_THRESHOLD", 0.13), 0.02), 0.45)
 TABLE_SHEET_BRIGHTNESS_THRESHOLD = min(max(read_env_float("TABLE_SHEET_BRIGHTNESS_THRESHOLD", 90.0), 30.0), 220.0)
+TABLE_SHEET_LAPLACIAN_VAR_THRESHOLD = min(max(read_env_float("TABLE_SHEET_LAPLACIAN_VAR_THRESHOLD", 1800.0), 200.0), 10000.0)
 _background_sync_started = False
 RUNTIME_VALUE_UNCHANGED = object()
 PROMETHEUS_BASE_URL = (os.getenv("PROMETHEUS_BASE_URL", "http://localhost:9090") or "http://localhost:9090").rstrip("/")
@@ -990,6 +991,7 @@ def detect_sheet_on_change_table(machine_key: str) -> dict:
         "feed_key": "camera_2",
         "edge_density": None,
         "mean_brightness": None,
+        "laplacian_var": None,
     }
 
     image, error_message = fetch_camera_feed_frame(machine_key, feed_key="camera_2", timeout=2.5)
@@ -1017,11 +1019,17 @@ def detect_sheet_on_change_table(machine_key: str) -> dict:
     edges = cv2.Canny(blurred, threshold1=60, threshold2=140)
     edge_density = float(np.count_nonzero(edges)) / float(edges.size)
     mean_brightness = float(np.mean(gray))
+    laplacian_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
 
-    is_present = edge_density <= TABLE_SHEET_EDGE_DENSITY_THRESHOLD and mean_brightness >= TABLE_SHEET_BRIGHTNESS_THRESHOLD
+    is_present = (
+        edge_density <= TABLE_SHEET_EDGE_DENSITY_THRESHOLD
+        and mean_brightness >= TABLE_SHEET_BRIGHTNESS_THRESHOLD
+        and laplacian_var <= TABLE_SHEET_LAPLACIAN_VAR_THRESHOLD
+    )
     edge_score = (TABLE_SHEET_EDGE_DENSITY_THRESHOLD - edge_density) / max(TABLE_SHEET_EDGE_DENSITY_THRESHOLD, 1e-6)
     brightness_score = (mean_brightness - TABLE_SHEET_BRIGHTNESS_THRESHOLD) / max(255.0 - TABLE_SHEET_BRIGHTNESS_THRESHOLD, 1.0)
-    combined = 0.5 + (0.35 * edge_score) + (0.15 * brightness_score)
+    texture_score = (TABLE_SHEET_LAPLACIAN_VAR_THRESHOLD - laplacian_var) / max(TABLE_SHEET_LAPLACIAN_VAR_THRESHOLD, 1.0)
+    combined = 0.5 + (0.3 * edge_score) + (0.2 * brightness_score) + (0.35 * texture_score)
     confidence = max(0.0, min(1.0, combined))
 
     detection.update(
@@ -1031,6 +1039,7 @@ def detect_sheet_on_change_table(machine_key: str) -> dict:
             "confidence": round(confidence, 2),
             "edge_density": round(edge_density, 4),
             "mean_brightness": round(mean_brightness, 1),
+            "laplacian_var": round(laplacian_var, 1),
             "message": (
                 "Tabla detectata pe masa de schimb."
                 if is_present

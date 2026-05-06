@@ -5656,7 +5656,10 @@ def build_dashboard_payload(machine_key: str = DEFAULT_MACHINE_KEY) -> dict:
             or snapshot_is_stale(live_extraction)
             or snapshot_differs_from_current_signals(live_extraction, current_signals)
         )
-        if needs_live_refresh and REQUEST_LIVE_SYNC_ENABLED:
+        # Pentru LASER1MODBUS fortam fallback-ul in request cand snapshotul lipseste/stale,
+        # ca sa nu depindem exclusiv de thread-ul de background (care poate lipsi in unele deployment-uri).
+        should_sync_in_request = REQUEST_LIVE_SYNC_ENABLED or machine_uses_modbus(machine_key)
+        if needs_live_refresh and should_sync_in_request:
             live_extraction = sync_machine_events_from_live_snapshot(machine_key)
             current_signals = fetch_current_signals(machine_key)
     else:

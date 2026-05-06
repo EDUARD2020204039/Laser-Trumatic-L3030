@@ -1132,17 +1132,19 @@ function renderTableSheetPresence(snapshot) {
 }
 
 function renderTableSheetStatus(machine, snapshot) {
-    const node = document.getElementById("table-sheet-presence");
-    if (!node) {
+    const line = document.getElementById("table-sheet-line");
+    const valueNode = document.getElementById("table-sheet-presence-value");
+    if (!line || !valueNode) {
         return;
     }
 
     if (!machine || machine.key !== "laser1modbus") {
-        node.textContent = "";
+        line.classList.add("is-hidden");
         return;
     }
 
-    node.textContent = `Tabla pe masa de schimb: ${renderTableSheetPresence(snapshot)}`;
+    line.classList.remove("is-hidden");
+    valueNode.textContent = renderTableSheetPresence(snapshot);
 }
 
 function collectModbusDraftFromDom() {

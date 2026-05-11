@@ -14,6 +14,9 @@ services:
       REQUEST_LIVE_SYNC_ENABLED: "0"
       SAVED_RECORDS_PROMETHEUS_ENABLED: "1"
       PROMETHEUS_BASE_URL: "http://192.168.2.23:9090"
+      LASER1_REAL_DATA_ENDPOINT: "http://192.168.2.242:8081/"
+      LASER1MODBUS_REAL_DATA_ENDPOINT: "http://192.168.2.242:8081/"
+      LASER1_HMI_FEED_URL: "http://192.168.2.242:8081/"
       # Lasa configurarea Modbus in dashboard (Host/IP, Unit ID, mapare IN1..IN4).
       # Daca endpoint-ul Modbus este chiar pe acest PC, foloseste 192.168.2.242:502.
     volumes:

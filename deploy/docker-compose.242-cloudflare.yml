@@ -1,0 +1,32 @@
+version: "3.9"
+
+services:
+  lasertrumaticl3030:
+    image: ghcr.io/unraidg5/lasertrumaticl3030:latest
+    container_name: lasertrumaticl3030
+    restart: unless-stopped
+    ports:
+      - "3030:3030"
+    environment:
+      LASER_DATA_DIR: /data
+      BACKGROUND_SYNC_ENABLED: "1"
+      BACKGROUND_SYNC_INTERVAL_SECONDS: "3"
+      REQUEST_LIVE_SYNC_ENABLED: "0"
+      SAVED_RECORDS_PROMETHEUS_ENABLED: "1"
+      PROMETHEUS_BASE_URL: "http://192.168.2.23:9090"
+      # Lasa configurarea Modbus in dashboard (Host/IP, Unit ID, mapare IN1..IN4).
+      # Daca endpoint-ul Modbus este chiar pe acest PC, foloseste 192.168.2.242:502.
+    volumes:
+      - lasertrumaticl3030_data:/data
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: lasertrumaticl3030_cloudflared
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - lasertrumaticl3030
+
+volumes:
+  lasertrumaticl3030_data:
+    name: lasertrumaticl3030_data

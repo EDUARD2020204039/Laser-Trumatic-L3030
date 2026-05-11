@@ -133,6 +133,53 @@ sudo journalctl -u modbus-rtu-tcp-bridge.service -f
 
 Pe Linux, portul serial va fi de obicei `/dev/ttyUSB0` sau `/dev/ttyUSB1`, nu `COM9`.
 
+## Mutare pe 192.168.2.242 + Cloudflare (recomandat)
+
+Daca vrei ca site-ul sa ruleze direct pe PC-ul `192.168.2.242`, foloseste stack-ul:
+
+- `deploy/docker-compose.242-cloudflare.yml`
+- `deploy/.env.242-cloudflare.example`
+
+### De ce apare `NET::ERR_CERT_AUTHORITY_INVALID`
+
+Eroarea din browser inseamna ca raspunsul TLS nu vine cu un certificat public valid pentru `laser.helpan.ro` (si domeniul are HSTS, deci browserul blocheaza complet accesul nesigur).
+
+Cea mai curata varianta este Cloudflare Tunnel:
+
+- nu mai deschizi porturi in router
+- nu depinzi de certificat local/self-signed pe origin
+- hostname-ul public este terminat TLS la Cloudflare
+
+### Pasii rapizi pe 192.168.2.242
+
+1. instalezi Docker Desktop si il setezi sa porneasca automat la boot
+2. copiezi proiectul pe PC-ul `192.168.2.242`
+3. copiezi `deploy/.env.242-cloudflare.example` in `deploy/.env.242-cloudflare` si completezi `CLOUDFLARE_TUNNEL_TOKEN`
+4. pornesti stack-ul:
+
+```powershell
+docker compose --env-file deploy/.env.242-cloudflare -f deploy/docker-compose.242-cloudflare.yml up -d
+```
+
+5. in Cloudflare Tunnel setezi public hostname:
+
+- `laser.helpan.ro` -> `http://lasertrumaticl3030:3030`
+
+6. in dashboard-ul aplicatiei verifici `LASER1MODBUS`:
+
+- `Transport`: `Modbus TCP`
+- `Host / IP`: `192.168.2.242`
+- `Port`: `502`
+- `Unit ID`: `1`
+
+### Verificare rapida
+
+```powershell
+docker ps
+docker logs --tail 100 lasertrumaticl3030
+docker logs --tail 100 lasertrumaticl3030_cloudflared
+```
+
 ## Grafana
 
 Repo-ul include un dashboard Grafana gata de import:

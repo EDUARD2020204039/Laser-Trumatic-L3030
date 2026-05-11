@@ -330,6 +330,15 @@ function prepareSavedModbusViewLoadingState() {
     document.getElementById("saved-record-list").innerHTML = `<p class="empty-state">Se incarca randamentele MODBUS salvate...</p>`;
 }
 
+function cancelDashboardRequests() {
+    state.dashboardRequestId += 1;
+    if (state.dashboardAbortController) {
+        state.dashboardAbortController.abort();
+        state.dashboardAbortController = null;
+    }
+    state.dashboardFetchInFlight = false;
+}
+
 function bindActions() {
     const machineSelector = document.getElementById("machine-selector");
     if (machineSelector) {
@@ -343,6 +352,7 @@ function bindActions() {
             const nextView = button.dataset.view || "dashboard";
 
             if (nextView === "saved") {
+                cancelDashboardRequests();
                 if (state.currentView === "saved") {
                     await loadSavedRecords();
                     return;
@@ -356,6 +366,7 @@ function bindActions() {
             }
 
             if (nextView === "saved_modbus") {
+                cancelDashboardRequests();
                 if (state.currentView === "saved_modbus") {
                     await loadSavedModbusRecords();
                     return;
@@ -536,6 +547,9 @@ async function loadDashboard(machineKey = state.selectedMachineKey) {
         if (requestId !== state.dashboardRequestId) {
             return;
         }
+        if (state.currentView !== "dashboard") {
+            return;
+        }
 
         state.dashboard = payload;
         state.selectedMachineKey = payload.selected_machine_key;
@@ -543,8 +557,6 @@ async function loadDashboard(machineKey = state.selectedMachineKey) {
             clearModbusDraft();
         }
         window.localStorage.setItem("selectedMachineKey", payload.selected_machine_key);
-        window.localStorage.setItem("currentView", "dashboard");
-        state.currentView = "dashboard";
         renderDashboard(payload);
     } catch (error) {
         if (error.name === "AbortError") {

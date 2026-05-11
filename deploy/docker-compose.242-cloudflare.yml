@@ -19,6 +19,7 @@ services:
       LASER1_REAL_DATA_ENDPOINT_FALLBACK: "https://laserb.habaresearch.eu/"
       LASER1MODBUS_REAL_DATA_ENDPOINT_FALLBACK: "https://laserb.habaresearch.eu/"
       LASER1_HMI_FEED_URL: "http://192.168.2.242:8081/"
+      LASER1MODBUS_HMI_FEED_URL: "http://192.168.2.242:8081/"
       # Lasa configurarea Modbus in dashboard (Host/IP, Unit ID, mapare IN1..IN4).
       # Daca endpoint-ul Modbus este chiar pe acest PC, foloseste 192.168.2.242:502.
     volumes:

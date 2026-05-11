@@ -859,7 +859,18 @@ def resolve_machine_camera_feed_config(machine_key: str, feed_key: str = "camera
 
 
 def resolve_machine_hmi_feed_url(machine_key: str) -> str:
-    return get_machine_env_value(machine_key, "HMI_FEED_URL") or DEFAULT_MACHINE_HMI_URLS.get(machine_key, "")
+    machine_key = ensure_machine_key(machine_key)
+    machine_hmi_url = get_machine_env_value(machine_key, "HMI_FEED_URL")
+    if machine_hmi_url:
+        return machine_hmi_url
+
+    # Keep LASER1MODBUS aligned with LASER1 when only the shared HMI URL is configured.
+    if machine_key == "laser1modbus":
+        shared_laser_hmi_url = get_machine_env_value("laser1", "HMI_FEED_URL")
+        if shared_laser_hmi_url:
+            return shared_laser_hmi_url
+
+    return DEFAULT_MACHINE_HMI_URLS.get(machine_key, "")
 
 
 def build_machine_feeds(machine_key: str) -> list[dict]:

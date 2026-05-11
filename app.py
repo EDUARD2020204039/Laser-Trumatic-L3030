@@ -72,6 +72,14 @@ def get_static_asset_version(filename: str) -> str:
         return "dev"
 
 
+def resolve_app_version_label() -> str:
+    for env_name in ("APP_VERSION", "VERSION", "GIT_SHA", "COMMIT_SHA"):
+        value = os.getenv(env_name, "").strip()
+        if value:
+            return value
+    return f"build-{get_static_asset_version('app.js')}"
+
+
 def is_running_in_container() -> bool:
     return Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
 
@@ -5797,6 +5805,7 @@ def index():
         "index.html",
         app_title=APP_TITLE,
         dashboard_title=DASHBOARD_TITLE,
+        app_version=resolve_app_version_label(),
         machines=get_machine_profiles(),
         default_machine_key=DEFAULT_MACHINE_KEY,
         script_catalog=build_script_catalog(),

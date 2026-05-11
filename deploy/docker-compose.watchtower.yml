@@ -2,7 +2,7 @@ version: "3.9"
 
 services:
   lasertrumaticl3030:
-    image: ghcr.io/eduard2020204039/lasertrumaticl3030:latest
+    image: ghcr.io/unraidg5/lasertrumaticl3030:latest
     container_name: lasertrumaticl3030
     restart: unless-stopped
     ports:

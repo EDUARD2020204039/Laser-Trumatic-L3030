@@ -137,7 +137,7 @@ try:
 except (TypeError, ValueError):
     MODBUS_TCP_RETRY_DELAY_SECONDS = 0.15
 MODBUS_TCP_RETRY_DELAY_SECONDS = min(max(MODBUS_TCP_RETRY_DELAY_SECONDS, 0.0), 2.0)
-MODBUS_SNAPSHOT_GRACE_SECONDS = max(int(os.getenv("MODBUS_SNAPSHOT_GRACE_SECONDS", "18")), 0)
+MODBUS_SNAPSHOT_GRACE_SECONDS = max(int(os.getenv("MODBUS_SNAPSHOT_GRACE_SECONDS", "180")), 0)
 OPERATOR_CACHE_SECONDS = max(int(os.getenv("OPERATOR_CACHE_SECONDS", "20")), 3)
 PROMETHEUS_MAX_PARALLEL_QUERIES = max(int(os.getenv("PROMETHEUS_MAX_PARALLEL_QUERIES", "6")), 1)
 try:
@@ -4990,6 +4990,28 @@ def derive_machine_state(machine_key: str, current_signals: dict[str, dict]) -> 
     return {"key": "ready", **resolve_state_definition(machine_key, "ready")}
 
 
+def derive_modbus_machine_state_from_snapshot(snapshot: dict | None, fallback_state: dict) -> dict:
+    if not snapshot:
+        return fallback_state
+
+    if not snapshot.get("available") or not snapshot.get("connected"):
+        return {"key": "off", **resolve_state_definition("laser1modbus", "off")}
+
+    derived = snapshot.get("derived_signals") or {}
+    signal_view = {
+        "machine_on": {"active": bool(derived.get("machine_on", False))},
+        "cutting_active": {"active": bool(derived.get("cutting_active", False))},
+        "table_change": {"active": bool(derived.get("table_change", False))},
+        "idle_abort": {"active": bool(derived.get("idle_abort", False))},
+    }
+    state_from_snapshot = derive_machine_state("laser1modbus", signal_view)
+    if state_from_snapshot["key"] != "off":
+        return state_from_snapshot
+
+    # Daca Modbus e conectat, dar bitul Machine ON e 0, evitam mesajul fals "Modbus indisponibil".
+    return {"key": "off", **resolve_state_definition("", "off")}
+
+
 def calculate_active_seconds(
     machine_key: str,
     signal_name: str,
@@ -5667,6 +5689,8 @@ def build_dashboard_payload(machine_key: str = DEFAULT_MACHINE_KEY) -> dict:
         current_signals = fetch_current_signals(machine_key)
     operator_snapshot = fetch_current_operator(machine_profile["workcenter_id"])
     current_state = derive_machine_state(machine_key, current_signals)
+    if machine_key == "laser1modbus":
+        current_state = derive_modbus_machine_state_from_snapshot(live_extraction, current_state)
     stats_today = build_today_stats(machine_key)
     machines = [
         {

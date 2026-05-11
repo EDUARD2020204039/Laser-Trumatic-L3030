@@ -215,8 +215,8 @@ LOCKED_MACHINE_MODBUS_CONFIGS: dict[str, dict[str, object]] = {
 }
 
 DEFAULT_MACHINE_HMI_URLS = {
-    "laser1": "https://laser.helpan.ro/",
-    "laser1modbus": "https://laser.helpan.ro/",
+    "laser1": "http://192.168.2.242:8081/",
+    "laser1modbus": "http://192.168.2.242:8081/",
     "laser2": "",
     "abkant": "https://abkant.helpan.ro/",
 }

@@ -716,9 +716,27 @@ def machine_supports_idle_signal(machine_key: str) -> bool:
     return "idle_abort" in set(config.get("signal_map", {}).values())
 
 
+def resolve_real_data_endpoint_candidates(machine_key: str) -> list[str]:
+    machine_key = ensure_machine_key(machine_key)
+    primary_legacy_names = ("LASER_REAL_DATA_ENDPOINT",) if machine_key in {"laser1", "laser2"} else ()
+    fallback_legacy_names = ("LASER_REAL_DATA_ENDPOINT_FALLBACK",) if machine_key in {"laser1", "laser2"} else ()
+    primary_endpoint = (
+        get_machine_env_value(machine_key, "REAL_DATA_ENDPOINT", primary_legacy_names)
+        or REAL_DATA_FEEDS[machine_key]["endpoint"]
+    )
+    fallback_endpoint = get_machine_env_value(machine_key, "REAL_DATA_ENDPOINT_FALLBACK", fallback_legacy_names)
+
+    candidates: list[str] = []
+    for endpoint in (primary_endpoint, fallback_endpoint):
+        normalized_endpoint = (endpoint or "").strip()
+        if normalized_endpoint and normalized_endpoint not in candidates:
+            candidates.append(normalized_endpoint)
+    return candidates
+
+
 def resolve_real_data_endpoint(machine_key: str) -> str:
-    legacy_names = ("LASER_REAL_DATA_ENDPOINT",) if machine_key in {"laser1", "laser2"} else ()
-    return get_machine_env_value(machine_key, "REAL_DATA_ENDPOINT", legacy_names) or REAL_DATA_FEEDS[machine_key]["endpoint"]
+    candidates = resolve_real_data_endpoint_candidates(machine_key)
+    return candidates[0] if candidates else ""
 
 
 def resolve_real_data_name(machine_key: str) -> str:
@@ -2806,14 +2824,28 @@ def build_modbus_signal_state(config: dict, inputs: list[bool]) -> tuple[dict[st
 
 
 def get_laser_ocr_snapshot(machine_key: str) -> dict:
-    endpoint = resolve_real_data_endpoint(machine_key)
-    image, error_message = fetch_mjpeg_frame(endpoint)
+    endpoints = resolve_real_data_endpoint_candidates(machine_key)
+    endpoint = endpoints[0] if endpoints else ""
+    image = None
+    error_message = "Endpointul live nu este configurat."
+    endpoint_errors: list[str] = []
+
+    for candidate_endpoint in endpoints:
+        image, candidate_error = fetch_mjpeg_frame(candidate_endpoint)
+        if image is not None:
+            endpoint = candidate_endpoint
+            error_message = None
+            break
+        endpoint_errors.append(f"{candidate_endpoint}: {candidate_error}")
+        error_message = candidate_error or error_message
+
     if image is None:
+        joined_errors = " | ".join(endpoint_errors) if endpoint_errors else error_message
         return {
             "available": False,
             "connected": False,
             "endpoint": endpoint,
-            "message": f"Nu pot citi captura live de la {endpoint}. Motiv: {error_message}",
+            "message": f"Nu pot citi captura live. Endpointuri incercate: {joined_errors}",
         }
 
     right_panel_variants = read_ocr_block_variants(image, LASER_OCR_ZONES["right_panel"])

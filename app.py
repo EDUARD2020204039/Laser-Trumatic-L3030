@@ -4740,7 +4740,7 @@ def build_telegram_dosar_report(raw_dosar_query: str | None) -> str:
             f"Interval: {first_start.strftime('%d.%m.%Y %H:%M')} - "
             f"{last_end.strftime('%d.%m.%Y %H:%M')}"
         )
-        lines.append(f"Durata calendaristica: {format_seconds(calendar_duration_seconds)}")
+        lines.append(f"Durata realizare dosar: {format_seconds(calendar_duration_seconds)}")
     lines.extend(
         [
             f"Randament total: {total_efficiency_percent}%",

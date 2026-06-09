@@ -3720,11 +3720,27 @@ def build_saved_cycles_reports_by_machine() -> list[dict]:
 def prometheus_period_range(period: str) -> str:
     normalized = resolve_saved_period(period)
     return {
-        "day": "1d",
-        "week": "7d",
-        "month": "30d",
+        "day": "2d",
+        "week": "8d",
+        "month": "32d",
         "all": "3650d",
     }[normalized]
+
+
+def prometheus_range_for_window(start_dt: datetime, end_dt: datetime | None = None) -> str:
+    end_dt = end_dt or now_local()
+    total_days = max((end_dt.date() - start_dt.date()).days + 2, 2)
+    return f"{total_days}d"
+
+
+def build_prometheus_completed_at_regex(start_dt: datetime, end_dt: datetime) -> str:
+    date_values: list[str] = []
+    cursor_date = start_dt.date()
+    end_date = end_dt.date()
+    while cursor_date <= end_date:
+        date_values.append(re.escape(cursor_date.isoformat()) + "T.*")
+        cursor_date += timedelta(days=1)
+    return "|".join(date_values)
 
 
 def build_prometheus_base_url_candidates() -> list[str]:
@@ -3754,19 +3770,21 @@ def build_prometheus_base_url_candidates() -> list[str]:
 
 def fetch_prometheus_vector(query: str) -> list[dict]:
     errors_by_endpoint: list[str] = []
-    encoded_query = urllib.parse.quote(query, safe="")
+    encoded_query = urllib.parse.urlencode({"query": query}).encode("utf-8")
     timeout_candidates = [PROMETHEUS_QUERY_TIMEOUT_SECONDS]
     extended_timeout_seconds = min(max(PROMETHEUS_QUERY_TIMEOUT_SECONDS * 2, 5.0), 20.0)
     if abs(extended_timeout_seconds - PROMETHEUS_QUERY_TIMEOUT_SECONDS) > 1e-9:
         timeout_candidates.append(extended_timeout_seconds)
 
     for base_url in build_prometheus_base_url_candidates():
-        request_url = f"{base_url}/api/v1/query?query={encoded_query}"
+        request_url = f"{base_url}/api/v1/query"
         endpoint_error: Exception | None = None
         for timeout_seconds in timeout_candidates:
             request_obj = urllib.request.Request(
                 request_url,
+                data=encoded_query,
                 headers={"User-Agent": "HABA-Production-Monitor/1.0"},
+                method="POST",
             )
             try:
                 with urllib.request.urlopen(request_obj, timeout=timeout_seconds) as response:
@@ -3812,10 +3830,13 @@ def escape_prometheus_label_matcher(value: str) -> str:
 def build_prometheus_saved_cycle_label_filter(
     operator_id: str | None = None,
     machine_key: str | None = None,
+    completed_at_regex: str | None = None,
 ) -> str:
     matchers: list[str] = []
     if machine_key:
         matchers.append(f'machine_key="{escape_prometheus_label_matcher(machine_key)}"')
+    if completed_at_regex:
+        matchers.append(f'completed_at=~"{escape_prometheus_label_matcher(completed_at_regex)}"')
     if operator_id:
         if operator_id.startswith("name:"):
             matchers.append(f'operator_name="{escape_prometheus_label_matcher(operator_id[5:])}"')
@@ -3945,8 +3966,19 @@ def build_prometheus_saved_records_for_range(
     period_range: str,
     operator_id: str | None = None,
     machine_key: str | None = None,
+    window_start: datetime | None = None,
+    window_end: datetime | None = None,
 ) -> list[dict]:
-    label_filter = build_prometheus_saved_cycle_label_filter(operator_id=operator_id, machine_key=machine_key)
+    completed_at_regex = (
+        build_prometheus_completed_at_regex(window_start, window_end)
+        if window_start is not None and window_end is not None
+        else None
+    )
+    label_filter = build_prometheus_saved_cycle_label_filter(
+        operator_id=operator_id,
+        machine_key=machine_key,
+        completed_at_regex=completed_at_regex,
+    )
     base_query = f"max_over_time(haba_saved_cycle_completed{label_filter}[{period_range}])"
     base_records: dict[str, dict] = {}
 
@@ -4016,6 +4048,20 @@ def build_prometheus_saved_records_for_range(
 
     records: list[dict] = []
     for record in base_records.values():
+        if window_start is not None and window_end is not None:
+            completed_at_raw = (
+                record.get("table_change_ended_at")
+                or record.get("created_at")
+                or record.get("table_change_started_at")
+            )
+            if not completed_at_raw:
+                continue
+            try:
+                completed_at = parse_timestamp(completed_at_raw)
+            except (TypeError, ValueError):
+                continue
+            if completed_at < window_start or completed_at > window_end:
+                continue
         record_machine_key = record["machine_key"]
         cutting_meta = resolve_signal_definition(record_machine_key or DEFAULT_MACHINE_KEY, "cutting_active")
         table_change_meta = resolve_signal_definition(record_machine_key or DEFAULT_MACHINE_KEY, "table_change")
@@ -4049,8 +4095,27 @@ def build_prometheus_saved_records_for_range(
 
 
 def build_prometheus_saved_records(period: str, operator_id: str | None = None) -> list[dict]:
-    period_range = prometheus_period_range(period)
-    return build_prometheus_saved_records_for_range(period_range, operator_id=operator_id)
+    normalized_period = resolve_saved_period(period)
+    if normalized_period == "all":
+        return build_prometheus_saved_records_for_range(
+            prometheus_period_range(normalized_period),
+            operator_id=operator_id,
+        )
+
+    now = now_local()
+    if normalized_period == "day":
+        window_start = datetime.combine(date.today(), time.min)
+    elif normalized_period == "week":
+        window_start = datetime.combine(date.today(), time.min) - timedelta(days=date.today().weekday())
+    else:
+        window_start = datetime.combine(date.today().replace(day=1), time.min)
+
+    return build_prometheus_saved_records_for_range(
+        prometheus_range_for_window(window_start, now),
+        operator_id=operator_id,
+        window_start=window_start,
+        window_end=now,
+    )
 
 
 def build_empty_operator_period_bucket() -> dict:
@@ -4289,6 +4354,18 @@ def fetch_saved_cycles_between_for_machines(
 ) -> list[dict]:
     records: list[dict] = []
     for machine_key in machine_keys:
+        if SAVED_RECORDS_PROMETHEUS_ENABLED:
+            try:
+                machine_records = build_prometheus_saved_records_for_range(
+                    prometheus_range_for_window(start_dt, end_dt),
+                    machine_key=machine_key,
+                    window_start=start_dt,
+                    window_end=end_dt,
+                )
+                records.extend(machine_records)
+                continue
+            except Exception:
+                pass
         records.extend(fetch_saved_cycles_between(start_dt, end_dt, machine_key=machine_key, limit=5000))
     records.sort(key=lambda item: item.get("table_change_started_at") or item.get("created_at") or "", reverse=True)
     return records
@@ -4659,28 +4736,14 @@ def build_saved_modbus_payload(period: str = "day", operator_id: str | None = No
     data_source = "sqlite-fallback"
     if SAVED_RECORDS_PROMETHEUS_ENABLED:
         try:
-            period_range = resolve_saved_modbus_prometheus_range(normalized_period)
             prometheus_records = build_prometheus_saved_records_for_range(
-                period_range,
+                prometheus_range_for_window(window_start, window_end),
                 machine_key="laser1modbus",
+                window_start=window_start,
+                window_end=window_end,
             )
-            filtered_prometheus_records: list[dict] = []
-            for record in prometheus_records:
-                completed_at_raw = (
-                    record.get("table_change_ended_at")
-                    or record.get("created_at")
-                    or record.get("table_change_started_at")
-                )
-                if not completed_at_raw:
-                    continue
-                try:
-                    completed_at = parse_timestamp(completed_at_raw)
-                except (TypeError, ValueError):
-                    continue
-                if window_start <= completed_at <= window_end:
-                    filtered_prometheus_records.append(record)
-            if filtered_prometheus_records:
-                records = filtered_prometheus_records
+            if prometheus_records:
+                records = prometheus_records
                 data_source = "prometheus"
         except Exception:
             pass

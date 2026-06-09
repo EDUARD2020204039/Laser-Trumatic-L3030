@@ -191,6 +191,7 @@ TELEGRAM_REPORT_MACHINE_KEYS = tuple(
     if machine_key.strip()
 )
 TELEGRAM_REPORT_TOP_LIMIT = max(int(os.getenv("TELEGRAM_REPORT_TOP_LIMIT", "10") or "10"), 1)
+TELEGRAM_DOSAR_LOOKBACK_DAYS = max(int(os.getenv("TELEGRAM_DOSAR_LOOKBACK_DAYS", "730") or "730"), 1)
 UNKNOWN_OPERATOR_LABEL = "Fara operator la salvare"
 SAVED_CYCLE_INSERT_PLACEHOLDERS = ", ".join(["?"] * 23)
 _operator_snapshot_cache: dict[int, dict] = {}
@@ -4503,6 +4504,238 @@ def build_telegram_laser_report(include_week: bool = True) -> str:
     return "\n".join(lines)
 
 
+def normalize_dosar_query(raw_value: str | None) -> str:
+    value = (raw_value or "").strip()
+    if not value:
+        return ""
+    match = re.search(r"[A-Za-z0-9_-]+", value)
+    return match.group(0) if match else ""
+
+
+def build_prometheus_dosar_metric_query(metric_name: str, dosar_query: str, period_range: str) -> str:
+    safe_dosar_query = re.sub(r"[^A-Za-z0-9_-]", "", dosar_query)
+    dosar_regex = f".*{escape_prometheus_label_matcher(safe_dosar_query)}.*"
+    matchers = [
+        f'machine_key="{escape_prometheus_label_matcher(DEFAULT_MACHINE_KEY)}"',
+    ]
+    base_matcher = ",".join(matchers)
+    program_fields = ("selected_program", "active_program", "next_program")
+    return " or ".join(
+        f'max_over_time({metric_name}{{{base_matcher},{field}=~"{dosar_regex}"}}[{period_range}])'
+        for field in program_fields
+    )
+
+
+def build_prometheus_saved_records_for_dosar(dosar_query: str) -> list[dict]:
+    period_range = f"{TELEGRAM_DOSAR_LOOKBACK_DAYS}d"
+    base_records: dict[str, dict] = {}
+
+    base_query = build_prometheus_dosar_metric_query(
+        "haba_saved_cycle_completed",
+        dosar_query,
+        period_range,
+    )
+    for series in fetch_prometheus_vector(base_query):
+        labels = series.get("metric") or {}
+        cycle_id = str(labels.get("cycle_id") or "").strip()
+        if not cycle_id:
+            continue
+        series_key = build_prometheus_cycle_series_key(labels)
+        if not series_key:
+            continue
+        try:
+            numeric_cycle_id = int(cycle_id)
+        except (TypeError, ValueError):
+            continue
+        base_records[series_key] = {
+            "id": numeric_cycle_id,
+            "machine_key": labels.get("machine_key") or "",
+            "machine_label": labels.get("machine_label") or labels.get("machine_key") or "",
+            "workcenter_id": parse_optional_int(labels.get("workcenter_id")),
+            "operator_id": labels.get("operator_id") or "",
+            "operator_name": labels.get("operator_name") or UNKNOWN_OPERATOR_LABEL,
+            "selected_program": labels.get("selected_program") or "Necitit",
+            "active_program": labels.get("active_program") or labels.get("selected_program") or "Necitit",
+            "material": labels.get("material") or "Necitit",
+            "program_status": labels.get("program_status") or "Salvat in Prometheus",
+            "upper_tool": labels.get("upper_tool") or "n/a",
+            "lower_tool": labels.get("lower_tool") or "n/a",
+            "setup_signature": labels.get("setup_signature") or "",
+            "setup_changed": to_bool(labels.get("setup_changed", "false")) if labels.get("setup_changed") is not None else False,
+            "cutting_started_at": labels.get("cutting_started_at") or None,
+            "table_change_started_at": labels.get("table_change_started_at") or labels.get("completed_at") or None,
+            "table_change_ended_at": labels.get("completed_at") or None,
+            "close_reason": labels.get("close_reason") or "",
+            "close_reason_label": labels.get("close_reason_label") or "",
+            "next_program": labels.get("next_program") or None,
+            "source": labels.get("source") or "prometheus",
+            "created_at": labels.get("completed_at") or "",
+        }
+
+    if not base_records:
+        return []
+
+    metric_map = {
+        "machine_on_duration_seconds": "haba_saved_cycle_machine_on_seconds",
+        "cycle_duration_seconds": "haba_saved_cycle_cutting_seconds",
+        "idle_duration_seconds": "haba_saved_cycle_idle_seconds",
+        "table_change_duration_seconds": "haba_saved_cycle_table_change_seconds",
+        "efficiency_percent": "haba_saved_cycle_efficiency_percent",
+        "setup_changed": "haba_saved_cycle_setup_changed",
+    }
+    metric_query_map = {
+        field_name: build_prometheus_dosar_metric_query(metric_name, dosar_query, period_range)
+        for field_name, metric_name in metric_map.items()
+    }
+    for field_name, result_series in fetch_prometheus_query_map(metric_query_map).items():
+        for series in result_series:
+            labels = series.get("metric") or {}
+            series_key = build_prometheus_cycle_series_key(labels)
+            if not series_key or series_key not in base_records:
+                continue
+            numeric_value = float((series.get("value") or [None, "0"])[1] or 0)
+            if field_name.endswith("_seconds"):
+                base_records[series_key][field_name] = int(round(numeric_value))
+                base_records[series_key][field_name.replace("_seconds", "_label")] = format_seconds(int(round(numeric_value)))
+            elif field_name == "setup_changed":
+                base_records[series_key][field_name] = bool(round(numeric_value))
+            else:
+                base_records[series_key][field_name] = round(numeric_value, 1)
+
+    records: list[dict] = []
+    for record in base_records.values():
+        record_machine_key = record["machine_key"]
+        cutting_meta = resolve_signal_definition(record_machine_key or DEFAULT_MACHINE_KEY, "cutting_active")
+        table_change_meta = resolve_signal_definition(record_machine_key or DEFAULT_MACHINE_KEY, "table_change")
+        record.setdefault("machine_on_duration_seconds", 0)
+        record.setdefault("machine_on_duration_label", format_seconds(0))
+        record.setdefault("cycle_duration_seconds", 0)
+        record.setdefault("cycle_duration_label", format_seconds(0))
+        record.setdefault("idle_duration_seconds", 0)
+        record.setdefault("idle_duration_label", format_seconds(0))
+        record.setdefault("table_change_duration_seconds", 0)
+        record.setdefault("table_change_duration_label", format_seconds(0))
+        record.setdefault("efficiency_percent", 0.0)
+        record.setdefault("setup_changed", False)
+        record["activity_label"] = cutting_meta.get("report_label", cutting_meta["label"])
+        record["change_label"] = table_change_meta.get("report_label", table_change_meta["label"])
+        records.append(record)
+
+    records.sort(key=lambda item: item.get("table_change_ended_at") or item.get("created_at") or "")
+    return records
+
+
+def get_record_start_timestamp(record: dict) -> datetime | None:
+    for field_name in ("cutting_started_at", "table_change_started_at", "created_at"):
+        value = record.get(field_name)
+        if not value:
+            continue
+        try:
+            return parse_timestamp(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def get_record_end_timestamp(record: dict) -> datetime | None:
+    for field_name in ("table_change_ended_at", "created_at", "table_change_started_at"):
+        value = record.get(field_name)
+        if not value:
+            continue
+        try:
+            return parse_timestamp(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def build_telegram_dosar_report(raw_dosar_query: str | None) -> str:
+    dosar_query = normalize_dosar_query(raw_dosar_query)
+    if not dosar_query:
+        return "Folosire: /randament_dosar 34158"
+
+    records = build_prometheus_saved_records_for_dosar(dosar_query)
+    if not records:
+        return (
+            f"Nu am gasit cicluri pentru dosarul {dosar_query} in ultimele "
+            f"{TELEGRAM_DOSAR_LOOKBACK_DAYS} zile."
+        )
+
+    starts = [timestamp for timestamp in (get_record_start_timestamp(record) for record in records) if timestamp]
+    ends = [timestamp for timestamp in (get_record_end_timestamp(record) for record in records) if timestamp]
+    first_start = min(starts) if starts else None
+    last_end = max(ends) if ends else None
+    calendar_duration_seconds = (
+        max(int((last_end - first_start).total_seconds()), 0)
+        if first_start and last_end
+        else 0
+    )
+
+    total_machine_on_seconds = sum(int(record.get("machine_on_duration_seconds") or 0) for record in records)
+    total_cutting_seconds = sum(int(record.get("cycle_duration_seconds") or 0) for record in records)
+    total_idle_seconds = sum(int(record.get("idle_duration_seconds") or 0) for record in records)
+    total_table_change_seconds = sum(int(record.get("table_change_duration_seconds") or 0) for record in records)
+    total_efficiency_percent = calculate_runtime_efficiency_percent(
+        total_machine_on_seconds,
+        total_cutting_seconds,
+        total_table_change_seconds,
+    )
+
+    operators = summarize_operator_records_for_telegram(records)
+    programs = sorted(
+        {
+            str(program or "").strip()
+            for record in records
+            for program in (
+                record.get("selected_program"),
+                record.get("active_program"),
+                record.get("next_program"),
+            )
+            if dosar_query.lower() in str(program or "").lower()
+        }
+    )
+
+    lines = [
+        f"Randament dosar {dosar_query}",
+        f"Cicluri gasite: {len(records)}",
+    ]
+    if first_start and last_end:
+        lines.append(
+            f"Interval: {first_start.strftime('%d.%m.%Y %H:%M')} - "
+            f"{last_end.strftime('%d.%m.%Y %H:%M')}"
+        )
+        lines.append(f"Durata calendaristica: {format_seconds(calendar_duration_seconds)}")
+    lines.extend(
+        [
+            f"Randament total: {total_efficiency_percent}%",
+            f"Timp ON total: {format_seconds(total_machine_on_seconds)}",
+            f"Executie/Cutting: {format_seconds(total_cutting_seconds)}",
+            f"Schimb masa: {format_seconds(total_table_change_seconds)}",
+            f"Idle: {format_seconds(total_idle_seconds)}",
+        ]
+    )
+
+    if operators:
+        lines.append("")
+        lines.append("Operatori:")
+        for operator in operators[:TELEGRAM_REPORT_TOP_LIMIT]:
+            lines.append(
+                f"- {operator['operator_name']}: {operator['efficiency_percent']}% | "
+                f"ON {operator['machine_on_label']} | exec {operator['cutting_label']} | "
+                f"idle {operator['idle_label']} | {operator['records_count']} cicluri"
+            )
+
+    if programs:
+        lines.append("")
+        lines.append("Programe incluse:")
+        for program in programs[:12]:
+            lines.append(f"- {program}")
+        if len(programs) > 12:
+            lines.append(f"... inca {len(programs) - 12} programe")
+
+    return "\n".join(lines)
+
+
 def telegram_api_request(method: str, payload: dict | None = None, timeout_seconds: float = 30.0) -> dict:
     if not TELEGRAM_BOT_TOKEN:
         raise RuntimeError("TELEGRAM_BOT_TOKEN lipseste.")
@@ -4533,6 +4766,10 @@ def configure_telegram_bot_commands() -> None:
                         "description": "Raport randament laser pentru ziua curenta",
                     },
                     {
+                        "command": "randament_dosar",
+                        "description": "Randament total pentru un dosar",
+                    },
+                    {
                         "command": "meniu",
                         "description": "Afiseaza butoanele botului",
                     },
@@ -4555,8 +4792,8 @@ def build_telegram_reply_keyboard() -> str:
     return json.dumps(
         {
             "keyboard": [
-                [{"text": "/raportzi"}, {"text": "/chatid"}],
-                [{"text": "/help"}],
+                [{"text": "/raportzi"}],
+                [{"text": "/randament_dosar"}],
             ],
             "resize_keyboard": True,
             "one_time_keyboard": False,
@@ -4618,8 +4855,10 @@ def handle_telegram_command(message: dict) -> None:
     if not chat_id or not text:
         return
 
-    command = text.split(maxsplit=1)[0].split("@", 1)[0].lower()
-    if command not in {"/raportzi", "/meniu", "/menu", "/chatid", "/id", "/start", "/help"}:
+    command_parts = text.split(maxsplit=1)
+    command = command_parts[0].split("@", 1)[0].lower()
+    command_argument = command_parts[1].strip() if len(command_parts) > 1 else ""
+    if command not in {"/raportzi", "/randament_dosar", "/dosar", "/meniu", "/menu", "/chatid", "/id", "/start", "/help"}:
         return
 
     if command in {"/chatid", "/id"}:
@@ -4629,7 +4868,7 @@ def handle_telegram_command(message: dict) -> None:
     if command in {"/start", "/help", "/meniu", "/menu"}:
         send_telegram_message(
             chat_id,
-            "Meniu raport laser:",
+            "Comenzi disponibile:\n/raportzi\n/randament_dosar 34158",
             reply_markup=build_telegram_reply_keyboard(),
         )
         return
@@ -4649,6 +4888,14 @@ def handle_telegram_command(message: dict) -> None:
         send_telegram_message(
             chat_id,
             build_telegram_laser_report(include_week=False),
+            reply_markup=build_telegram_reply_keyboard(),
+        )
+        return
+
+    if command in {"/randament_dosar", "/dosar"}:
+        send_telegram_message(
+            chat_id,
+            build_telegram_dosar_report(command_argument),
             reply_markup=build_telegram_reply_keyboard(),
         )
         return

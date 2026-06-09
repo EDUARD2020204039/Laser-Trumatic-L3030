@@ -67,7 +67,7 @@ Aplicatia porneste implicit pe `http://localhost:3030`.
 - `BACKGROUND_SYNC_INTERVAL_SECONDS=3` controleaza la cite secunde se face sincronizarea live si salvarea automata in istoricul local
 - `REQUEST_LIVE_SYNC_ENABLED=0` pastreaza dashboard-ul rapid si evita sync-ul live direct in request cind exista deja pollerul din fundal; seteaza `1` doar daca vrei fallback sincron in request
 - `SAVED_RECORDS_PROMETHEUS_ENABLED=1` (recomandat in productie) reconstruieste istoricul din Prometheus cind SQLite local este gol dupa un update/redeploy
-- `PROMETHEUS_QUERY_TIMEOUT_SECONDS=2.5` scurteaza timpul de asteptare pe fiecare query Prometheus inainte sa se treaca mai departe sau sa se cada pe fallback
+- `PROMETHEUS_QUERY_TIMEOUT_SECONDS=10` controleaza timpul de asteptare pe fiecare query Prometheus; pentru rapoarte pe saptamina/luna e recomandat sa nu fie prea mic
 - `SNAPSHOT_FRESHNESS_SECONDS=3` forteaza refresh live daca ultimul snapshot din runtime este prea vechi
 - `TELEGRAM_BOT_TOKEN` tokenul botului Telegram pentru rapoarte si comenzi
 - `TELEGRAM_CHAT_IDS` lista de chat-uri care primesc raportul automat, separate prin virgula/spatiu

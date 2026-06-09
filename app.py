@@ -3738,7 +3738,7 @@ def build_prometheus_completed_at_regex(start_dt: datetime, end_dt: datetime) ->
     cursor_date = start_dt.date()
     end_date = end_dt.date()
     while cursor_date <= end_date:
-        date_values.append(re.escape(cursor_date.isoformat()) + "T.*")
+        date_values.append(cursor_date.isoformat() + "T.*")
         cursor_date += timedelta(days=1)
     return "|".join(date_values)
 

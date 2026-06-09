@@ -3728,8 +3728,9 @@ def prometheus_period_range(period: str) -> str:
 
 
 def prometheus_range_for_window(start_dt: datetime, end_dt: datetime | None = None) -> str:
-    end_dt = end_dt or now_local()
-    total_days = max((end_dt.date() - start_dt.date()).days + 2, 2)
+    # Prometheus instant range selectors always look back from query time,
+    # so closed historical windows still need to reach from "now" to the window start.
+    total_days = max((now_local().date() - start_dt.date()).days + 2, 2)
     return f"{total_days}d"
 
 

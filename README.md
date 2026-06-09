@@ -76,6 +76,7 @@ Aplicatia porneste implicit pe `http://localhost:3030`.
 - `TELEGRAM_REPORT_MACHINE_KEYS=laser1modbus` masinile incluse in raport; poti pune mai multe cu virgula
 - `TELEGRAM_REPORT_TOP_LIMIT=10` cati operatori apar in topul de randament
 - `TELEGRAM_DOSAR_LOOKBACK_DAYS=730` cite zile cauta comanda `/randament_dosar 34158` in istoricul Prometheus
+- `TELEGRAM_TABLE_CHANGE_FREE_SECONDS=90` pragul gratuit pentru `Table change`; ce depaseste pragul scade randamentul Telegram
 - `ABKANT_IDLE_STAGNATION_SECONDS=600` marcheaza Abkantul ca `Idle` daca programul si progresul ramin neschimbate mai mult de 10 minute
 - `ABKANT_FEED_STALE_SECONDS=120` spune dupa cite secunde fara colectare recenta snapshotul Abkant trebuie tratat ca `Feed indisponibil`
 - `MODBUS_TCP_RETRY_ATTEMPTS=3` reincearca citirea Modbus TCP de citeva ori inainte sa declare timeout

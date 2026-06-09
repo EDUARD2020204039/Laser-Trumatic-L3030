@@ -29,6 +29,7 @@ services:
       TELEGRAM_REPORT_MACHINE_KEYS: "${TELEGRAM_REPORT_MACHINE_KEYS:-laser1modbus}"
       TELEGRAM_REPORT_TOP_LIMIT: "${TELEGRAM_REPORT_TOP_LIMIT:-10}"
       TELEGRAM_DOSAR_LOOKBACK_DAYS: "${TELEGRAM_DOSAR_LOOKBACK_DAYS:-730}"
+      TELEGRAM_TABLE_CHANGE_FREE_SECONDS: "${TELEGRAM_TABLE_CHANGE_FREE_SECONDS:-90}"
       # Completeaza restul variabilelor necesare pentru feed-uri / SQL / camere.
     volumes:
       - lasertrumaticl3030_data:/data

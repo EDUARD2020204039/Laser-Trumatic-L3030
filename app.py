@@ -193,6 +193,7 @@ TELEGRAM_REPORT_MACHINE_KEYS = tuple(
 )
 TELEGRAM_REPORT_TOP_LIMIT = max(int(os.getenv("TELEGRAM_REPORT_TOP_LIMIT", "10") or "10"), 1)
 TELEGRAM_DOSAR_LOOKBACK_DAYS = max(int(os.getenv("TELEGRAM_DOSAR_LOOKBACK_DAYS", "730") or "730"), 1)
+TELEGRAM_TABLE_CHANGE_FREE_SECONDS = max(int(os.getenv("TELEGRAM_TABLE_CHANGE_FREE_SECONDS", "90") or "90"), 0)
 UNKNOWN_OPERATOR_LABEL = "Fara operator la salvare"
 SAVED_CYCLE_INSERT_PLACEHOLDERS = ", ".join(["?"] * 23)
 _operator_snapshot_cache: dict[int, dict] = {}
@@ -4393,30 +4394,39 @@ def summarize_operator_records_for_telegram(records: list[dict]) -> list[dict]:
                 "cutting_seconds": 0,
                 "idle_seconds": 0,
                 "table_change_seconds": 0,
+                "table_change_allowed_seconds": 0,
+                "table_change_penalty_seconds": 0,
             },
         )
+        table_change_seconds = int(record.get("table_change_duration_seconds") or 0)
+        table_change_allowed_seconds = min(table_change_seconds, TELEGRAM_TABLE_CHANGE_FREE_SECONDS)
         operator_entry["machines"].add(record.get("machine_label") or record.get("machine_key") or "")
         operator_entry["records_count"] += 1
         operator_entry["machine_on_seconds"] += int(record.get("machine_on_duration_seconds") or 0)
         operator_entry["cutting_seconds"] += int(record.get("cycle_duration_seconds") or 0)
         operator_entry["idle_seconds"] += int(record.get("idle_duration_seconds") or 0)
-        operator_entry["table_change_seconds"] += int(record.get("table_change_duration_seconds") or 0)
+        operator_entry["table_change_seconds"] += table_change_seconds
+        operator_entry["table_change_allowed_seconds"] += table_change_allowed_seconds
+        operator_entry["table_change_penalty_seconds"] += max(table_change_seconds - table_change_allowed_seconds, 0)
 
     output: list[dict] = []
     for operator_entry in operator_map.values():
         machine_on_seconds = int(operator_entry["machine_on_seconds"] or 0)
         cutting_seconds = int(operator_entry["cutting_seconds"] or 0)
         table_change_seconds = int(operator_entry["table_change_seconds"] or 0)
+        table_change_allowed_seconds = int(operator_entry["table_change_allowed_seconds"] or 0)
+        table_change_penalty_seconds = int(operator_entry["table_change_penalty_seconds"] or 0)
         idle_seconds = int(operator_entry["idle_seconds"] or 0)
-        operator_entry["efficiency_percent"] = calculate_operator_efficiency_percent(
+        operator_entry["efficiency_percent"] = calculate_telegram_efficiency_percent(
             cutting_seconds,
-            table_change_seconds,
+            table_change_allowed_seconds,
             machine_on_seconds,
         )
         operator_entry["machine_on_label"] = format_seconds(machine_on_seconds)
         operator_entry["cutting_label"] = format_seconds(cutting_seconds)
         operator_entry["idle_label"] = format_seconds(idle_seconds)
         operator_entry["table_change_label"] = format_seconds(table_change_seconds)
+        operator_entry["table_change_penalty_label"] = format_seconds(table_change_penalty_seconds)
         operator_entry["machines"] = sorted(machine for machine in operator_entry["machines"] if machine)
         output.append(operator_entry)
 
@@ -4431,15 +4441,33 @@ def summarize_operator_records_for_telegram(records: list[dict]) -> list[dict]:
     return output
 
 
+def calculate_telegram_efficiency_percent(
+    cutting_seconds: int,
+    allowed_table_change_seconds: int,
+    machine_on_seconds: int,
+) -> float:
+    machine_on = max(int(machine_on_seconds or 0), 0)
+    if machine_on <= 0:
+        return 0.0
+    productive_seconds = max(int(cutting_seconds or 0), 0) + max(int(allowed_table_change_seconds or 0), 0)
+    productive_seconds = min(productive_seconds, machine_on)
+    return round((productive_seconds / machine_on) * 100, 1)
+
+
 def build_telegram_period_section(label: str, records: list[dict], top_limit: int = TELEGRAM_REPORT_TOP_LIMIT) -> str:
     total_machine_on_seconds = sum(int(record.get("machine_on_duration_seconds") or 0) for record in records)
     total_cutting_seconds = sum(int(record.get("cycle_duration_seconds") or 0) for record in records)
     total_idle_seconds = sum(int(record.get("idle_duration_seconds") or 0) for record in records)
     total_table_change_seconds = sum(int(record.get("table_change_duration_seconds") or 0) for record in records)
-    total_efficiency_percent = calculate_runtime_efficiency_percent(
-        total_machine_on_seconds,
+    total_allowed_table_change_seconds = sum(
+        min(int(record.get("table_change_duration_seconds") or 0), TELEGRAM_TABLE_CHANGE_FREE_SECONDS)
+        for record in records
+    )
+    total_table_change_penalty_seconds = max(total_table_change_seconds - total_allowed_table_change_seconds, 0)
+    total_efficiency_percent = calculate_telegram_efficiency_percent(
         total_cutting_seconds,
-        total_table_change_seconds,
+        total_allowed_table_change_seconds,
+        total_machine_on_seconds,
     )
     operators = summarize_operator_records_for_telegram(records)
 
@@ -4447,7 +4475,8 @@ def build_telegram_period_section(label: str, records: list[dict], top_limit: in
         label,
         (
             f"Total: {len(records)} cicluri | randament {total_efficiency_percent}% | "
-            f"executie {format_seconds(total_cutting_seconds)} | idle {format_seconds(total_idle_seconds)} | "
+            f"executie {format_seconds(total_cutting_seconds)} | schimb {format_seconds(total_table_change_seconds)} | "
+            f"penalizat {format_seconds(total_table_change_penalty_seconds)} | idle {format_seconds(total_idle_seconds)} | "
             f"ON {format_seconds(total_machine_on_seconds)}"
         ),
     ]
@@ -4465,7 +4494,8 @@ def build_telegram_period_section(label: str, records: list[dict], top_limit: in
     for index, operator in enumerate(operators[:top_limit], start=1):
         lines.append(
             f"{index}. {operator['operator_name']}: {operator['efficiency_percent']}% | "
-            f"exec {operator['cutting_label']} | idle {operator['idle_label']} | "
+            f"exec {operator['cutting_label']} | schimb {operator['table_change_label']} | "
+            f"pen. {operator['table_change_penalty_label']} | idle {operator['idle_label']} | "
             f"ON {operator['machine_on_label']} | {operator['records_count']} cicluri"
         )
     return "\n".join(lines)
@@ -4676,10 +4706,15 @@ def build_telegram_dosar_report(raw_dosar_query: str | None) -> str:
     total_cutting_seconds = sum(int(record.get("cycle_duration_seconds") or 0) for record in records)
     total_idle_seconds = sum(int(record.get("idle_duration_seconds") or 0) for record in records)
     total_table_change_seconds = sum(int(record.get("table_change_duration_seconds") or 0) for record in records)
-    total_efficiency_percent = calculate_runtime_efficiency_percent(
-        total_machine_on_seconds,
+    total_allowed_table_change_seconds = sum(
+        min(int(record.get("table_change_duration_seconds") or 0), TELEGRAM_TABLE_CHANGE_FREE_SECONDS)
+        for record in records
+    )
+    total_table_change_penalty_seconds = max(total_table_change_seconds - total_allowed_table_change_seconds, 0)
+    total_efficiency_percent = calculate_telegram_efficiency_percent(
         total_cutting_seconds,
-        total_table_change_seconds,
+        total_allowed_table_change_seconds,
+        total_machine_on_seconds,
     )
 
     operators = summarize_operator_records_for_telegram(records)
@@ -4712,6 +4747,7 @@ def build_telegram_dosar_report(raw_dosar_query: str | None) -> str:
             f"Timp ON total: {format_seconds(total_machine_on_seconds)}",
             f"Executie/Cutting: {format_seconds(total_cutting_seconds)}",
             f"Schimb masa: {format_seconds(total_table_change_seconds)}",
+            f"Schimb penalizat: {format_seconds(total_table_change_penalty_seconds)}",
             f"Idle: {format_seconds(total_idle_seconds)}",
         ]
     )
@@ -4723,6 +4759,7 @@ def build_telegram_dosar_report(raw_dosar_query: str | None) -> str:
             lines.append(
                 f"- {operator['operator_name']}: {operator['efficiency_percent']}% | "
                 f"ON {operator['machine_on_label']} | exec {operator['cutting_label']} | "
+                f"schimb {operator['table_change_label']} | pen. {operator['table_change_penalty_label']} | "
                 f"idle {operator['idle_label']} | {operator['records_count']} cicluri"
             )
 

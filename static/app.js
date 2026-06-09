@@ -47,7 +47,11 @@ const savedPeriodReportLabelMap = {
     month: "Lunar"
 };
 
-if (!["dashboard", "saved", "saved_modbus"].includes(state.currentView)) {
+if (state.currentView === "saved") {
+    state.currentView = "saved_modbus";
+    window.localStorage.setItem("currentView", state.currentView);
+}
+if (!["dashboard", "saved_modbus"].includes(state.currentView)) {
     state.currentView = "dashboard";
 }
 if (!["day", "week", "month"].includes(state.savedModbusPeriod)) {
@@ -1054,18 +1058,6 @@ function renderMachineSelector(machines) {
         `)
         .join("");
 
-    const savedButton = `
-        <button
-            class="machine-tab saved-tab ${state.currentView === "saved" ? "is-selected" : ""}"
-            data-view="saved"
-            type="button"
-        >
-            <small>Arhiva</small>
-            <strong>DATE SALVATE</strong>
-            <span>Operatori, programe si cicluri salvate automat azi.</span>
-        </button>
-    `;
-
     const savedModbusButton = `
         <button
             class="machine-tab saved-tab ${state.currentView === "saved_modbus" ? "is-selected" : ""}"
@@ -1078,7 +1070,7 @@ function renderMachineSelector(machines) {
         </button>
     `;
 
-    selector.innerHTML = `${machineButtons}${savedButton}${savedModbusButton}`;
+    selector.innerHTML = `${machineButtons}${savedModbusButton}`;
 }
 
 function renderMachineState(machine, machineState) {

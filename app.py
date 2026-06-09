@@ -162,6 +162,7 @@ TABLE_SHEET_BRIGHTNESS_THRESHOLD = min(max(read_env_float("TABLE_SHEET_BRIGHTNES
 TABLE_SHEET_LAPLACIAN_VAR_THRESHOLD = min(max(read_env_float("TABLE_SHEET_LAPLACIAN_VAR_THRESHOLD", 1800.0), 200.0), 10000.0)
 _background_sync_started = False
 _telegram_bot_started = False
+_telegram_pending_actions: dict[str, dict] = {}
 RUNTIME_VALUE_UNCHANGED = object()
 PROMETHEUS_BASE_URL = (os.getenv("PROMETHEUS_BASE_URL", "http://localhost:9090") or "http://localhost:9090").rstrip("/")
 ESP32_DHT_URL = (os.getenv("ESP32_DHT_URL", "") or "").strip()
@@ -4855,6 +4856,29 @@ def handle_telegram_command(message: dict) -> None:
     if not chat_id or not text:
         return
 
+    pending_action = _telegram_pending_actions.get(chat_id)
+    if pending_action and not text.startswith("/"):
+        pending_age_seconds = time_module.time() - float(pending_action.get("started_at", 0))
+        if pending_age_seconds <= 600 and pending_action.get("action") == "randament_dosar":
+            _telegram_pending_actions.pop(chat_id, None)
+            if not telegram_chat_is_allowed(chat_id):
+                print(f"Telegram unauthorized chat_id={chat_id}")
+                send_telegram_message(
+                    chat_id,
+                    "Chat-ul nu este autorizat pentru raportul laser.\n"
+                    f"Chat ID: {chat_id}\n"
+                    "Adauga acest ID in TELEGRAM_CHAT_IDS sau TELEGRAM_ALLOWED_CHAT_IDS.",
+                    reply_markup=build_telegram_reply_keyboard(),
+                )
+                return
+            send_telegram_message(
+                chat_id,
+                build_telegram_dosar_report(text),
+                reply_markup=build_telegram_reply_keyboard(),
+            )
+            return
+        _telegram_pending_actions.pop(chat_id, None)
+
     command_parts = text.split(maxsplit=1)
     command = command_parts[0].split("@", 1)[0].lower()
     command_argument = command_parts[1].strip() if len(command_parts) > 1 else ""
@@ -4893,6 +4917,17 @@ def handle_telegram_command(message: dict) -> None:
         return
 
     if command in {"/randament_dosar", "/dosar"}:
+        if not command_argument:
+            _telegram_pending_actions[chat_id] = {
+                "action": "randament_dosar",
+                "started_at": time_module.time(),
+            }
+            send_telegram_message(
+                chat_id,
+                "Ok, ce numar de dosar?",
+                reply_markup=build_telegram_reply_keyboard(),
+            )
+            return
         send_telegram_message(
             chat_id,
             build_telegram_dosar_report(command_argument),

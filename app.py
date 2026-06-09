@@ -4533,6 +4533,10 @@ def configure_telegram_bot_commands() -> None:
                         "description": "Raport randament laser pentru ziua curenta",
                     },
                     {
+                        "command": "meniu",
+                        "description": "Afiseaza butoanele botului",
+                    },
+                    {
                         "command": "chatid",
                         "description": "Afiseaza ID-ul chatului Telegram",
                     },
@@ -4544,6 +4548,20 @@ def configure_telegram_bot_commands() -> None:
             )
         },
         timeout_seconds=10.0,
+    )
+
+
+def build_telegram_reply_keyboard() -> str:
+    return json.dumps(
+        {
+            "keyboard": [
+                [{"text": "/raportzi"}, {"text": "/chatid"}],
+                [{"text": "/help"}],
+            ],
+            "resize_keyboard": True,
+            "one_time_keyboard": False,
+            "is_persistent": True,
+        }
     )
 
 
@@ -4567,17 +4585,16 @@ def split_telegram_message(text: str, max_length: int = 3900) -> list[str]:
     return chunks
 
 
-def send_telegram_message(chat_id: str, text: str) -> None:
+def send_telegram_message(chat_id: str, text: str, reply_markup: str | None = None) -> None:
     for chunk in split_telegram_message(text):
-        telegram_api_request(
-            "sendMessage",
-            {
-                "chat_id": chat_id,
-                "text": chunk,
-                "disable_web_page_preview": "true",
-            },
-            timeout_seconds=15.0,
-        )
+        payload = {
+            "chat_id": chat_id,
+            "text": chunk,
+            "disable_web_page_preview": "true",
+        }
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        telegram_api_request("sendMessage", payload, timeout_seconds=15.0)
 
 
 def send_telegram_report_to_configured_chats() -> None:
@@ -4602,15 +4619,19 @@ def handle_telegram_command(message: dict) -> None:
         return
 
     command = text.split(maxsplit=1)[0].split("@", 1)[0].lower()
-    if command not in {"/raportzi", "/chatid", "/id", "/start", "/help"}:
+    if command not in {"/raportzi", "/meniu", "/menu", "/chatid", "/id", "/start", "/help"}:
         return
 
     if command in {"/chatid", "/id"}:
-        send_telegram_message(chat_id, f"Chat ID: {chat_id}")
+        send_telegram_message(chat_id, f"Chat ID: {chat_id}", reply_markup=build_telegram_reply_keyboard())
         return
 
-    if command in {"/start", "/help"}:
-        send_telegram_message(chat_id, "Comenzi disponibile: /raportzi, /chatid")
+    if command in {"/start", "/help", "/meniu", "/menu"}:
+        send_telegram_message(
+            chat_id,
+            "Meniu raport laser:",
+            reply_markup=build_telegram_reply_keyboard(),
+        )
         return
 
     if not telegram_chat_is_allowed(chat_id):
@@ -4620,11 +4641,16 @@ def handle_telegram_command(message: dict) -> None:
             "Chat-ul nu este autorizat pentru raportul laser.\n"
             f"Chat ID: {chat_id}\n"
             "Adauga acest ID in TELEGRAM_CHAT_IDS sau TELEGRAM_ALLOWED_CHAT_IDS.",
+            reply_markup=build_telegram_reply_keyboard(),
         )
         return
 
     if command == "/raportzi":
-        send_telegram_message(chat_id, build_telegram_laser_report(include_week=False))
+        send_telegram_message(
+            chat_id,
+            build_telegram_laser_report(include_week=False),
+            reply_markup=build_telegram_reply_keyboard(),
+        )
         return
 
 

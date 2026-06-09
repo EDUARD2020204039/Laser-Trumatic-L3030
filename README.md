@@ -69,6 +69,12 @@ Aplicatia porneste implicit pe `http://localhost:3030`.
 - `SAVED_RECORDS_PROMETHEUS_ENABLED=1` (recomandat in productie) reconstruieste istoricul din Prometheus cind SQLite local este gol dupa un update/redeploy
 - `PROMETHEUS_QUERY_TIMEOUT_SECONDS=2.5` scurteaza timpul de asteptare pe fiecare query Prometheus inainte sa se treaca mai departe sau sa se cada pe fallback
 - `SNAPSHOT_FRESHNESS_SECONDS=3` forteaza refresh live daca ultimul snapshot din runtime este prea vechi
+- `TELEGRAM_BOT_TOKEN` tokenul botului Telegram pentru rapoarte si comenzi
+- `TELEGRAM_CHAT_IDS` lista de chat-uri care primesc raportul automat, separate prin virgula/spatiu
+- `TELEGRAM_ALLOWED_CHAT_IDS` optional, limiteaza cine poate folosi comanda `/raportzi`; daca lipseste, se foloseste `TELEGRAM_CHAT_IDS`
+- `TELEGRAM_REPORT_TIME=23:30` ora locala la care se trimite raportul automat de seara
+- `TELEGRAM_REPORT_MACHINE_KEYS=laser1modbus` masinile incluse in raport; poti pune mai multe cu virgula
+- `TELEGRAM_REPORT_TOP_LIMIT=10` cati operatori apar in topul de randament
 - `ABKANT_IDLE_STAGNATION_SECONDS=600` marcheaza Abkantul ca `Idle` daca programul si progresul ramin neschimbate mai mult de 10 minute
 - `ABKANT_FEED_STALE_SECONDS=120` spune dupa cite secunde fara colectare recenta snapshotul Abkant trebuie tratat ca `Feed indisponibil`
 - `MODBUS_TCP_RETRY_ATTEMPTS=3` reincearca citirea Modbus TCP de citeva ori inainte sa declare timeout

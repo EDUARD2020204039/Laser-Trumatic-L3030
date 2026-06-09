@@ -161,6 +161,7 @@ TABLE_SHEET_EDGE_DENSITY_THRESHOLD = min(max(read_env_float("TABLE_SHEET_EDGE_DE
 TABLE_SHEET_BRIGHTNESS_THRESHOLD = min(max(read_env_float("TABLE_SHEET_BRIGHTNESS_THRESHOLD", 90.0), 30.0), 220.0)
 TABLE_SHEET_LAPLACIAN_VAR_THRESHOLD = min(max(read_env_float("TABLE_SHEET_LAPLACIAN_VAR_THRESHOLD", 1800.0), 200.0), 10000.0)
 _background_sync_started = False
+_telegram_bot_started = False
 RUNTIME_VALUE_UNCHANGED = object()
 PROMETHEUS_BASE_URL = (os.getenv("PROMETHEUS_BASE_URL", "http://localhost:9090") or "http://localhost:9090").rstrip("/")
 ESP32_DHT_URL = (os.getenv("ESP32_DHT_URL", "") or "").strip()
@@ -169,6 +170,26 @@ try:
 except (TypeError, ValueError):
     ESP32_DHT_TIMEOUT_SECONDS = 2.5
 ESP32_DHT_TIMEOUT_SECONDS = min(max(ESP32_DHT_TIMEOUT_SECONDS, 0.5), 15.0)
+TELEGRAM_BOT_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN", "") or "").strip()
+TELEGRAM_CHAT_IDS = tuple(
+    chat_id.strip()
+    for chat_id in re.split(r"[,;\s]+", os.getenv("TELEGRAM_CHAT_IDS", "") or "")
+    if chat_id.strip()
+)
+TELEGRAM_ALLOWED_CHAT_IDS = tuple(
+    chat_id.strip()
+    for chat_id in re.split(r"[,;\s]+", os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", "") or "")
+    if chat_id.strip()
+)
+TELEGRAM_REPORTS_ENABLED = os.getenv("TELEGRAM_REPORTS_ENABLED", "1") != "0"
+TELEGRAM_POLLING_ENABLED = os.getenv("TELEGRAM_POLLING_ENABLED", "1") != "0"
+TELEGRAM_REPORT_TIME = (os.getenv("TELEGRAM_REPORT_TIME", "23:30") or "23:30").strip()
+TELEGRAM_REPORT_MACHINE_KEYS = tuple(
+    machine_key.strip()
+    for machine_key in re.split(r"[,;\s]+", os.getenv("TELEGRAM_REPORT_MACHINE_KEYS", DEFAULT_MACHINE_KEY) or DEFAULT_MACHINE_KEY)
+    if machine_key.strip()
+)
+TELEGRAM_REPORT_TOP_LIMIT = max(int(os.getenv("TELEGRAM_REPORT_TOP_LIMIT", "10") or "10"), 1)
 UNKNOWN_OPERATOR_LABEL = "Fara operator la salvare"
 SAVED_CYCLE_INSERT_PLACEHOLDERS = ", ".join(["?"] * 23)
 _operator_snapshot_cache: dict[int, dict] = {}
@@ -4236,6 +4257,326 @@ def build_sqlite_operator_summaries(machine_key: str | None = None) -> list[dict
     return output
 
 
+def resolve_telegram_report_time() -> tuple[int, int]:
+    match = re.fullmatch(r"\s*(\d{1,2}):(\d{2})\s*", TELEGRAM_REPORT_TIME)
+    if not match:
+        return 23, 30
+
+    hour = min(max(int(match.group(1)), 0), 23)
+    minute = min(max(int(match.group(2)), 0), 59)
+    return hour, minute
+
+
+def resolve_telegram_report_machine_keys() -> list[str]:
+    resolved_keys: list[str] = []
+    for machine_key in TELEGRAM_REPORT_MACHINE_KEYS or (DEFAULT_MACHINE_KEY,):
+        try:
+            resolved_machine_key = ensure_machine_key(machine_key)
+        except ValueError:
+            continue
+        if resolved_machine_key not in resolved_keys:
+            resolved_keys.append(resolved_machine_key)
+
+    if not resolved_keys:
+        resolved_keys.append(DEFAULT_MACHINE_KEY)
+    return resolved_keys
+
+
+def fetch_saved_cycles_between_for_machines(
+    start_dt: datetime,
+    end_dt: datetime,
+    machine_keys: list[str],
+) -> list[dict]:
+    records: list[dict] = []
+    for machine_key in machine_keys:
+        records.extend(fetch_saved_cycles_between(start_dt, end_dt, machine_key=machine_key, limit=5000))
+    records.sort(key=lambda item: item.get("table_change_started_at") or item.get("created_at") or "", reverse=True)
+    return records
+
+
+def summarize_operator_records_for_telegram(records: list[dict]) -> list[dict]:
+    operator_map: dict[str, dict] = {}
+    for record in records:
+        operator_name = (record.get("operator_name") or UNKNOWN_OPERATOR_LABEL).strip() or UNKNOWN_OPERATOR_LABEL
+        employee_id = str(record.get("operator_id") or "").strip()
+        operator_id = employee_id or f"name:{operator_name}"
+        operator_entry = operator_map.setdefault(
+            operator_id,
+            {
+                "operator_id": operator_id,
+                "employee_id": employee_id,
+                "operator_name": operator_name,
+                "machines": set(),
+                "records_count": 0,
+                "machine_on_seconds": 0,
+                "cutting_seconds": 0,
+                "idle_seconds": 0,
+                "table_change_seconds": 0,
+            },
+        )
+        operator_entry["machines"].add(record.get("machine_label") or record.get("machine_key") or "")
+        operator_entry["records_count"] += 1
+        operator_entry["machine_on_seconds"] += int(record.get("machine_on_duration_seconds") or 0)
+        operator_entry["cutting_seconds"] += int(record.get("cycle_duration_seconds") or 0)
+        operator_entry["idle_seconds"] += int(record.get("idle_duration_seconds") or 0)
+        operator_entry["table_change_seconds"] += int(record.get("table_change_duration_seconds") or 0)
+
+    output: list[dict] = []
+    for operator_entry in operator_map.values():
+        machine_on_seconds = int(operator_entry["machine_on_seconds"] or 0)
+        cutting_seconds = int(operator_entry["cutting_seconds"] or 0)
+        table_change_seconds = int(operator_entry["table_change_seconds"] or 0)
+        idle_seconds = int(operator_entry["idle_seconds"] or 0)
+        operator_entry["efficiency_percent"] = calculate_operator_efficiency_percent(
+            cutting_seconds,
+            table_change_seconds,
+            machine_on_seconds,
+        )
+        operator_entry["machine_on_label"] = format_seconds(machine_on_seconds)
+        operator_entry["cutting_label"] = format_seconds(cutting_seconds)
+        operator_entry["idle_label"] = format_seconds(idle_seconds)
+        operator_entry["table_change_label"] = format_seconds(table_change_seconds)
+        operator_entry["machines"] = sorted(machine for machine in operator_entry["machines"] if machine)
+        output.append(operator_entry)
+
+    output.sort(
+        key=lambda item: (
+            -float(item["efficiency_percent"]),
+            -int(item["cutting_seconds"] or 0),
+            -int(item["records_count"] or 0),
+            item["operator_name"],
+        )
+    )
+    return output
+
+
+def build_telegram_period_section(label: str, records: list[dict], top_limit: int = TELEGRAM_REPORT_TOP_LIMIT) -> str:
+    total_machine_on_seconds = sum(int(record.get("machine_on_duration_seconds") or 0) for record in records)
+    total_cutting_seconds = sum(int(record.get("cycle_duration_seconds") or 0) for record in records)
+    total_idle_seconds = sum(int(record.get("idle_duration_seconds") or 0) for record in records)
+    total_table_change_seconds = sum(int(record.get("table_change_duration_seconds") or 0) for record in records)
+    total_efficiency_percent = calculate_runtime_efficiency_percent(
+        total_machine_on_seconds,
+        total_cutting_seconds,
+        total_table_change_seconds,
+    )
+    operators = summarize_operator_records_for_telegram(records)
+
+    lines = [
+        label,
+        (
+            f"Total: {len(records)} cicluri | randament {total_efficiency_percent}% | "
+            f"executie {format_seconds(total_cutting_seconds)} | idle {format_seconds(total_idle_seconds)} | "
+            f"ON {format_seconds(total_machine_on_seconds)}"
+        ),
+    ]
+
+    if not operators:
+        lines.append("Nu sunt cicluri salvate in perioada asta.")
+        return "\n".join(lines)
+
+    best_operator = operators[0]
+    lines.append(
+        "Top randament: "
+        f"{best_operator['operator_name']} - {best_operator['efficiency_percent']}%"
+    )
+    lines.append("Operatori:")
+    for index, operator in enumerate(operators[:top_limit], start=1):
+        lines.append(
+            f"{index}. {operator['operator_name']}: {operator['efficiency_percent']}% | "
+            f"exec {operator['cutting_label']} | idle {operator['idle_label']} | "
+            f"ON {operator['machine_on_label']} | {operator['records_count']} cicluri"
+        )
+    return "\n".join(lines)
+
+
+def build_telegram_laser_report(include_week: bool = True) -> str:
+    now = now_local()
+    machine_keys = resolve_telegram_report_machine_keys()
+    machine_labels = [
+        MACHINE_DEFINITIONS.get(machine_key, {}).get("label", machine_key)
+        for machine_key in machine_keys
+    ]
+    today_start = datetime.combine(date.today(), time.min)
+    week_start = today_start - timedelta(days=date.today().weekday())
+    day_records = fetch_saved_cycles_between_for_machines(today_start, now, machine_keys)
+
+    lines = [
+        "Raport Laser TruMatic L3030",
+        f"Masini: {', '.join(machine_labels)}",
+        f"Pana la: {now.strftime('%d.%m.%Y %H:%M')}",
+        "",
+        build_telegram_period_section("Ziua curenta", day_records),
+    ]
+
+    if include_week:
+        week_records = fetch_saved_cycles_between_for_machines(week_start, now, machine_keys)
+        lines.extend(
+            [
+                "",
+                build_telegram_period_section(
+                    f"Saptamana curenta ({week_start.strftime('%d.%m')} - {now.strftime('%d.%m')})",
+                    week_records,
+                ),
+            ]
+        )
+
+    return "\n".join(lines)
+
+
+def telegram_api_request(method: str, payload: dict | None = None, timeout_seconds: float = 30.0) -> dict:
+    if not TELEGRAM_BOT_TOKEN:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN lipseste.")
+
+    request_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{method}"
+    encoded_payload = urllib.parse.urlencode(payload or {}).encode("utf-8")
+    request_obj = urllib.request.Request(
+        request_url,
+        data=encoded_payload,
+        headers={"User-Agent": "HABA-Production-Monitor/1.0"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request_obj, timeout=timeout_seconds) as response:
+        response_payload = json.loads(response.read().decode("utf-8"))
+    if not response_payload.get("ok"):
+        raise RuntimeError(response_payload.get("description") or f"Telegram {method} failed.")
+    return response_payload
+
+
+def split_telegram_message(text: str, max_length: int = 3900) -> list[str]:
+    if len(text) <= max_length:
+        return [text]
+
+    chunks: list[str] = []
+    current_lines: list[str] = []
+    current_length = 0
+    for line in text.splitlines():
+        next_length = current_length + len(line) + 1
+        if current_lines and next_length > max_length:
+            chunks.append("\n".join(current_lines))
+            current_lines = []
+            current_length = 0
+        current_lines.append(line)
+        current_length += len(line) + 1
+    if current_lines:
+        chunks.append("\n".join(current_lines))
+    return chunks
+
+
+def send_telegram_message(chat_id: str, text: str) -> None:
+    for chunk in split_telegram_message(text):
+        telegram_api_request(
+            "sendMessage",
+            {
+                "chat_id": chat_id,
+                "text": chunk,
+                "disable_web_page_preview": "true",
+            },
+            timeout_seconds=15.0,
+        )
+
+
+def send_telegram_report_to_configured_chats() -> None:
+    if not TELEGRAM_CHAT_IDS:
+        return
+    report_text = build_telegram_laser_report(include_week=True)
+    for chat_id in TELEGRAM_CHAT_IDS:
+        send_telegram_message(chat_id, report_text)
+
+
+def telegram_chat_is_allowed(chat_id: str) -> bool:
+    allowed_chat_ids = TELEGRAM_ALLOWED_CHAT_IDS or TELEGRAM_CHAT_IDS
+    if not allowed_chat_ids:
+        return True
+    return chat_id in allowed_chat_ids
+
+
+def handle_telegram_command(message: dict) -> None:
+    chat_id = str((message.get("chat") or {}).get("id") or "").strip()
+    text = str(message.get("text") or "").strip()
+    if not chat_id or not text:
+        return
+
+    command = text.split(maxsplit=1)[0].split("@", 1)[0].lower()
+    if command not in {"/raportzi", "/start", "/help"}:
+        return
+
+    if not telegram_chat_is_allowed(chat_id):
+        send_telegram_message(chat_id, "Chat-ul nu este autorizat pentru raportul laser.")
+        return
+
+    if command == "/raportzi":
+        send_telegram_message(chat_id, build_telegram_laser_report(include_week=False))
+        return
+
+    send_telegram_message(chat_id, "Comenzi disponibile: /raportzi")
+
+
+def telegram_polling_loop() -> None:
+    update_offset: int | None = None
+    while True:
+        try:
+            payload = {
+                "timeout": "25",
+                "allowed_updates": json.dumps(["message"]),
+            }
+            if update_offset is not None:
+                payload["offset"] = str(update_offset)
+            response_payload = telegram_api_request("getUpdates", payload, timeout_seconds=35.0)
+            for update in response_payload.get("result") or []:
+                update_id = update.get("update_id")
+                if update_id is not None:
+                    update_offset = int(update_id) + 1
+                message = update.get("message") or {}
+                handle_telegram_command(message)
+        except Exception as exc:
+            print(f"Telegram polling warning: {exc}")
+            time_module.sleep(10)
+
+
+def telegram_scheduled_report_loop() -> None:
+    last_sent_key: str | None = None
+    report_hour, report_minute = resolve_telegram_report_time()
+    while True:
+        try:
+            now = now_local()
+            current_key = now.strftime("%Y-%m-%d %H:%M")
+            if now.hour == report_hour and now.minute == report_minute and current_key != last_sent_key:
+                send_telegram_report_to_configured_chats()
+                last_sent_key = current_key
+            time_module.sleep(20)
+        except Exception as exc:
+            print(f"Telegram scheduled report warning: {exc}")
+            time_module.sleep(60)
+
+
+def ensure_telegram_bot_started() -> None:
+    global _telegram_bot_started
+    if _telegram_bot_started or not TELEGRAM_BOT_TOKEN:
+        return
+
+    if os.getenv("FLASK_DEBUG", "0") == "1" and os.getenv("WERKZEUG_RUN_MAIN") != "true":
+        return
+
+    worker_count = int(os.getenv("GUNICORN_WORKERS", "1"))
+    if worker_count > 1:
+        return
+
+    if TELEGRAM_REPORTS_ENABLED and TELEGRAM_CHAT_IDS:
+        threading.Thread(
+            target=telegram_scheduled_report_loop,
+            name="telegram-scheduled-report",
+            daemon=True,
+        ).start()
+    if TELEGRAM_POLLING_ENABLED:
+        threading.Thread(
+            target=telegram_polling_loop,
+            name="telegram-command-polling",
+            daemon=True,
+        ).start()
+    _telegram_bot_started = True
+
+
 def filter_records_by_operator(records: list[dict], operator_id: str | None) -> list[dict]:
     if not operator_id:
         return records
@@ -6004,6 +6345,7 @@ def delete_event_history():
 
 init_db()
 ensure_background_sync_started()
+ensure_telegram_bot_started()
 
 
 if __name__ == "__main__":

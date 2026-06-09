@@ -4840,6 +4840,16 @@ def build_telegram_reply_keyboard() -> str:
     )
 
 
+def build_telegram_dosar_force_reply() -> str:
+    return json.dumps(
+        {
+            "force_reply": True,
+            "selective": True,
+            "input_field_placeholder": "Numar dosar (ex. 34158)",
+        }
+    )
+
+
 def split_telegram_message(text: str, max_length: int = 3900) -> list[str]:
     if len(text) <= max_length:
         return [text]
@@ -4887,16 +4897,31 @@ def telegram_chat_is_allowed(chat_id: str) -> bool:
     return chat_id in allowed_chat_ids
 
 
+def get_telegram_pending_key(message: dict, chat_id: str) -> str:
+    user_id = str((message.get("from") or {}).get("id") or "").strip()
+    if user_id:
+        return f"{chat_id}:{user_id}"
+    return chat_id
+
+
+def telegram_message_replies_to_dosar_prompt(message: dict) -> bool:
+    reply_text = str((message.get("reply_to_message") or {}).get("text") or "").strip().lower()
+    return "ce numar de dosar" in reply_text or "numar de dosar" in reply_text
+
+
 def handle_telegram_command(message: dict) -> None:
     chat_id = str((message.get("chat") or {}).get("id") or "").strip()
     text = str(message.get("text") or "").strip()
     if not chat_id or not text:
         return
 
-    pending_action = _telegram_pending_actions.get(chat_id)
-    if pending_action and not text.startswith("/"):
-        pending_age_seconds = time_module.time() - float(pending_action.get("started_at", 0))
-        if pending_age_seconds <= 600 and pending_action.get("action") == "randament_dosar":
+    pending_key = get_telegram_pending_key(message, chat_id)
+    pending_action = _telegram_pending_actions.get(pending_key) or _telegram_pending_actions.get(chat_id)
+    is_dosar_reply = telegram_message_replies_to_dosar_prompt(message)
+    if (pending_action or is_dosar_reply) and not text.startswith("/"):
+        pending_age_seconds = time_module.time() - float((pending_action or {}).get("started_at", time_module.time()))
+        if is_dosar_reply or (pending_age_seconds <= 600 and pending_action.get("action") == "randament_dosar"):
+            _telegram_pending_actions.pop(pending_key, None)
             _telegram_pending_actions.pop(chat_id, None)
             if not telegram_chat_is_allowed(chat_id):
                 print(f"Telegram unauthorized chat_id={chat_id}")
@@ -4914,6 +4939,7 @@ def handle_telegram_command(message: dict) -> None:
                 reply_markup=build_telegram_reply_keyboard(),
             )
             return
+        _telegram_pending_actions.pop(pending_key, None)
         _telegram_pending_actions.pop(chat_id, None)
 
     command_parts = text.split(maxsplit=1)
@@ -4955,14 +4981,14 @@ def handle_telegram_command(message: dict) -> None:
 
     if command in {"/randament_dosar", "/dosar"}:
         if not command_argument:
-            _telegram_pending_actions[chat_id] = {
+            _telegram_pending_actions[pending_key] = {
                 "action": "randament_dosar",
                 "started_at": time_module.time(),
             }
             send_telegram_message(
                 chat_id,
-                "Ok, ce numar de dosar?",
-                reply_markup=build_telegram_reply_keyboard(),
+                "Ok, ce numar de dosar? Raspunde la mesajul acesta cu numarul.",
+                reply_markup=build_telegram_dosar_force_reply(),
             )
             return
         send_telegram_message(

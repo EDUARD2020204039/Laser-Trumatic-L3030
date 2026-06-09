@@ -183,6 +183,7 @@ TELEGRAM_ALLOWED_CHAT_IDS = tuple(
 )
 TELEGRAM_REPORTS_ENABLED = os.getenv("TELEGRAM_REPORTS_ENABLED", "1") != "0"
 TELEGRAM_POLLING_ENABLED = os.getenv("TELEGRAM_POLLING_ENABLED", "1") != "0"
+TELEGRAM_COMMANDS_ENABLED = os.getenv("TELEGRAM_COMMANDS_ENABLED", "1") != "0"
 TELEGRAM_REPORT_TIME = (os.getenv("TELEGRAM_REPORT_TIME", "23:30") or "23:30").strip()
 TELEGRAM_REPORT_MACHINE_KEYS = tuple(
     machine_key.strip()
@@ -4521,6 +4522,31 @@ def telegram_api_request(method: str, payload: dict | None = None, timeout_secon
     return response_payload
 
 
+def configure_telegram_bot_commands() -> None:
+    telegram_api_request(
+        "setMyCommands",
+        {
+            "commands": json.dumps(
+                [
+                    {
+                        "command": "raportzi",
+                        "description": "Raport randament laser pentru ziua curenta",
+                    },
+                    {
+                        "command": "chatid",
+                        "description": "Afiseaza ID-ul chatului Telegram",
+                    },
+                    {
+                        "command": "help",
+                        "description": "Afiseaza comenzile disponibile",
+                    },
+                ]
+            )
+        },
+        timeout_seconds=10.0,
+    )
+
+
 def split_telegram_message(text: str, max_length: int = 3900) -> list[str]:
     if len(text) <= max_length:
         return [text]
@@ -4576,18 +4602,30 @@ def handle_telegram_command(message: dict) -> None:
         return
 
     command = text.split(maxsplit=1)[0].split("@", 1)[0].lower()
-    if command not in {"/raportzi", "/start", "/help"}:
+    if command not in {"/raportzi", "/chatid", "/id", "/start", "/help"}:
+        return
+
+    if command in {"/chatid", "/id"}:
+        send_telegram_message(chat_id, f"Chat ID: {chat_id}")
+        return
+
+    if command in {"/start", "/help"}:
+        send_telegram_message(chat_id, "Comenzi disponibile: /raportzi, /chatid")
         return
 
     if not telegram_chat_is_allowed(chat_id):
-        send_telegram_message(chat_id, "Chat-ul nu este autorizat pentru raportul laser.")
+        print(f"Telegram unauthorized chat_id={chat_id}")
+        send_telegram_message(
+            chat_id,
+            "Chat-ul nu este autorizat pentru raportul laser.\n"
+            f"Chat ID: {chat_id}\n"
+            "Adauga acest ID in TELEGRAM_CHAT_IDS sau TELEGRAM_ALLOWED_CHAT_IDS.",
+        )
         return
 
     if command == "/raportzi":
         send_telegram_message(chat_id, build_telegram_laser_report(include_week=False))
         return
-
-    send_telegram_message(chat_id, "Comenzi disponibile: /raportzi")
 
 
 def telegram_polling_loop() -> None:
@@ -4639,6 +4677,12 @@ def ensure_telegram_bot_started() -> None:
     worker_count = int(os.getenv("GUNICORN_WORKERS", "1"))
     if worker_count > 1:
         return
+
+    if TELEGRAM_COMMANDS_ENABLED:
+        try:
+            configure_telegram_bot_commands()
+        except Exception as exc:
+            print(f"Telegram command menu warning: {exc}")
 
     if TELEGRAM_REPORTS_ENABLED and TELEGRAM_CHAT_IDS:
         threading.Thread(

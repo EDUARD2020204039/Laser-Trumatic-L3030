@@ -260,6 +260,12 @@ DEFAULT_MACHINE_HMI_URLS = {
     "abkant": "https://abkant.helpan.ro/",
 }
 
+DEFAULT_REAL_DATA_ENDPOINT_FALLBACKS = {
+    "laser1": "https://laserb.habaresearch.eu/",
+    "laser1modbus": "https://laserb.habaresearch.eu/",
+    "laser2modbus": "https://lasera.habaresearch.eu/",
+}
+
 DEFAULT_MACHINE_CAMERA_FEEDS = {
     "laser1": {
         "url": "http://192.168.2.140/ISAPI/Streaming/channels/101/picture",
@@ -842,7 +848,10 @@ def resolve_real_data_endpoint_candidates(machine_key: str) -> list[str]:
         get_machine_env_value(machine_key, "REAL_DATA_ENDPOINT", primary_legacy_names)
         or REAL_DATA_FEEDS[machine_key]["endpoint"]
     )
-    fallback_endpoint = get_machine_env_value(machine_key, "REAL_DATA_ENDPOINT_FALLBACK", fallback_legacy_names)
+    fallback_endpoint = (
+        get_machine_env_value(machine_key, "REAL_DATA_ENDPOINT_FALLBACK", fallback_legacy_names)
+        or DEFAULT_REAL_DATA_ENDPOINT_FALLBACKS.get(machine_key, "")
+    )
 
     candidates: list[str] = []
     for endpoint in (primary_endpoint, fallback_endpoint):

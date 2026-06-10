@@ -5285,7 +5285,7 @@ def resolve_saved_period(period: str | None) -> str:
 
 def resolve_saved_modbus_period(period: str | None) -> str:
     candidate = (period or "day").strip().lower()
-    if candidate not in {"day", "week", "month"}:
+    if candidate not in {"day", "yesterday", "week", "month", "all"}:
         raise ValueError(f"Unsupported saved MODBUS period: {candidate}")
     return candidate
 
@@ -5313,11 +5313,22 @@ def resolve_saved_modbus_window(period: str, now: datetime) -> tuple[datetime, d
         end = now
         return start, end, False, "Ziua curenta (00:00 - acum)"
 
+    if period == "yesterday":
+        yesterday = date.today() - timedelta(days=1)
+        start = datetime.combine(yesterday, time.min)
+        end = datetime.combine(date.today(), time.min)
+        return start, end, True, "Ziua anterioara completa"
+
     if period == "week":
         current_week_start = datetime.combine(date.today(), time.min) - timedelta(days=date.today().weekday())
         start = current_week_start - timedelta(days=7)
         end = current_week_start
         return start, end, True, "Saptamana completa anterioara (Luni - Duminica)"
+
+    if period == "all":
+        start = now - timedelta(days=3650)
+        end = now
+        return start, end, False, "Tot istoricul disponibil"
 
     current_month_start = datetime.combine(date.today().replace(day=1), time.min)
     previous_month_last_day = current_month_start - timedelta(days=1)
@@ -5330,8 +5341,10 @@ def resolve_saved_modbus_prometheus_range(period: str) -> str:
     normalized = resolve_saved_modbus_period(period)
     return {
         "day": "2d",
+        "yesterday": "3d",
         "week": "21d",
         "month": "70d",
+        "all": "3650d",
     }[normalized]
 
 

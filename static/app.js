@@ -55,7 +55,7 @@ if (state.currentView === "saved") {
 if (!["dashboard", "saved_modbus"].includes(state.currentView)) {
     state.currentView = "dashboard";
 }
-if (!["day", "week", "month"].includes(state.savedModbusPeriod)) {
+if (!["day", "yesterday", "week", "month", "all"].includes(state.savedModbusPeriod)) {
     state.savedModbusPeriod = "day";
 }
 if (!["laser1modbus", "laser2modbus", "all"].includes(state.savedModbusMachineKey)) {
@@ -190,14 +190,34 @@ function getSavedModbusPeriodMeta(period, payload) {
         };
     }
 
+    if (period === "yesterday") {
+        return {
+            key: "yesterday",
+            sectionTitle: "Date Salvate MODBUS - Ieri",
+            subtitle: "Se folosesc ciclurile utilajului MODBUS selectat din ziua anterioara completa.",
+            hint: `Intervalul este ziua anterioara completa. ${windowLabel}`.trim(),
+            countLabel: "Cicluri MODBUS ieri",
+            emptySummary: "Nu exista cicluri MODBUS salvate ieri.",
+            emptyRecords: "Nu exista randamente MODBUS salvate ieri."
+        };
+    }
+
     return {
-        key: "month",
-        sectionTitle: "Date Salvate MODBUS - Lunar",
-        subtitle: "Media lunara se calculeaza doar dupa o luna completa.",
-        hint: `Se afiseaza ultima luna completa incheiata. ${windowLabel}`.trim(),
-        countLabel: "Cicluri MODBUS luna",
-        emptySummary: "Nu exista cicluri MODBUS salvate in ultima luna completa.",
-        emptyRecords: "Nu exista randamente MODBUS in ultima luna completa."
+        key: period === "all" ? "all" : "month",
+        sectionTitle: period === "all" ? "Date Salvate MODBUS - Toate" : "Date Salvate MODBUS - Lunar",
+        subtitle: period === "all"
+            ? "Se foloseste tot istoricul disponibil pentru utilajul MODBUS selectat."
+            : "Media lunara se calculeaza doar dupa o luna completa.",
+        hint: period === "all"
+            ? `Se afiseaza istoricul disponibil in Prometheus si cache-ul persistent. ${windowLabel}`.trim()
+            : `Se afiseaza ultima luna completa incheiata. ${windowLabel}`.trim(),
+        countLabel: period === "all" ? "Total cicluri MODBUS" : "Cicluri MODBUS luna",
+        emptySummary: period === "all"
+            ? "Nu exista cicluri MODBUS salvate in istoric."
+            : "Nu exista cicluri MODBUS salvate in ultima luna completa.",
+        emptyRecords: period === "all"
+            ? "Nu exista randamente MODBUS salvate in istoric."
+            : "Nu exista randamente MODBUS in ultima luna completa."
     };
 }
 
@@ -328,7 +348,7 @@ function prepareSavedModbusViewLoadingState() {
     const periodMeta = getSavedModbusPeriodMeta(state.savedModbusPeriod, null);
     syncSectionVisibility("saved_modbus");
     renderSavedModbusHeader(periodMeta);
-    renderSavedFilters(state.savedModbusPeriod, { includeAll: false });
+    renderSavedFilters(state.savedModbusPeriod, { includeAll: true });
     renderSavedModbusMachineFilter({
         machine_key: state.savedModbusMachineKey,
         machine_options: []
@@ -420,7 +440,7 @@ function bindActions() {
 
             const nextPeriod = button.dataset.savedPeriod || "all";
             if (state.currentView === "saved_modbus") {
-                state.savedModbusPeriod = ["day", "week", "month"].includes(nextPeriod) ? nextPeriod : "day";
+                state.savedModbusPeriod = ["day", "yesterday", "week", "month", "all"].includes(nextPeriod) ? nextPeriod : "day";
                 window.localStorage.setItem("savedModbusPeriod", state.savedModbusPeriod);
                 await loadSavedModbusRecords();
                 return;
@@ -1004,7 +1024,7 @@ function renderSavedModbusView(payload) {
     document.getElementById("saved-section").classList.add("is-modbus-layout");
     renderSavedModbusHeader(periodMeta, payload);
     renderMachineSelector(state.dashboard?.machines || window.appConfig.initialMachines || []);
-    renderSavedFilters(currentPeriod, { includeAll: false });
+    renderSavedFilters(currentPeriod, { includeAll: true });
     renderSavedModbusMachineFilter(payload);
     renderSavedModbusOperatorFilter(payload);
     renderSavedModbusSummary(payload, periodMeta);

@@ -5351,6 +5351,7 @@ def build_saved_modbus_payload(
     window_start, window_end, is_closed_period, window_label = resolve_saved_modbus_window(normalized_period, now)
     records: list[dict] = []
     data_source = "sqlite-fallback"
+    prometheus_query_succeeded = False
     if SAVED_RECORDS_PROMETHEUS_ENABLED:
         try:
             prometheus_records: list[dict] = []
@@ -5363,13 +5364,13 @@ def build_saved_modbus_payload(
                         window_end=window_end,
                     )
                 )
-            if prometheus_records:
-                records = prometheus_records
-                data_source = "prometheus"
+            records = prometheus_records
+            data_source = "prometheus"
+            prometheus_query_succeeded = True
         except Exception:
             pass
 
-    if not records:
+    if not prometheus_query_succeeded:
         for selected_machine_key in selected_machine_keys:
             records.extend(fetch_saved_cycles_between(window_start, window_end, machine_key=selected_machine_key))
     records.sort(key=lambda item: item.get("table_change_ended_at") or item.get("created_at") or "", reverse=True)

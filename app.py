@@ -4974,11 +4974,18 @@ def build_telegram_dosar_report(raw_dosar_query: str | None) -> str:
         lines.append("")
         lines.append("Operatori:")
         for operator in operators[:TELEGRAM_REPORT_TOP_LIMIT]:
-            lines.append(
-                f"- {operator['operator_name']}: {operator['efficiency_percent']}% | "
-                f"ON {operator['machine_on_label']} | exec {operator['cutting_label']} | "
-                f"schimb {operator['table_change_label']} | pen. {operator['table_change_penalty_label']} | "
-                f"idle {operator['idle_label']} | {operator['records_count']} cicluri"
+            lines.extend(
+                [
+                    "",
+                    f"- {operator['operator_name']}",
+                    f"Randament: {operator['efficiency_percent']}%",
+                    f"ON: {operator['machine_on_label']}",
+                    f"Executie: {operator['cutting_label']}",
+                    f"Schimb total: {operator['table_change_label']}",
+                    f"Schimb penalizat: {operator['table_change_penalty_label']}",
+                    f"Idle: {operator['idle_label']}",
+                    f"Cicluri: {operator['records_count']}",
+                ]
             )
 
     if programs:

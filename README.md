@@ -50,17 +50,17 @@ Aplicatia porneste implicit pe `http://localhost:3030`.
 - fara volum persistent montat, se pierd la update: timpii, randamentele, evenimentele si ciclurile salvate
 - `LASER_REAL_DATA_NAME` numele sursei reale care va trimite date spre dashboard
 - `LASER_REAL_DATA_ENDPOINT` endpointul sau descrierea sursei reale, pentru afisare in UI
-- `LASER1_REAL_DATA_ENDPOINT`, `LASER1MODBUS_REAL_DATA_ENDPOINT`, `LASER2_REAL_DATA_ENDPOINT`, `ABKANT_REAL_DATA_ENDPOINT` pentru endpoint separat pe fiecare utilaj (pentru OCR la laser foloseste streamul dedicat, ex. `http://laserbvision-1:8081`)
+- `LASER1_REAL_DATA_ENDPOINT`, `LASER1MODBUS_REAL_DATA_ENDPOINT`, `LASER2_REAL_DATA_ENDPOINT`, `LASER2MODBUS_REAL_DATA_ENDPOINT`, `ABKANT_REAL_DATA_ENDPOINT` pentru endpoint separat pe fiecare utilaj (pentru OCR la laser foloseste streamul dedicat, ex. `http://laserbvision-1:8081`)
 - `LASER1_CAMERA_FEED_URL`, `LASER2_CAMERA_FEED_URL`, `ABKANT_CAMERA_FEED_URL` pentru feedul video pe care vrei sa-l vezi in dashboard
 - `LASER1_CAMERA_FEED_MODE`, `LASER2_CAMERA_FEED_MODE`, `ABKANT_CAMERA_FEED_MODE` cu `image` sau `page`, daca feedul camerei trebuie afisat ca imagine sau ca pagina embed-uita
 - `LASER1_CAMERA_FEED_USERNAME`, `LASER2_CAMERA_FEED_USERNAME`, `ABKANT_CAMERA_FEED_USERNAME` daca feedul camerei cere autentificare
 - `LASER1_CAMERA_FEED_PASSWORD`, `LASER2_CAMERA_FEED_PASSWORD`, `ABKANT_CAMERA_FEED_PASSWORD` pentru parola camerei
 - `LASER1_CAMERA_FEED_AUTH`, `LASER2_CAMERA_FEED_AUTH`, `ABKANT_CAMERA_FEED_AUTH` cu `basic` sau `digest`, daca feedul camerei cere autentificare HTTP
 - `LASER1_HMI_FEED_URL`, `LASER2_HMI_FEED_URL`, `ABKANT_HMI_FEED_URL` pentru pagina HMI embed-uita in dashboard
-- `LASER1MODBUS_MODBUS_TRANSPORT` cu `tcp` sau `rtu`
-- `LASER1MODBUS_MODBUS_HOST`, `LASER1MODBUS_MODBUS_PORT`, `LASER1MODBUS_MODBUS_UNIT_ID`, `LASER1MODBUS_MODBUS_BIT_SOURCE`, `LASER1MODBUS_MODBUS_START_ADDRESS` pentru citirea Modbus TCP directa din container
-- `LASER1MODBUS_MODBUS_SERIAL_PORT`, `LASER1MODBUS_MODBUS_SERIAL_BAUDRATE`, `LASER1MODBUS_MODBUS_SERIAL_PARITY`, `LASER1MODBUS_MODBUS_SERIAL_STOPBITS` pentru citirea Modbus RTU prin RS485/USB direct din container sau din Windows
-- `LASER1MODBUS_MODBUS_IN1_SIGNAL` .. `LASER1MODBUS_MODBUS_IN4_SIGNAL` daca vrei o configurare initiala din `.env`; ulterior aceeasi mapare poate fi schimbata direct din dashboard
+- `LASER1MODBUS_MODBUS_TRANSPORT`, `LASER2MODBUS_MODBUS_TRANSPORT` cu `tcp` sau `rtu`
+- `LASER1MODBUS_MODBUS_HOST`, `LASER2MODBUS_MODBUS_HOST`, port, unit id, tip biti si adresa start pentru citirea Modbus TCP directa din container
+- `LASER1MODBUS_MODBUS_SERIAL_PORT`, `LASER2MODBUS_MODBUS_SERIAL_PORT`, baud rate, parity si stop bits pentru citirea Modbus RTU prin RS485/USB direct din container sau din Windows
+- `LASER1MODBUS_MODBUS_IN1_SIGNAL` .. `LASER1MODBUS_MODBUS_IN4_SIGNAL` si `LASER2MODBUS_MODBUS_IN1_SIGNAL` .. `LASER2MODBUS_MODBUS_IN4_SIGNAL` daca vrei o configurare initiala din `.env`; ulterior aceeasi mapare poate fi schimbata direct din dashboard
 - `ABKANT_PG_HOST`, `ABKANT_PG_DATABASE`, `ABKANT_PG_USER`, `ABKANT_PG_PASSWORD` pentru fallback-ul Abkant din PostgreSQL cind linkul video pica
 - daca rulezi aplicatia in Docker pe un server public, endpointurile de tip Tailscale sau hostname intern trebuie sa fie accesibile si din container; altfel utilajul ramine `OFF`
 - `BACKGROUND_SYNC_ENABLED=1` porneste pollerul din fundal care urmareste utilajele chiar daca nu ai pagina deschisa
@@ -245,6 +245,7 @@ docker run -d \
   -e LASER1_REAL_DATA_ENDPOINT='http://laserbvision-1:8081' \
   -e LASER1MODBUS_REAL_DATA_ENDPOINT='http://laserbvision-1:8081' \
   -e LASER2_REAL_DATA_ENDPOINT='' \
+  -e LASER2MODBUS_REAL_DATA_ENDPOINT='http://192.168.2.138:8081' \
   -e ABKANT_REAL_DATA_ENDPOINT='https://abkant.helpan.ro/' \
   -e LASER1_CAMERA_FEED_URL='http://192.168.2.140/ISAPI/Streaming/channels/101/picture' \
   -e LASER1MODBUS_CAMERA_FEED_URL='http://192.168.2.140/ISAPI/Streaming/channels/101/picture' \
@@ -264,10 +265,16 @@ docker run -d \
   -e ABKANT_CAMERA_FEED_AUTH='basic' \
   -e LASER1_HMI_FEED_URL='https://laser.helpan.ro/' \
   -e LASER2_HMI_FEED_URL='' \
+  -e LASER2MODBUS_HMI_FEED_URL='http://192.168.2.138:8081' \
   -e ABKANT_HMI_FEED_URL='https://abkant.helpan.ro/' \
   -e PONTAJ_LASER1_WORKCENTER_ID=1 \
   -e PONTAJ_LASER2_WORKCENTER_ID=2 \
+  -e PONTAJ_LASER2MODBUS_WORKCENTER_ID=1 \
   -e PONTAJ_ABKANT_WORKCENTER_ID=3 \
+  -e LASER2MODBUS_MODBUS_HOST='192.168.2.138' \
+  -e LASER2MODBUS_MODBUS_PORT=502 \
+  -e LASER2MODBUS_MODBUS_UNIT_ID=1 \
+  -e LASER2MODBUS_MODBUS_IN1_SIGNAL='machine_on' \
   -e PONTAJ_SQL_SERVER=192.168.2.6 \
   -e PONTAJ_SQL_DATABASE=Metal \
   -e PONTAJ_SQL_USERNAME=bogdan \

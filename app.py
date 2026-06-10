@@ -128,7 +128,7 @@ DEFAULT_ODBC_DRIVER = (
 APP_TITLE = "HABA Production Monitor"
 DASHBOARD_TITLE = "Laser TruMatic L3030"
 DEFAULT_MACHINE_KEY = "laser1modbus"
-HIDDEN_MACHINE_KEYS = {"laser1"}
+HIDDEN_MACHINE_KEYS = {"laser1", "laser2"}
 MANUAL_SOURCE_PREFIX = "manual"
 OCR_AVAILABLE = cv2 is not None and np is not None and pytesseract is not None
 CV_IMAGE_AVAILABLE = cv2 is not None and np is not None
@@ -219,6 +219,11 @@ MACHINE_DEFINITIONS = {
         "description": "Al doilea post laser, pregatit pentru flux separat.",
         "accent": "steel",
     },
+    "laser2modbus": {
+        "label": "LASER2MODBUS",
+        "description": "Laser2 cu timpi cititi din Modbus si program extras din feed.",
+        "accent": "steel",
+    },
     "abkant": {
         "label": "Abkant",
         "description": "Zona de indoire si lucru pe utilajul abkant.",
@@ -251,6 +256,7 @@ DEFAULT_MACHINE_HMI_URLS = {
     "laser1": "http://192.168.2.242:8081/",
     "laser1modbus": "http://192.168.2.242:8081/",
     "laser2": "",
+    "laser2modbus": "http://192.168.2.138:8081/",
     "abkant": "https://abkant.helpan.ro/",
 }
 
@@ -280,6 +286,13 @@ DEFAULT_MACHINE_CAMERA_FEEDS = {
         ],
     },
     "laser2": {
+        "url": "",
+        "mode": "image",
+        "username": "",
+        "password": "",
+        "auth": "basic",
+    },
+    "laser2modbus": {
         "url": "",
         "mode": "image",
         "username": "",
@@ -393,6 +406,38 @@ REAL_DATA_FEEDS = {
             "Pana atunci dashboardul il trateaza ca utilaj neinstrumentat",
         ],
     },
+    "laser2modbus": {
+        "script_name": "app.py",
+        "display_name": "Laser2 Modbus bridge",
+        "endpoint": "http://192.168.2.138:8081",
+        "transport": "Modbus TCP/RTU + OCR din feed",
+        "left_panel": [
+            {"label": "OCR program", "value": "da"},
+            {"label": "OCR material", "value": "da"},
+            {"label": "Modbus bits", "value": "IN1 .. IN4"},
+            {"label": "Semnal live", "value": "complet din Modbus"},
+        ],
+        "screen_rows": [
+            {"label": "Selected program", "value": "OCR din feedul Laser2"},
+            {"label": "Active program", "value": "OCR din feedul Laser2"},
+            {"label": "Machine ON", "value": "bit Modbus mapat pe IN1..IN4"},
+            {"label": "Cutting", "value": "bit Modbus mapat pe IN1..IN4"},
+            {"label": "Table change", "value": "bit Modbus mapat pe IN1..IN4"},
+            {"label": "Idle / Aborted", "value": "bit Modbus optional mapat pe IN1..IN4"},
+            {"label": "Randament", "value": "Cutting / Machine ON"},
+        ],
+        "derivation_rules": [
+            {"label": "Machine ON", "value": "Se activeaza cind bitul mapat este 1 sau daca orice alt semnal productiv este 1"},
+            {"label": "Cutting", "value": "Se activeaza direct din bitul Modbus mapat"},
+            {"label": "Table change", "value": "Porneste pe 1 si ciclul se inchide cind bitul revine pe 0"},
+            {"label": "Program", "value": "Se citeste doar din feed pe intervalul semnalelor Modbus"},
+        ],
+        "details": [
+            "Modbus TCP pregatit pe PC-ul Laser2 192.168.2.138:502",
+            "IN1 este mapat initial pe Machine ON pentru testul de simulare",
+            "Programul si materialul ramin citite din feedul configurat pentru Laser2",
+        ],
+    },
     "abkant": {
         "script_name": "AbkantFeed.py",
         "display_name": "Abkant OCR bridge",
@@ -477,6 +522,32 @@ MACHINE_SIGNAL_OVERRIDES = {
         },
     },
     "laser1modbus": {
+        "machine_on": {
+            "label": "Machine ON",
+            "description": "Bitul Modbus mapat pe Machine ON este activ.",
+            "metric_label": "Machine ON",
+            "report_label": "Machine ON",
+        },
+        "cutting_active": {
+            "label": "Cutting",
+            "description": "Bitul Modbus mapat pe Cutting este activ.",
+            "metric_label": "Cutting",
+            "report_label": "Cutting",
+        },
+        "table_change": {
+            "label": "Table change",
+            "description": "Bitul Modbus mapat pe Table change este activ.",
+            "metric_label": "Table change",
+            "report_label": "Table change",
+        },
+        "idle_abort": {
+            "label": "Idle / Aborted",
+            "description": "Bitul Modbus mapat pe Idle sau Aborted este activ.",
+            "metric_label": "Idle / Aborted",
+            "report_label": "Idle / Aborted",
+        },
+    },
+    "laser2modbus": {
         "machine_on": {
             "label": "Machine ON",
             "description": "Bitul Modbus mapat pe Machine ON este activ.",
@@ -603,6 +674,20 @@ MACHINE_STATE_OVERRIDES = {
             "description": "Bitul dedicat de idle sau abort este activ in Modbus.",
         },
     },
+    "laser2modbus": {
+        "off": {
+            "label": "Modbus indisponibil",
+            "description": "Containerul nu poate citi inca bitii Modbus configurati.",
+        },
+        "ready": {
+            "label": "Pregatit",
+            "description": "Machine ON este activ, dar nici taierea, nici schimbul de masa nu ruleaza acum.",
+        },
+        "idle": {
+            "label": "Idle / Aborted",
+            "description": "Bitul dedicat de idle sau abort este activ in Modbus.",
+        },
+    },
     "abkant": {
         "off": {
             "label": "Feed indisponibil",
@@ -629,7 +714,7 @@ LASER_OCR_ZONES = {
     "left_panel": (0, 170, 620, 260),
 }
 
-MODBUS_MACHINE_KEYS = {"laser1modbus"}
+MODBUS_MACHINE_KEYS = {"laser1modbus", "laser2modbus"}
 MODBUS_TRANSPORT_CHOICES = ("tcp", "rtu")
 MODBUS_SIGNAL_TARGET_CHOICES = (
     "unused",
@@ -640,7 +725,7 @@ MODBUS_SIGNAL_TARGET_CHOICES = (
 )
 MODBUS_SERIAL_PARITY_CHOICES = ("N", "E", "O")
 MODBUS_SERIAL_STOPBITS_CHOICES = (1, 2)
-PROGRAM_STATS_MACHINE_KEYS = {"laser1", "laser1modbus"}
+PROGRAM_STATS_MACHINE_KEYS = {"laser1", "laser1modbus", "laser2modbus"}
 
 app = Flask(__name__)
 app.config["JSON_SORT_KEYS"] = False
@@ -779,7 +864,7 @@ def resolve_real_data_name(machine_key: str) -> str:
 
 def machine_has_dedicated_live_source(machine_key: str) -> bool:
     machine_key = ensure_machine_key(machine_key)
-    if machine_key == "laser1modbus":
+    if machine_uses_modbus(machine_key):
         try:
             return bool(get_machine_modbus_config(machine_key).get("enabled"))
         except Exception:
@@ -897,9 +982,10 @@ def resolve_machine_hmi_feed_url(machine_key: str) -> str:
     if machine_hmi_url:
         return machine_hmi_url
 
-    # Keep LASER1MODBUS aligned with LASER1 when only the shared HMI URL is configured.
-    if machine_key == "laser1modbus":
-        shared_laser_hmi_url = get_machine_env_value("laser1", "HMI_FEED_URL")
+    # Keep Modbus variants aligned with their base laser when only the shared HMI URL is configured.
+    base_laser_key = {"laser1modbus": "laser1", "laser2modbus": "laser2"}.get(machine_key)
+    if base_laser_key:
+        shared_laser_hmi_url = get_machine_env_value(base_laser_key, "HMI_FEED_URL")
         if shared_laser_hmi_url:
             return shared_laser_hmi_url
 
@@ -921,7 +1007,7 @@ def build_machine_feeds(machine_key: str) -> list[dict]:
         camera_username = config.get("username", "")
         camera_password = config.get("password", "")
         camera_refresh_ms = None
-        if machine_key in {"laser1", "laser1modbus"} and camera_mode == "image" and (
+        if machine_key in {"laser1", "laser1modbus", "laser2modbus"} and camera_mode == "image" and (
             camera_url.strip().lower().endswith("/picture")
             or (camera_username and camera_password)
         ):
@@ -1788,7 +1874,7 @@ def analyze_abkant_live_snapshot(machine_key: str) -> dict | None:
 
 
 def get_live_machine_snapshot(machine_key: str) -> dict | None:
-    if machine_key == "laser1modbus":
+    if machine_uses_modbus(machine_key):
         return analyze_laser_modbus_live_snapshot(machine_key)
     if machine_key in {"laser1", "laser2"}:
         return analyze_laser_live_snapshot(machine_key)
@@ -1818,6 +1904,7 @@ def get_pontaj_connection_settings() -> dict[str, str | int]:
 def get_default_machine_profiles() -> list[dict]:
     legacy_default = parse_optional_int(os.getenv("PONTAJ_WORKCENTER_ID", "1"))
     laser_default = parse_optional_int(os.getenv("PONTAJ_LASER1_WORKCENTER_ID", legacy_default))
+    laser2_default = parse_optional_int(os.getenv("PONTAJ_LASER2_WORKCENTER_ID", laser_default))
     return [
         {
             "machine_key": "laser1",
@@ -1834,48 +1921,74 @@ def get_default_machine_profiles() -> list[dict]:
         {
             "machine_key": "laser2",
             "label": MACHINE_DEFINITIONS["laser2"]["label"],
-            "workcenter_id": parse_optional_int(os.getenv("PONTAJ_LASER2_WORKCENTER_ID", laser_default)),
+            "workcenter_id": laser2_default,
             "sort_order": 3,
+        },
+        {
+            "machine_key": "laser2modbus",
+            "label": MACHINE_DEFINITIONS["laser2modbus"]["label"],
+            "workcenter_id": parse_optional_int(os.getenv("PONTAJ_LASER2MODBUS_WORKCENTER_ID", laser2_default)),
+            "sort_order": 4,
         },
         {
             "machine_key": "abkant",
             "label": MACHINE_DEFINITIONS["abkant"]["label"],
             "workcenter_id": parse_optional_int(os.getenv("PONTAJ_ABKANT_WORKCENTER_ID", "2")),
-            "sort_order": 4,
+            "sort_order": 5,
         },
     ]
 
 
 def get_default_machine_modbus_configs() -> list[dict]:
-    serial_port = get_machine_env_value("laser1modbus", "MODBUS_SERIAL_PORT")
-    host = get_machine_env_value("laser1modbus", "MODBUS_HOST")
-    config = {
-        "machine_key": "laser1modbus",
-        "transport": normalize_modbus_transport(
-            get_machine_env_value("laser1modbus", "MODBUS_TRANSPORT"),
-            fallback="rtu" if serial_port and not host else "tcp",
-        ),
-        "host": host,
-        "port": parse_optional_int(get_machine_env_value("laser1modbus", "MODBUS_PORT")) or 502,
-        "serial_port": serial_port,
-        "serial_baudrate": parse_optional_int(get_machine_env_value("laser1modbus", "MODBUS_SERIAL_BAUDRATE")) or 9600,
-        "serial_parity": normalize_modbus_serial_parity(
-            get_machine_env_value("laser1modbus", "MODBUS_SERIAL_PARITY") or "N"
-        ),
-        "serial_stopbits": parse_optional_int(get_machine_env_value("laser1modbus", "MODBUS_SERIAL_STOPBITS")) or 1,
-        "unit_id": parse_optional_int(get_machine_env_value("laser1modbus", "MODBUS_UNIT_ID")) or 1,
-        "bit_source": (get_machine_env_value("laser1modbus", "MODBUS_BIT_SOURCE") or "discrete_input").strip().lower(),
-        "start_address": parse_optional_int(get_machine_env_value("laser1modbus", "MODBUS_START_ADDRESS")) or 0,
-        "poll_timeout_seconds": parse_optional_float(get_machine_env_value("laser1modbus", "MODBUS_TIMEOUT_SECONDS")) or 1.5,
-        "in1_signal": (get_machine_env_value("laser1modbus", "MODBUS_IN1_SIGNAL") or "machine_on").strip().lower(),
-        "in2_signal": (get_machine_env_value("laser1modbus", "MODBUS_IN2_SIGNAL") or "table_change").strip().lower(),
-        "in3_signal": (get_machine_env_value("laser1modbus", "MODBUS_IN3_SIGNAL") or "cutting_active").strip().lower(),
-        "in4_signal": (get_machine_env_value("laser1modbus", "MODBUS_IN4_SIGNAL") or "idle_abort").strip().lower(),
+    defaults_by_machine = {
+        "laser1modbus": {
+            "host": "",
+            "in1_signal": "machine_on",
+            "in2_signal": "table_change",
+            "in3_signal": "cutting_active",
+            "in4_signal": "idle_abort",
+        },
+        "laser2modbus": {
+            "host": "192.168.2.138",
+            "in1_signal": "machine_on",
+            "in2_signal": "table_change",
+            "in3_signal": "cutting_active",
+            "in4_signal": "idle_abort",
+        },
     }
-    locked_config = LOCKED_MACHINE_MODBUS_CONFIGS.get("laser1modbus")
-    if locked_config:
-        config.update(locked_config)
-    return [config]
+    configs = []
+    for machine_key in ("laser1modbus", "laser2modbus"):
+        defaults = defaults_by_machine[machine_key]
+        serial_port = get_machine_env_value(machine_key, "MODBUS_SERIAL_PORT")
+        host = get_machine_env_value(machine_key, "MODBUS_HOST") or defaults["host"]
+        config = {
+            "machine_key": machine_key,
+            "transport": normalize_modbus_transport(
+                get_machine_env_value(machine_key, "MODBUS_TRANSPORT"),
+                fallback="rtu" if serial_port and not host else "tcp",
+            ),
+            "host": host,
+            "port": parse_optional_int(get_machine_env_value(machine_key, "MODBUS_PORT")) or 502,
+            "serial_port": serial_port,
+            "serial_baudrate": parse_optional_int(get_machine_env_value(machine_key, "MODBUS_SERIAL_BAUDRATE")) or 9600,
+            "serial_parity": normalize_modbus_serial_parity(
+                get_machine_env_value(machine_key, "MODBUS_SERIAL_PARITY") or "N"
+            ),
+            "serial_stopbits": parse_optional_int(get_machine_env_value(machine_key, "MODBUS_SERIAL_STOPBITS")) or 1,
+            "unit_id": parse_optional_int(get_machine_env_value(machine_key, "MODBUS_UNIT_ID")) or 1,
+            "bit_source": (get_machine_env_value(machine_key, "MODBUS_BIT_SOURCE") or "discrete_input").strip().lower(),
+            "start_address": parse_optional_int(get_machine_env_value(machine_key, "MODBUS_START_ADDRESS")) or 0,
+            "poll_timeout_seconds": parse_optional_float(get_machine_env_value(machine_key, "MODBUS_TIMEOUT_SECONDS")) or 1.5,
+            "in1_signal": (get_machine_env_value(machine_key, "MODBUS_IN1_SIGNAL") or defaults["in1_signal"]).strip().lower(),
+            "in2_signal": (get_machine_env_value(machine_key, "MODBUS_IN2_SIGNAL") or defaults["in2_signal"]).strip().lower(),
+            "in3_signal": (get_machine_env_value(machine_key, "MODBUS_IN3_SIGNAL") or defaults["in3_signal"]).strip().lower(),
+            "in4_signal": (get_machine_env_value(machine_key, "MODBUS_IN4_SIGNAL") or defaults["in4_signal"]).strip().lower(),
+        }
+        locked_config = LOCKED_MACHINE_MODBUS_CONFIGS.get(machine_key)
+        if locked_config:
+            config.update(locked_config)
+        configs.append(config)
+    return configs
 
 
 def get_modbus_signal_target_options() -> list[dict[str, str]]:
@@ -2637,7 +2750,7 @@ def get_real_data_settings(machine_profile: dict) -> dict[str, str]:
         )
         resolved_endpoint = modbus_config["endpoint"] or resolved_endpoint
         message = (
-            f"{machine_profile['label']} citeste timpii din Modbus, iar programul din feedul Laser1."
+            f"{machine_profile['label']} citeste timpii din Modbus, iar programul din feedul configurat."
             if dedicated_live_source
             else "Sursa Modbus nu este configurata complet. Seteaza hostul/portul TCP sau portul serial RTU si maparea intrarilor."
         )
@@ -2856,7 +2969,7 @@ def build_modbus_signal_state(config: dict, inputs: list[bool]) -> tuple[dict[st
             derived_signals[target_signal] = bool(bit_value)
 
     # Unele controlere pot tine simultan mai multe stari.
-    # Pentru LASER1MODBUS tratam "cutting" ca prioritate, ca sa evitam stari conflictuale.
+    # Pentru utilajele Modbus tratam "cutting" ca prioritate, ca sa evitam stari conflictuale.
     if derived_signals["cutting_active"]:
         derived_signals["idle_abort"] = False
         derived_signals["table_change"] = False
@@ -2929,7 +3042,7 @@ def build_modbus_grace_snapshot(machine_key: str, error_message: str) -> dict | 
         return None
     if not previous_snapshot.get("available"):
         return None
-    if previous_snapshot.get("machine_mode") != "laser1modbus":
+    if previous_snapshot.get("machine_mode") != machine_key:
         return None
     if not str(previous_snapshot.get("source") or "").startswith("modbus"):
         return None
@@ -3148,7 +3261,7 @@ def analyze_laser_modbus_live_snapshot(machine_key: str) -> dict | None:
         "available": True,
         "connected": True,
         "source": "modbus+ocr",
-        "machine_mode": "laser1modbus",
+        "machine_mode": machine_key,
         "selected_program": selected_program or "Necitit",
         "active_program": active_program or "Necitit",
         "material": material or "Necitit",
@@ -5389,7 +5502,7 @@ def context_requires_stats_reset(
     previous_signals = (previous_snapshot or {}).get("derived_signals") or {}
     current_signals = (current_snapshot or {}).get("derived_signals") or {}
     machine_restarted = not bool(previous_signals.get("machine_on")) and bool(current_signals.get("machine_on"))
-    if machine_key == "laser1modbus":
+    if machine_uses_modbus(machine_key):
         return previous_context["program"] != current_context["program"]
     if machine_key == "laser1":
         return previous_context["program"] != current_context["program"] or machine_restarted
@@ -5861,12 +5974,12 @@ def derive_machine_state(machine_key: str, current_signals: dict[str, dict]) -> 
     return {"key": "ready", **resolve_state_definition(machine_key, "ready")}
 
 
-def derive_modbus_machine_state_from_snapshot(snapshot: dict | None, fallback_state: dict) -> dict:
+def derive_modbus_machine_state_from_snapshot(machine_key: str, snapshot: dict | None, fallback_state: dict) -> dict:
     if not snapshot:
         return fallback_state
 
     if not snapshot.get("available") or not snapshot.get("connected"):
-        return {"key": "off", **resolve_state_definition("laser1modbus", "off")}
+        return {"key": "off", **resolve_state_definition(machine_key, "off")}
 
     derived = snapshot.get("derived_signals") or {}
     signal_view = {
@@ -5875,7 +5988,7 @@ def derive_modbus_machine_state_from_snapshot(snapshot: dict | None, fallback_st
         "table_change": {"active": bool(derived.get("table_change", False))},
         "idle_abort": {"active": bool(derived.get("idle_abort", False))},
     }
-    state_from_snapshot = derive_machine_state("laser1modbus", signal_view)
+    state_from_snapshot = derive_machine_state(machine_key, signal_view)
     if state_from_snapshot["key"] != "off":
         return state_from_snapshot
 
@@ -6549,7 +6662,7 @@ def build_dashboard_payload(machine_key: str = DEFAULT_MACHINE_KEY) -> dict:
             or snapshot_is_stale(live_extraction)
             or snapshot_differs_from_current_signals(live_extraction, current_signals)
         )
-        # Pentru LASER1MODBUS fortam fallback-ul in request cand snapshotul lipseste/stale,
+        # Pentru utilajele Modbus fortam fallback-ul in request cand snapshotul lipseste/stale,
         # ca sa nu depindem exclusiv de thread-ul de background (care poate lipsi in unele deployment-uri).
         should_sync_in_request = REQUEST_LIVE_SYNC_ENABLED or machine_uses_modbus(machine_key)
         if needs_live_refresh and should_sync_in_request:
@@ -6560,8 +6673,8 @@ def build_dashboard_payload(machine_key: str = DEFAULT_MACHINE_KEY) -> dict:
         current_signals = fetch_current_signals(machine_key)
     operator_snapshot = fetch_current_operator(machine_profile["workcenter_id"])
     current_state = derive_machine_state(machine_key, current_signals)
-    if machine_key == "laser1modbus":
-        current_state = derive_modbus_machine_state_from_snapshot(live_extraction, current_state)
+    if machine_uses_modbus(machine_key):
+        current_state = derive_modbus_machine_state_from_snapshot(machine_key, live_extraction, current_state)
     stats_today = build_today_stats(machine_key)
     machines = [
         {

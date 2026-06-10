@@ -1142,7 +1142,7 @@ function renderTableSheetStatus(machine, snapshot) {
         return;
     }
 
-    if (!machine || machine.key !== "laser1modbus") {
+    if (!machine?.modbus_config) {
         line.classList.add("is-hidden");
         return;
     }
@@ -1243,6 +1243,11 @@ function renderModbusConfig(machine) {
     section.classList.toggle("is-hidden", !isVisible);
     if (!isVisible) {
         return;
+    }
+
+    const title = document.getElementById("modbus-config-title");
+    if (title) {
+        title.textContent = machine.label || machine.key || "Modbus";
     }
 
     const displayConfig = state.modbusDraftDirty && state.modbusDraftMachineKey === machine.key
@@ -1517,7 +1522,7 @@ function renderLiveExtraction(snapshot) {
             { slot: "setup_change", label: "Setup change", value: signals.table_change ? "DA" : "NU" },
             { slot: "status", label: "Status program", value: snapshot.program_status || "Necitit" }
         ];
-    } else if (currentMachineKey === "laser1modbus") {
+    } else if (state.dashboard?.machine?.modbus_config) {
         cells = [
             { slot: "selected_program", label: "Selected program", value: snapshot.selected_program || "Necitit" },
             { slot: "active_program", label: "Active program", value: snapshot.active_program || "Necitit" },

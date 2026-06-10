@@ -4627,17 +4627,18 @@ def build_telegram_period_section(label: str, records: list[dict], top_limit: in
 
     lines = [
         label,
-        (
-            f"Total: {len(records)} cicluri | randament {total_efficiency_percent}% | "
-            f"executie {format_seconds(total_cutting_seconds)} | schimb {format_seconds(total_table_change_seconds)} | "
-            f"penalizat {format_seconds(total_table_change_penalty_seconds)} | idle {format_seconds(total_idle_seconds)} | "
-            f"ON {format_seconds(total_machine_on_seconds)}"
-        ),
-        (
-            "Formula raport: randament = (executie + schimb gratuit) / ON. "
-            f"Schimb gratuit = max. {format_seconds(TELEGRAM_TABLE_CHANGE_FREE_SECONDS)} pe ciclu; "
-            "ce depaseste apare la penalizat."
-        ),
+        f"Total cicluri: {len(records)}",
+        f"Randament: {total_efficiency_percent}%",
+        f"Executie: {format_seconds(total_cutting_seconds)}",
+        f"Schimb total: {format_seconds(total_table_change_seconds)}",
+        f"Schimb penalizat: {format_seconds(total_table_change_penalty_seconds)}",
+        f"Idle: {format_seconds(total_idle_seconds)}",
+        f"ON: {format_seconds(total_machine_on_seconds)}",
+        "",
+        "Formula raport:",
+        "randament = (executie + schimb gratuit) / ON",
+        f"schimb gratuit = max. {format_seconds(TELEGRAM_TABLE_CHANGE_FREE_SECONDS)} pe ciclu",
+        "ce depaseste apare la penalizat",
     ]
 
     if not operators:
@@ -4651,13 +4652,59 @@ def build_telegram_period_section(label: str, records: list[dict], top_limit: in
     )
     lines.append("Operatori:")
     for index, operator in enumerate(operators[:top_limit], start=1):
-        lines.append(
-            f"{index}. {operator['operator_name']}: {operator['efficiency_percent']}% = "
-            f"(exec {operator['cutting_label']} + schimb gratuit {format_seconds(int(operator['table_change_allowed_seconds'] or 0))}) "
-            f"/ ON {operator['machine_on_label']} | schimb total {operator['table_change_label']} | "
-            f"penalizat {operator['table_change_penalty_label']} | idle {operator['idle_label']} | "
-            f"{operator['records_count']} cicluri"
+        lines.extend(
+            [
+                "",
+                f"{index}. {operator['operator_name']}",
+                f"Randament: {operator['efficiency_percent']}%",
+                f"Formula: (exec {operator['cutting_label']} + schimb gratuit {format_seconds(int(operator['table_change_allowed_seconds'] or 0))}) / ON {operator['machine_on_label']}",
+                f"Schimb total: {operator['table_change_label']}",
+                f"Schimb penalizat: {operator['table_change_penalty_label']}",
+                f"Idle: {operator['idle_label']}",
+                f"Cicluri: {operator['records_count']}",
+            ]
         )
+    return "\n".join(lines)
+
+
+def build_telegram_short_machine_summary(machine_key: str, records: list[dict]) -> str:
+    machine_label = MACHINE_DEFINITIONS.get(machine_key, {}).get("label", machine_key.upper())
+    total_machine_on_seconds = sum(int(record.get("machine_on_duration_seconds") or 0) for record in records)
+    total_cutting_seconds = sum(int(record.get("cycle_duration_seconds") or 0) for record in records)
+    total_table_change_seconds = sum(int(record.get("table_change_duration_seconds") or 0) for record in records)
+    total_allowed_table_change_seconds = sum(
+        min(int(record.get("table_change_duration_seconds") or 0), TELEGRAM_TABLE_CHANGE_FREE_SECONDS)
+        for record in records
+    )
+    efficiency_percent = calculate_telegram_efficiency_percent(
+        total_cutting_seconds,
+        total_allowed_table_change_seconds,
+        total_machine_on_seconds,
+    )
+    operators = summarize_operator_records_for_telegram(records)
+    operator_names = [operator["operator_name"] for operator in operators if operator.get("records_count")]
+    operator_label = ", ".join(operator_names) if operator_names else "fara cicluri salvate azi"
+    return "\n".join(
+        [
+            machine_label,
+            f"Randament: {efficiency_percent}%",
+            f"Cicluri: {len(records)}",
+            f"Operatori: {operator_label}",
+        ]
+    )
+
+
+def build_telegram_laser_summary_report() -> str:
+    now = now_local()
+    machine_keys = ["laser1modbus", "laser2modbus"]
+    today_start = datetime.combine(date.today(), time.min)
+    lines = [
+        "Raport zi lasere",
+        f"Pana la: {now.strftime('%d.%m.%Y %H:%M')}",
+    ]
+    for machine_key in machine_keys:
+        machine_records = fetch_saved_cycles_between_for_machines(today_start, now, [machine_key])
+        lines.extend(["", build_telegram_short_machine_summary(machine_key, machine_records)])
     return "\n".join(lines)
 
 
@@ -5038,9 +5085,9 @@ def build_telegram_help_text() -> str:
     return "\n".join(
         [
             "Comenzi disponibile:",
-            "/raportzi - raport zi combinat pentru LASER1MODBUS si LASER2MODBUS",
-            "/raportziLB - raport zi doar pentru LASER1MODBUS / Laser Belgia",
-            "/raportziLA - raport zi doar pentru LASER2MODBUS / Laser A",
+            "/raportzi - sumar scurt pe LASER1MODBUS si LASER2MODBUS: randament si operatori",
+            "/raportziLB - raport detaliat zi doar pentru LASER1MODBUS / Laser Belgia",
+            "/raportziLA - raport detaliat zi doar pentru LASER2MODBUS / Laser A",
             "/randament_dosar 34158 - cauta dosarul in istoricul salvat si calculeaza randamentul lui",
             "/formule - explica formulele si de unde vin timpii",
             "/chatid - afiseaza ID-ul chatului pentru autorizare",
@@ -5210,6 +5257,13 @@ def handle_telegram_command(message: dict) -> None:
         return
 
     if command in {"/raportzi", "/raportzilb", "/raportzila"}:
+        if command == "/raportzi":
+            send_telegram_message(
+                chat_id,
+                build_telegram_laser_summary_report(),
+                reply_markup=build_telegram_reply_keyboard(),
+            )
+            return
         command_machine_keys = resolve_telegram_command_machine_keys(command)
         send_telegram_message(
             chat_id,

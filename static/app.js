@@ -14,6 +14,7 @@ const state = {
     currentView: window.localStorage.getItem("currentView") || "dashboard",
     savedPeriod: window.localStorage.getItem("savedPeriod") || "all",
     savedModbusPeriod: window.localStorage.getItem("savedModbusPeriod") || "day",
+    savedModbusMachineKey: window.localStorage.getItem("savedModbusMachineKey") || "laser1modbus",
     savedOperatorId: window.localStorage.getItem("savedOperatorId") || "",
     savedModbusOperatorId: window.localStorage.getItem("savedModbusOperatorId") || "",
     workcenterFeedback: null,
@@ -56,6 +57,9 @@ if (!["dashboard", "saved_modbus"].includes(state.currentView)) {
 }
 if (!["day", "week", "month"].includes(state.savedModbusPeriod)) {
     state.savedModbusPeriod = "day";
+}
+if (!["laser1modbus", "laser2modbus", "all"].includes(state.savedModbusMachineKey)) {
+    state.savedModbusMachineKey = "laser1modbus";
 }
 
 function getMachineOnMetricLabel(machineKey) {
@@ -166,7 +170,7 @@ function getSavedModbusPeriodMeta(period, payload) {
         return {
             key: "day",
             sectionTitle: "Date Salvate MODBUS - Zilnic",
-            subtitle: "Se folosesc doar ciclurile LASER1MODBUS din ziua curenta si se actualizeaza dupa fiecare program finalizat.",
+            subtitle: "Se folosesc ciclurile utilajului MODBUS selectat din ziua curenta si se actualizeaza dupa fiecare program finalizat.",
             hint: `Randamentul zilnic este media tuturor randamentelor salvate azi. Regula provizorie: daca durata de Table change depaseste 01:30, timpul care depaseste pragul se penalizeaza in randament ca timp de tip idle, fara sa modifice indicatorul Idle afisat separat. Urmeaza seturi de reguli pe grosimea tablei. ${windowLabel}`.trim(),
             countLabel: "Cicluri MODBUS azi",
             emptySummary: "Nu exista inca cicluri MODBUS salvate azi.",
@@ -312,6 +316,7 @@ function prepareSavedViewLoadingState() {
         periodMeta
     );
     renderSavedFilters(state.savedPeriod);
+    renderSavedModbusMachineFilter(null);
     renderSavedModbusOperatorFilter(null);
     document.getElementById("saved-summary").innerHTML = `<p class="empty-state">Se incarca operatorii si istoricul salvat...</p>`;
     document.getElementById("saved-reports").innerHTML = `<p class="empty-state">Se pregateste raportul pentru perioada selectata...</p>`;
@@ -324,6 +329,10 @@ function prepareSavedModbusViewLoadingState() {
     syncSectionVisibility("saved_modbus");
     renderSavedModbusHeader(periodMeta);
     renderSavedFilters(state.savedModbusPeriod, { includeAll: false });
+    renderSavedModbusMachineFilter({
+        machine_key: state.savedModbusMachineKey,
+        machine_options: []
+    });
     renderSavedModbusOperatorFilter({
         operators: [],
         selected_operator_id: state.savedModbusOperatorId
@@ -457,6 +466,24 @@ function bindActions() {
             } else {
                 window.localStorage.removeItem("savedModbusOperatorId");
             }
+            await loadSavedModbusRecords();
+        });
+    }
+
+    const savedModbusMachineSelect = document.getElementById("saved-modbus-machine-select");
+    if (savedModbusMachineSelect) {
+        savedModbusMachineSelect.addEventListener("change", async () => {
+            if (state.currentView !== "saved_modbus") {
+                return;
+            }
+            state.savedModbusMachineKey = savedModbusMachineSelect.value || "laser1modbus";
+            state.savedModbusOperatorId = "";
+            state.savedModbusMaterial = "";
+            state.savedModbusMaterialOperatorId = "";
+            window.localStorage.setItem("savedModbusMachineKey", state.savedModbusMachineKey);
+            window.localStorage.removeItem("savedModbusOperatorId");
+            window.localStorage.removeItem("savedModbusMaterial");
+            window.localStorage.removeItem("savedModbusMaterialOperatorId");
             await loadSavedModbusRecords();
         });
     }
@@ -685,7 +712,10 @@ async function loadSavedModbusRecords() {
     state.savedFetchInFlight = true;
 
     try {
-        const query = new URLSearchParams({ period: state.savedModbusPeriod });
+        const query = new URLSearchParams({
+            period: state.savedModbusPeriod,
+            machine: state.savedModbusMachineKey || "laser1modbus"
+        });
         if (state.savedModbusOperatorId) {
             query.set("operator_id", state.savedModbusOperatorId);
         }
@@ -703,11 +733,13 @@ async function loadSavedModbusRecords() {
 
         state.savedModbusRecords = payload;
         state.savedModbusPeriod = payload.period || state.savedModbusPeriod;
+        state.savedModbusMachineKey = payload.machine_key || state.savedModbusMachineKey || "laser1modbus";
         state.savedModbusOperatorId = payload.selected_operator_id || "";
         state.lastSavedRefreshMs = Date.now();
         state.currentView = "saved_modbus";
         window.localStorage.setItem("currentView", "saved_modbus");
         window.localStorage.setItem("savedModbusPeriod", state.savedModbusPeriod);
+        window.localStorage.setItem("savedModbusMachineKey", state.savedModbusMachineKey);
         if (state.savedModbusOperatorId) {
             window.localStorage.setItem("savedModbusOperatorId", state.savedModbusOperatorId);
         } else {
@@ -958,6 +990,7 @@ function renderSavedView(payload) {
     renderMachineSelector(state.dashboard?.machines || window.appConfig.initialMachines || []);
     renderSavedSummary(payload, periodMeta);
     renderSavedFilters(currentPeriod, { includeAll: true });
+    renderSavedModbusMachineFilter(null);
     renderSavedModbusOperatorFilter(null);
     renderSavedReports(payload, currentPeriod, periodMeta);
     renderSavedMachineReports(payload, currentPeriod, periodMeta);
@@ -972,6 +1005,7 @@ function renderSavedModbusView(payload) {
     renderSavedModbusHeader(periodMeta, payload);
     renderMachineSelector(state.dashboard?.machines || window.appConfig.initialMachines || []);
     renderSavedFilters(currentPeriod, { includeAll: false });
+    renderSavedModbusMachineFilter(payload);
     renderSavedModbusOperatorFilter(payload);
     renderSavedModbusSummary(payload, periodMeta);
     renderSavedModbusReports(payload, periodMeta);
@@ -1066,7 +1100,7 @@ function renderMachineSelector(machines) {
         >
             <small>Arhiva</small>
             <strong>DATE SALVATE MODBUS</strong>
-            <span>Doar ciclurile LASER1MODBUS, cu medie pe zi, saptamana completa si luna completa.</span>
+            <span>Ciclurile LASER1MODBUS sau LASER2MODBUS, cu medie pe zi, saptamana completa si luna completa.</span>
         </button>
     `;
 
@@ -1821,6 +1855,32 @@ function renderSavedFilters(period, options = { includeAll: true }) {
         button.classList.toggle("is-hidden", isAllButton && !includeAll);
         button.classList.toggle("is-selected", button.dataset.savedPeriod === period);
     });
+}
+
+function renderSavedModbusMachineFilter(payload = null) {
+    const wrapper = document.getElementById("saved-modbus-machine-filter");
+    const select = document.getElementById("saved-modbus-machine-select");
+    if (!wrapper || !select) {
+        return;
+    }
+
+    wrapper.classList.toggle("is-hidden", state.currentView !== "saved_modbus");
+    if (state.currentView !== "saved_modbus") {
+        return;
+    }
+
+    const machineOptions = (payload?.machine_options || []).length
+        ? payload.machine_options
+        : [
+            { value: "laser1modbus", label: "LASER1MODBUS" },
+            { value: "laser2modbus", label: "LASER2MODBUS" },
+            { value: "all", label: "Toate MODBUS" }
+        ];
+    const selectedMachineKey = payload?.machine_key || state.savedModbusMachineKey || "laser1modbus";
+    select.innerHTML = machineOptions
+        .map((machine) => `<option value="${machine.value}">${machine.label}</option>`)
+        .join("");
+    select.value = selectedMachineKey;
 }
 
 function renderSavedModbusOperatorFilter(payload = null) {

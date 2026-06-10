@@ -20,6 +20,7 @@ services:
       LASER2MODBUS_REAL_DATA_ENDPOINT: "http://192.168.2.138:8081/"
       LASER1_REAL_DATA_ENDPOINT_FALLBACK: "https://laserb.habaresearch.eu/"
       LASER1MODBUS_REAL_DATA_ENDPOINT_FALLBACK: "https://laserb.habaresearch.eu/"
+      LASER2MODBUS_REAL_DATA_ENDPOINT_FALLBACK: "https://lasera.habaresearch.eu/"
       LASER1_HMI_FEED_URL: "http://192.168.2.242:8081/"
       LASER1MODBUS_HMI_FEED_URL: "http://192.168.2.242:8081/"
       LASER2MODBUS_HMI_FEED_URL: "http://192.168.2.138:8081/"

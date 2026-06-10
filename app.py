@@ -1000,9 +1000,28 @@ def build_machine_feeds(machine_key: str) -> list[dict]:
     hmi_url = resolve_machine_hmi_feed_url(machine_key)
     camera_configs = resolve_machine_camera_feed_configs(machine_key)
     feeds = []
+    seen_feed_urls: set[str] = set()
+
+    def normalize_feed_url(url: str) -> str:
+        parsed = urllib.parse.urlsplit((url or "").strip())
+        if not parsed.scheme and not parsed.netloc:
+            return (url or "").strip().rstrip("/")
+        path = parsed.path.rstrip("/") or "/"
+        return urllib.parse.urlunsplit(
+            (
+                parsed.scheme.lower(),
+                parsed.netloc.lower(),
+                path,
+                parsed.query,
+                "",
+            )
+        )
+
     for config in camera_configs:
         camera_key = config.get("key", "camera")
         camera_url = config.get("url", "")
+        if not camera_url:
+            continue
         camera_mode = config.get("mode", "image")
         camera_username = config.get("username", "")
         camera_password = config.get("password", "")
@@ -1020,6 +1039,7 @@ def build_machine_feeds(machine_key: str) -> list[dict]:
             else:
                 rendered_url = f"/api/camera-feed/{machine_key}/{camera_key}"
 
+        seen_feed_urls.add(normalize_feed_url(camera_url))
         feeds.append(
             {
                 "key": camera_key,
@@ -1032,6 +1052,9 @@ def build_machine_feeds(machine_key: str) -> list[dict]:
         )
 
     if machine_key == "abkant":
+        return feeds
+
+    if not hmi_url or normalize_feed_url(hmi_url) in seen_feed_urls:
         return feeds
 
     feeds.append(
@@ -4465,6 +4488,14 @@ def resolve_telegram_report_machine_keys() -> list[str]:
     return resolved_keys
 
 
+def resolve_telegram_command_machine_keys(command: str) -> list[str] | None:
+    command_machine_map = {
+        "/raportzilb": ["laser1modbus"],
+        "/raportzila": ["laser2modbus"],
+    }
+    return command_machine_map.get(command)
+
+
 def fetch_saved_cycles_between_for_machines(
     start_dt: datetime,
     end_dt: datetime,
@@ -4614,9 +4645,9 @@ def build_telegram_period_section(label: str, records: list[dict], top_limit: in
     return "\n".join(lines)
 
 
-def build_telegram_laser_report(include_week: bool = True) -> str:
+def build_telegram_laser_report(include_week: bool = True, machine_keys: list[str] | None = None) -> str:
     now = now_local()
-    machine_keys = resolve_telegram_report_machine_keys()
+    machine_keys = machine_keys or resolve_telegram_report_machine_keys()
     machine_labels = [
         MACHINE_DEFINITIONS.get(machine_key, {}).get("label", machine_key)
         for machine_key in machine_keys
@@ -4656,12 +4687,21 @@ def normalize_dosar_query(raw_value: str | None) -> str:
     return match.group(0) if match else ""
 
 
-def build_prometheus_dosar_metric_query(metric_name: str, dosar_query: str, period_range: str) -> str:
+def build_prometheus_dosar_metric_query(
+    metric_name: str,
+    dosar_query: str,
+    period_range: str,
+    machine_keys: list[str] | None = None,
+) -> str:
     safe_dosar_query = re.sub(r"[^A-Za-z0-9_-]", "", dosar_query)
     dosar_regex = f".*{escape_prometheus_label_matcher(safe_dosar_query)}.*"
-    matchers = [
-        f'machine_key="{escape_prometheus_label_matcher(DEFAULT_MACHINE_KEY)}"',
-    ]
+    resolved_machine_keys = machine_keys or resolve_telegram_report_machine_keys()
+    if len(resolved_machine_keys) == 1:
+        machine_matcher = f'machine_key="{escape_prometheus_label_matcher(resolved_machine_keys[0])}"'
+    else:
+        machine_regex = "|".join(escape_prometheus_label_matcher(machine_key) for machine_key in resolved_machine_keys)
+        machine_matcher = f'machine_key=~"{machine_regex}"'
+    matchers = [machine_matcher]
     base_matcher = ",".join(matchers)
     program_fields = ("selected_program", "active_program", "next_program")
     return " or ".join(
@@ -4673,11 +4713,13 @@ def build_prometheus_dosar_metric_query(metric_name: str, dosar_query: str, peri
 def build_prometheus_saved_records_for_dosar(dosar_query: str) -> list[dict]:
     period_range = f"{TELEGRAM_DOSAR_LOOKBACK_DAYS}d"
     base_records: dict[str, dict] = {}
+    machine_keys = resolve_telegram_report_machine_keys()
 
     base_query = build_prometheus_dosar_metric_query(
         "haba_saved_cycle_completed",
         dosar_query,
         period_range,
+        machine_keys=machine_keys,
     )
     for series in fetch_prometheus_vector(base_query):
         labels = series.get("metric") or {}
@@ -4728,7 +4770,7 @@ def build_prometheus_saved_records_for_dosar(dosar_query: str) -> list[dict]:
         "setup_changed": "haba_saved_cycle_setup_changed",
     }
     metric_query_map = {
-        field_name: build_prometheus_dosar_metric_query(metric_name, dosar_query, period_range)
+        field_name: build_prometheus_dosar_metric_query(metric_name, dosar_query, period_range, machine_keys=machine_keys)
         for field_name, metric_name in metric_map.items()
     }
     for field_name, result_series in fetch_prometheus_query_map(metric_query_map).items():
@@ -4914,7 +4956,15 @@ def configure_telegram_bot_commands() -> None:
                 [
                     {
                         "command": "raportzi",
-                        "description": "Raport randament laser pentru ziua curenta",
+                        "description": "Raport randament combinat pentru ziua curenta",
+                    },
+                    {
+                        "command": "raportzilb",
+                        "description": "Raport zi LASER1MODBUS / Laser Belgia",
+                    },
+                    {
+                        "command": "raportzila",
+                        "description": "Raport zi LASER2MODBUS / Laser A",
                     },
                     {
                         "command": "randament_dosar",
@@ -4944,6 +4994,7 @@ def build_telegram_reply_keyboard() -> str:
         {
             "keyboard": [
                 [{"text": "/raportzi"}],
+                [{"text": "/raportziLB"}, {"text": "/raportziLA"}],
                 [{"text": "/randament_dosar"}],
             ],
             "resize_keyboard": True,
@@ -5058,7 +5109,7 @@ def handle_telegram_command(message: dict) -> None:
     command_parts = text.split(maxsplit=1)
     command = command_parts[0].split("@", 1)[0].lower()
     command_argument = command_parts[1].strip() if len(command_parts) > 1 else ""
-    if command not in {"/raportzi", "/randament_dosar", "/dosar", "/meniu", "/menu", "/chatid", "/id", "/start", "/help"}:
+    if command not in {"/raportzi", "/raportzilb", "/raportzila", "/randament_dosar", "/dosar", "/meniu", "/menu", "/chatid", "/id", "/start", "/help"}:
         return
 
     if command in {"/chatid", "/id"}:
@@ -5068,7 +5119,7 @@ def handle_telegram_command(message: dict) -> None:
     if command in {"/start", "/help", "/meniu", "/menu"}:
         send_telegram_message(
             chat_id,
-            "Comenzi disponibile:\n/raportzi\n/randament_dosar 34158",
+            "Comenzi disponibile:\n/raportzi\n/raportziLB\n/raportziLA\n/randament_dosar 34158",
             reply_markup=build_telegram_reply_keyboard(),
         )
         return
@@ -5084,10 +5135,11 @@ def handle_telegram_command(message: dict) -> None:
         )
         return
 
-    if command == "/raportzi":
+    if command in {"/raportzi", "/raportzilb", "/raportzila"}:
+        command_machine_keys = resolve_telegram_command_machine_keys(command)
         send_telegram_message(
             chat_id,
-            build_telegram_laser_report(include_week=False),
+            build_telegram_laser_report(include_week=False, machine_keys=command_machine_keys),
             reply_markup=build_telegram_reply_keyboard(),
         )
         return
@@ -5229,6 +5281,23 @@ def resolve_saved_modbus_period(period: str | None) -> str:
     return candidate
 
 
+def resolve_saved_modbus_machine_key(machine_key: str | None) -> str:
+    candidate = (machine_key or "laser1modbus").strip().lower()
+    if candidate == "all":
+        return "all"
+    if candidate not in MODBUS_MACHINE_KEYS:
+        raise ValueError(f"Unsupported saved MODBUS machine: {candidate}")
+    return candidate
+
+
+def get_saved_modbus_machine_options() -> list[dict[str, str]]:
+    return [
+        {"value": "laser1modbus", "label": MACHINE_DEFINITIONS["laser1modbus"]["label"]},
+        {"value": "laser2modbus", "label": MACHINE_DEFINITIONS["laser2modbus"]["label"]},
+        {"value": "all", "label": "Toate utilajele MODBUS"},
+    ]
+
+
 def resolve_saved_modbus_window(period: str, now: datetime) -> tuple[datetime, datetime, bool, str]:
     if period == "day":
         start = datetime.combine(date.today(), time.min)
@@ -5257,20 +5326,34 @@ def resolve_saved_modbus_prometheus_range(period: str) -> str:
     }[normalized]
 
 
-def build_saved_modbus_payload(period: str = "day", operator_id: str | None = None) -> dict:
+def build_saved_modbus_payload(
+    period: str = "day",
+    operator_id: str | None = None,
+    machine_key: str | None = None,
+) -> dict:
     normalized_period = resolve_saved_modbus_period(period)
+    normalized_machine_key = resolve_saved_modbus_machine_key(machine_key)
+    selected_machine_keys = (
+        ["laser1modbus", "laser2modbus"]
+        if normalized_machine_key == "all"
+        else [normalized_machine_key]
+    )
     now = now_local()
     window_start, window_end, is_closed_period, window_label = resolve_saved_modbus_window(normalized_period, now)
     records: list[dict] = []
     data_source = "sqlite-fallback"
     if SAVED_RECORDS_PROMETHEUS_ENABLED:
         try:
-            prometheus_records = build_prometheus_saved_records_for_range(
-                prometheus_range_for_window(window_start, window_end),
-                machine_key="laser1modbus",
-                window_start=window_start,
-                window_end=window_end,
-            )
+            prometheus_records: list[dict] = []
+            for selected_machine_key in selected_machine_keys:
+                prometheus_records.extend(
+                    build_prometheus_saved_records_for_range(
+                        prometheus_range_for_window(window_start, window_end),
+                        machine_key=selected_machine_key,
+                        window_start=window_start,
+                        window_end=window_end,
+                    )
+                )
             if prometheus_records:
                 records = prometheus_records
                 data_source = "prometheus"
@@ -5278,29 +5361,47 @@ def build_saved_modbus_payload(period: str = "day", operator_id: str | None = No
             pass
 
     if not records:
-        records = fetch_saved_cycles_between(window_start, window_end, machine_key="laser1modbus")
-    machine_label = MACHINE_DEFINITIONS.get("laser1modbus", {}).get("label", "LASER1MODBUS")
-    machine_profile = get_machine_profile("laser1modbus")
-    cached_operator_snapshot = _operator_snapshot_cache.get(machine_profile.get("workcenter_id"))
-    operator_snapshot = (
-        cached_operator_snapshot.get("payload", {})
-        if cached_operator_snapshot
-        and (time_module.time() - float(cached_operator_snapshot.get("cached_at", 0))) < OPERATOR_CACHE_SECONDS
-        else {}
+        for selected_machine_key in selected_machine_keys:
+            records.extend(fetch_saved_cycles_between(window_start, window_end, machine_key=selected_machine_key))
+    records.sort(key=lambda item: item.get("table_change_ended_at") or item.get("created_at") or "", reverse=True)
+    machine_label = (
+        "Toate utilajele MODBUS"
+        if normalized_machine_key == "all"
+        else MACHINE_DEFINITIONS.get(normalized_machine_key, {}).get("label", normalized_machine_key.upper())
     )
     operator_map: dict[str, dict] = {}
 
-    for operator in operator_snapshot.get("operators", []):
-        employee_id = str(operator.get("employee_id") or "").strip()
-        operator_name = (operator.get("full_name") or UNKNOWN_OPERATOR_LABEL).strip() or UNKNOWN_OPERATOR_LABEL
-        resolved_operator_id = employee_id or f"name:{operator_name}"
-        operator_map[resolved_operator_id] = {
-            "operator_id": resolved_operator_id,
-            "employee_id": employee_id,
-            "operator_name": operator_name,
-            "records_count": 0,
-            "_efficiency_total": 0.0,
-        }
+    seen_workcenters: set[int] = set()
+    for selected_machine_key in selected_machine_keys:
+        try:
+            machine_profile = get_machine_profile(selected_machine_key)
+        except Exception:
+            continue
+        workcenter_id = machine_profile.get("workcenter_id")
+        if not workcenter_id or int(workcenter_id) in seen_workcenters:
+            continue
+        seen_workcenters.add(int(workcenter_id))
+        cached_operator_snapshot = _operator_snapshot_cache.get(workcenter_id)
+        operator_snapshot = (
+            cached_operator_snapshot.get("payload", {})
+            if cached_operator_snapshot
+            and (time_module.time() - float(cached_operator_snapshot.get("cached_at", 0))) < OPERATOR_CACHE_SECONDS
+            else {}
+        )
+        for operator in operator_snapshot.get("operators", []):
+            employee_id = str(operator.get("employee_id") or "").strip()
+            operator_name = (operator.get("full_name") or UNKNOWN_OPERATOR_LABEL).strip() or UNKNOWN_OPERATOR_LABEL
+            resolved_operator_id = employee_id or f"name:{operator_name}"
+            operator_map.setdefault(
+                resolved_operator_id,
+                {
+                    "operator_id": resolved_operator_id,
+                    "employee_id": employee_id,
+                    "operator_name": operator_name,
+                    "records_count": 0,
+                    "_efficiency_total": 0.0,
+                },
+            )
 
     for record in records:
         employee_id = str(record.get("operator_id") or "").strip()
@@ -5356,8 +5457,9 @@ def build_saved_modbus_payload(period: str = "day", operator_id: str | None = No
     return {
         "view": "saved_modbus",
         "period": normalized_period,
-        "machine_key": "laser1modbus",
+        "machine_key": normalized_machine_key,
         "machine_label": machine_label,
+        "machine_options": get_saved_modbus_machine_options(),
         "operators": operators,
         "selected_operator_id": selected_operator_id,
         "records_count": len(filtered_records),
@@ -6843,8 +6945,9 @@ def saved_records():
 def saved_records_modbus():
     period = request.args.get("period", "day")
     operator_id = (request.args.get("operator_id") or "").strip() or None
+    machine_key = request.args.get("machine", "laser1modbus")
     try:
-        return jsonify(build_saved_modbus_payload(period=period, operator_id=operator_id))
+        return jsonify(build_saved_modbus_payload(period=period, operator_id=operator_id, machine_key=machine_key))
     except ValueError as exc:
         return jsonify({"success": False, "message": str(exc)}), 400
 

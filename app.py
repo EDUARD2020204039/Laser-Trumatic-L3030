@@ -4499,6 +4499,7 @@ def resolve_telegram_report_machine_keys() -> list[str]:
 
 def resolve_telegram_command_machine_keys(command: str) -> list[str] | None:
     command_machine_map = {
+        "/raportzi": ["laser1modbus", "laser2modbus"],
         "/raportzilb": ["laser1modbus"],
         "/raportzila": ["laser2modbus"],
     }
@@ -4632,6 +4633,11 @@ def build_telegram_period_section(label: str, records: list[dict], top_limit: in
             f"penalizat {format_seconds(total_table_change_penalty_seconds)} | idle {format_seconds(total_idle_seconds)} | "
             f"ON {format_seconds(total_machine_on_seconds)}"
         ),
+        (
+            "Formula raport: randament = (executie + schimb gratuit) / ON. "
+            f"Schimb gratuit = max. {format_seconds(TELEGRAM_TABLE_CHANGE_FREE_SECONDS)} pe ciclu; "
+            "ce depaseste apare la penalizat."
+        ),
     ]
 
     if not operators:
@@ -4646,10 +4652,11 @@ def build_telegram_period_section(label: str, records: list[dict], top_limit: in
     lines.append("Operatori:")
     for index, operator in enumerate(operators[:top_limit], start=1):
         lines.append(
-            f"{index}. {operator['operator_name']}: {operator['efficiency_percent']}% | "
-            f"exec {operator['cutting_label']} | schimb {operator['table_change_label']} | "
-            f"pen. {operator['table_change_penalty_label']} | idle {operator['idle_label']} | "
-            f"ON {operator['machine_on_label']} | {operator['records_count']} cicluri"
+            f"{index}. {operator['operator_name']}: {operator['efficiency_percent']}% = "
+            f"(exec {operator['cutting_label']} + schimb gratuit {format_seconds(int(operator['table_change_allowed_seconds'] or 0))}) "
+            f"/ ON {operator['machine_on_label']} | schimb total {operator['table_change_label']} | "
+            f"penalizat {operator['table_change_penalty_label']} | idle {operator['idle_label']} | "
+            f"{operator['records_count']} cicluri"
         )
     return "\n".join(lines)
 
@@ -4980,6 +4987,10 @@ def configure_telegram_bot_commands() -> None:
                         "description": "Randament total pentru un dosar",
                     },
                     {
+                        "command": "formule",
+                        "description": "Explica formulele de randament",
+                    },
+                    {
                         "command": "meniu",
                         "description": "Afiseaza butoanele botului",
                     },
@@ -5020,6 +5031,52 @@ def build_telegram_dosar_force_reply() -> str:
             "selective": True,
             "input_field_placeholder": "Numar dosar (ex. 34158)",
         }
+    )
+
+
+def build_telegram_help_text() -> str:
+    return "\n".join(
+        [
+            "Comenzi disponibile:",
+            "/raportzi - raport zi combinat pentru LASER1MODBUS si LASER2MODBUS",
+            "/raportziLB - raport zi doar pentru LASER1MODBUS / Laser Belgia",
+            "/raportziLA - raport zi doar pentru LASER2MODBUS / Laser A",
+            "/randament_dosar 34158 - cauta dosarul in istoricul salvat si calculeaza randamentul lui",
+            "/formule - explica formulele si de unde vin timpii",
+            "/chatid - afiseaza ID-ul chatului pentru autorizare",
+            "/meniu - retrimite tastatura rapida",
+        ]
+    )
+
+
+def build_telegram_formula_text() -> str:
+    return "\n".join(
+        [
+            "Formule raportare HABA Production Monitor",
+            "",
+            "Surse date:",
+            "1. Modbus IN1..IN4 da starea utilajului: machine_on, cutting, table_change, idle/abort.",
+            "2. Feedul OCR citeste programul/materialul. Daca feedul cade scurt, se poate folosi ultimul program valid ca fallback.",
+            "3. Ciclul se salveaza la final de table_change sau cand se detecteaza schimbare de program.",
+            "",
+            "Timpuri pe ciclu:",
+            "ON = timpul in care machine_on este activ intre startul ciclului si final.",
+            "Executie = timpul in care cutting este activ.",
+            "Schimb = timpul in care table_change este activ.",
+            "Idle = timpul in care idle/abort este activ; daca utilajul nu are semnal idle, se deduce ca ON - executie - schimb.",
+            "",
+            "Randament salvat in pagina:",
+            "randament = (executie + schimb) / ON * 100",
+            "",
+            "Randament Telegram:",
+            f"schimb gratuit = maximum {format_seconds(TELEGRAM_TABLE_CHANGE_FREE_SECONDS)} pe ciclu",
+            "penalizat = schimb total - schimb gratuit",
+            "randament Telegram = (executie + schimb gratuit) / ON * 100",
+            "",
+            "De ce poate parea ciudat:",
+            "Daca un dosar apare in mai multe programe/cicluri, cutting-ul se insumeaza pe toate ciclurile gasite.",
+            "Durata dosarului este interval calendaristic de la primul start la ultimul final; suma cutting poate fi mai mare daca exista cicluri suprapuse, duplicate OCR sau mai multe variante ale aceluiasi dosar.",
+        ]
     )
 
 
@@ -5118,17 +5175,25 @@ def handle_telegram_command(message: dict) -> None:
     command_parts = text.split(maxsplit=1)
     command = command_parts[0].split("@", 1)[0].lower()
     command_argument = command_parts[1].strip() if len(command_parts) > 1 else ""
-    if command not in {"/raportzi", "/raportzilb", "/raportzila", "/randament_dosar", "/dosar", "/meniu", "/menu", "/chatid", "/id", "/start", "/help"}:
+    if command not in {"/raportzi", "/raportzilb", "/raportzila", "/randament_dosar", "/dosar", "/formule", "/meniu", "/menu", "/chatid", "/id", "/start", "/help"}:
         return
 
     if command in {"/chatid", "/id"}:
         send_telegram_message(chat_id, f"Chat ID: {chat_id}", reply_markup=build_telegram_reply_keyboard())
         return
 
-    if command in {"/start", "/help", "/meniu", "/menu"}:
+    if command in {"/start", "/help"}:
         send_telegram_message(
             chat_id,
-            "Comenzi disponibile:\n/raportzi\n/raportziLB\n/raportziLA\n/randament_dosar 34158",
+            build_telegram_help_text(),
+            reply_markup=build_telegram_reply_keyboard(),
+        )
+        return
+
+    if command in {"/meniu", "/menu"}:
+        send_telegram_message(
+            chat_id,
+            "Meniu rapid:",
             reply_markup=build_telegram_reply_keyboard(),
         )
         return
@@ -5149,6 +5214,14 @@ def handle_telegram_command(message: dict) -> None:
         send_telegram_message(
             chat_id,
             build_telegram_laser_report(include_week=False, machine_keys=command_machine_keys),
+            reply_markup=build_telegram_reply_keyboard(),
+        )
+        return
+
+    if command == "/formule":
+        send_telegram_message(
+            chat_id,
+            build_telegram_formula_text(),
             reply_markup=build_telegram_reply_keyboard(),
         )
         return

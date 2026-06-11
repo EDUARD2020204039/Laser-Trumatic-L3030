@@ -4750,14 +4750,35 @@ def normalize_dosar_query(raw_value: str | None) -> str:
     return match.group(0) if match else ""
 
 
+def build_dosar_program_regex(dosar_query: str) -> str:
+    safe_dosar_query = re.sub(r"[^A-Za-z0-9_-]", "", dosar_query)
+    escaped_query = escape_prometheus_label_matcher(safe_dosar_query)
+    if re.fullmatch(r"[A-Za-z0-9]+", safe_dosar_query or ""):
+        return f"(^|.*[^A-Za-z0-9]){escaped_query}($|[^A-Za-z0-9].*)"
+    return f".*{escaped_query}.*"
+
+
+def program_matches_dosar_query(program: str | None, dosar_query: str) -> bool:
+    program_value = str(program or "").strip()
+    query_value = re.sub(r"[^A-Za-z0-9_-]", "", dosar_query)
+    if not program_value or not query_value:
+        return False
+    if re.fullmatch(r"[A-Za-z0-9]+", query_value):
+        return re.search(
+            rf"(^|[^A-Za-z0-9]){re.escape(query_value)}($|[^A-Za-z0-9])",
+            program_value,
+            flags=re.IGNORECASE,
+        ) is not None
+    return query_value.lower() in program_value.lower()
+
+
 def build_prometheus_dosar_metric_query(
     metric_name: str,
     dosar_query: str,
     period_range: str,
     machine_keys: list[str] | None = None,
 ) -> str:
-    safe_dosar_query = re.sub(r"[^A-Za-z0-9_-]", "", dosar_query)
-    dosar_regex = f".*{escape_prometheus_label_matcher(safe_dosar_query)}.*"
+    dosar_regex = build_dosar_program_regex(dosar_query)
     resolved_machine_keys = machine_keys or resolve_telegram_report_machine_keys()
     if len(resolved_machine_keys) == 1:
         machine_matcher = f'machine_key="{escape_prometheus_label_matcher(resolved_machine_keys[0])}"'
@@ -4945,7 +4966,7 @@ def build_telegram_dosar_report(raw_dosar_query: str | None) -> str:
                 record.get("active_program"),
                 record.get("next_program"),
             )
-            if dosar_query.lower() in str(program or "").lower()
+            if program_matches_dosar_query(program, dosar_query)
         }
     )
 

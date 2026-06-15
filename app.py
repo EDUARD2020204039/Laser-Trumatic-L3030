@@ -4688,18 +4688,6 @@ def fetch_saved_cycles_between_for_machines(
 ) -> list[dict]:
     records: list[dict] = []
     for machine_key in machine_keys:
-        if SAVED_RECORDS_PROMETHEUS_ENABLED:
-            try:
-                machine_records = build_prometheus_saved_records_for_range(
-                    prometheus_range_for_window(start_dt, end_dt),
-                    machine_key=machine_key,
-                    window_start=start_dt,
-                    window_end=end_dt,
-                )
-                records.extend(machine_records)
-                continue
-            except Exception:
-                pass
         records.extend(fetch_saved_cycles_between(start_dt, end_dt, machine_key=machine_key, limit=5000))
     records.sort(key=lambda item: item.get("table_change_started_at") or item.get("created_at") or "", reverse=True)
     return records

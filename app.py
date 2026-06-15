@@ -4705,6 +4705,120 @@ def fetch_saved_cycles_between_for_machines(
     return records
 
 
+def get_record_timestamp_window(record: dict) -> tuple[datetime | None, datetime | None]:
+    starts: list[datetime] = []
+    ends: list[datetime] = []
+    for field_name in ("cutting_started_at", "table_change_started_at", "created_at"):
+        value = record.get(field_name)
+        if not value:
+            continue
+        try:
+            starts.append(parse_timestamp(value))
+        except (TypeError, ValueError):
+            continue
+    for field_name in ("table_change_ended_at", "created_at", "table_change_started_at"):
+        value = record.get(field_name)
+        if not value:
+            continue
+        try:
+            ends.append(parse_timestamp(value))
+        except (TypeError, ValueError):
+            continue
+    return (min(starts) if starts else None, max(ends) if ends else None)
+
+
+def format_workcenter_checkin_label(checkin_items: list[dict]) -> str:
+    if not checkin_items:
+        return "necunoscut"
+
+    rendered_items = []
+    for item in checkin_items[:3]:
+        workcenter_id = item.get("workcenter_id")
+        check_in = item.get("check_in")
+        if not isinstance(check_in, datetime):
+            continue
+        active_suffix = " activ" if item.get("is_active") else ""
+        rendered_items.append(f"WC {workcenter_id} - {check_in.strftime('%d.%m.%Y %H:%M')}{active_suffix}")
+    if len(checkin_items) > 3:
+        rendered_items.append(f"+{len(checkin_items) - 3} pontaje")
+    return "; ".join(rendered_items) if rendered_items else "necunoscut"
+
+
+def fetch_operator_workcenter_checkins(
+    employee_id: str,
+    workcenter_ids: set[int],
+    start_dt: datetime | None,
+    end_dt: datetime | None,
+) -> list[dict]:
+    if not employee_id or employee_id.startswith("name:") or not workcenter_ids or not start_dt or not end_dt:
+        return []
+
+    query_start_date = (start_dt.date() - timedelta(days=1)).isoformat()
+    query_end_date = end_dt.date().isoformat()
+    sorted_workcenter_ids = sorted(int(workcenter_id) for workcenter_id in workcenter_ids if workcenter_id)
+    if not sorted_workcenter_ids:
+        return []
+
+    placeholders = ", ".join("?" for _ in sorted_workcenter_ids)
+    parameters = [employee_id, *sorted_workcenter_ids, query_start_date, query_end_date]
+    try:
+        with get_pontaj_connection() as connection:
+            cursor = connection.cursor()
+            cursor.execute(
+                f"""
+                SELECT
+                    P.WorkCenterID,
+                    P.Data,
+                    P.OraCheckIn,
+                    P.OraCheckOut
+                FROM PontajWorkCenter P
+                WHERE P.ID = ?
+                  AND P.WorkCenterID IN ({placeholders})
+                  AND P.Data >= ?
+                  AND P.Data <= ?
+                ORDER BY P.Data ASC, P.OraCheckIn ASC
+                """,
+                parameters,
+            )
+            rows = cursor.fetchall()
+            cursor.close()
+    except Exception as exc:  # pragma: no cover - depends on networked SQL Server
+        print(f"Pontaj check-in warning for employee {employee_id}: {exc}")
+        return []
+
+    first_by_workcenter: dict[int, dict] = {}
+    for row in rows:
+        workcenter_id = parse_optional_int(row[0])
+        check_in = coerce_pontaj_datetime(row[1], row[2])
+        if not workcenter_id or not check_in:
+            continue
+        is_active = row[3] is None
+        check_out = coerce_pontaj_datetime(row[1], row[3]) if not is_active else end_dt
+        if not check_out:
+            continue
+        if check_out < check_in:
+            check_out += timedelta(days=1)
+        if check_in > end_dt or check_out < start_dt:
+            continue
+        if workcenter_id not in first_by_workcenter or check_in < first_by_workcenter[workcenter_id]["check_in"]:
+            first_by_workcenter[workcenter_id] = {
+                "check_in": check_in,
+                "is_active": is_active,
+            }
+
+    return [
+        {
+            "workcenter_id": workcenter_id,
+            "check_in": payload["check_in"],
+            "is_active": payload["is_active"],
+        }
+        for workcenter_id, payload in sorted(
+            first_by_workcenter.items(),
+            key=lambda item: (item[1]["check_in"], item[0]),
+        )
+    ]
+
+
 def summarize_operator_records_for_telegram(records: list[dict]) -> list[dict]:
     operator_map: dict[str, dict] = {}
     for record in records:
@@ -4725,11 +4839,26 @@ def summarize_operator_records_for_telegram(records: list[dict]) -> list[dict]:
                 "table_change_seconds": 0,
                 "table_change_allowed_seconds": 0,
                 "table_change_penalty_seconds": 0,
+                "workcenter_ids": set(),
+                "first_record_at": None,
+                "last_record_at": None,
             },
         )
         table_change_seconds = int(record.get("table_change_duration_seconds") or 0)
         table_change_allowed_seconds = min(table_change_seconds, TELEGRAM_TABLE_CHANGE_FREE_SECONDS)
+        workcenter_id = parse_optional_int(record.get("workcenter_id"))
+        record_start, record_end = get_record_timestamp_window(record)
         operator_entry["machines"].add(record.get("machine_label") or record.get("machine_key") or "")
+        if workcenter_id:
+            operator_entry["workcenter_ids"].add(workcenter_id)
+        if record_start and (
+            operator_entry["first_record_at"] is None or record_start < operator_entry["first_record_at"]
+        ):
+            operator_entry["first_record_at"] = record_start
+        if record_end and (
+            operator_entry["last_record_at"] is None or record_end > operator_entry["last_record_at"]
+        ):
+            operator_entry["last_record_at"] = record_end
         operator_entry["records_count"] += 1
         operator_entry["machine_on_seconds"] += int(record.get("machine_on_duration_seconds") or 0)
         operator_entry["cutting_seconds"] += int(record.get("cycle_duration_seconds") or 0)
@@ -4757,6 +4886,14 @@ def summarize_operator_records_for_telegram(records: list[dict]) -> list[dict]:
         operator_entry["table_change_label"] = format_seconds(table_change_seconds)
         operator_entry["table_change_penalty_label"] = format_seconds(table_change_penalty_seconds)
         operator_entry["machines"] = sorted(machine for machine in operator_entry["machines"] if machine)
+        checkins = fetch_operator_workcenter_checkins(
+            operator_entry["employee_id"],
+            operator_entry["workcenter_ids"],
+            operator_entry["first_record_at"],
+            operator_entry["last_record_at"],
+        )
+        operator_entry["workcenter_checkins"] = checkins
+        operator_entry["workcenter_checkin_label"] = format_workcenter_checkin_label(checkins)
         output.append(operator_entry)
 
     output.sort(
@@ -4831,6 +4968,7 @@ def build_telegram_period_section(label: str, records: list[dict], top_limit: in
             [
                 "",
                 f"{index}. {operator['operator_name']}",
+                f"Pontaj WC: {operator['workcenter_checkin_label']}",
                 f"Randament: {operator['efficiency_percent']}%",
                 f"Formula: (exec {operator['cutting_label']} + schimb gratuit {format_seconds(int(operator['table_change_allowed_seconds'] or 0))}) / ON {operator['machine_on_label']}",
                 f"Schimb total: {operator['table_change_label']}",
@@ -4857,7 +4995,15 @@ def build_telegram_short_machine_summary(machine_key: str, records: list[dict]) 
         total_machine_on_seconds,
     )
     operators = summarize_operator_records_for_telegram(records)
-    operator_names = [operator["operator_name"] for operator in operators if operator.get("records_count")]
+    operator_names = [
+        (
+            f"{operator['operator_name']} ({operator['workcenter_checkin_label']})"
+            if operator.get("workcenter_checkin_label") and operator["workcenter_checkin_label"] != "necunoscut"
+            else operator["operator_name"]
+        )
+        for operator in operators
+        if operator.get("records_count")
+    ]
     operator_label = ", ".join(operator_names) if operator_names else "fara cicluri salvate azi"
     return "\n".join(
         [
@@ -5181,6 +5327,7 @@ def build_telegram_dosar_report(raw_dosar_query: str | None) -> str:
                 [
                     "",
                     f"- {operator['operator_name']}",
+                    f"Pontaj WC: {operator['workcenter_checkin_label']}",
                     f"Randament: {operator['efficiency_percent']}%",
                     f"ON: {operator['machine_on_label']}",
                     f"Executie: {operator['cutting_label']}",

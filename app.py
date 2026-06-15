@@ -5039,38 +5039,49 @@ def build_telegram_laser_summary_report() -> str:
     return "\n".join(lines)
 
 
-def build_telegram_laser_report(include_week: bool = True, machine_keys: list[str] | None = None) -> str:
-    now = now_local()
+def resolve_telegram_period_window(period_key: str, now: datetime | None = None) -> tuple[str, datetime, datetime]:
+    resolved_now = now or now_local()
+    today_start = datetime.combine(resolved_now.date(), time.min)
+    if period_key == "week":
+        week_start = today_start - timedelta(days=resolved_now.date().weekday())
+        return "Saptamana curenta", week_start, resolved_now
+    if period_key == "month":
+        month_start = datetime.combine(resolved_now.date().replace(day=1), time.min)
+        return "Luna curenta", month_start, resolved_now
+    return "Ziua curenta", today_start, resolved_now
+
+
+def build_telegram_laser_period_report(period_key: str = "day", machine_keys: list[str] | None = None) -> str:
+    period_title, window_start, window_end = resolve_telegram_period_window(period_key)
     machine_keys = machine_keys or resolve_telegram_report_machine_keys()
     machine_labels = [
         MACHINE_DEFINITIONS.get(machine_key, {}).get("label", machine_key)
         for machine_key in machine_keys
     ]
-    today_start = datetime.combine(date.today(), time.min)
-    week_start = today_start - timedelta(days=date.today().weekday())
-    day_records = fetch_saved_cycles_between_for_machines(today_start, now, machine_keys)
-
+    records = fetch_saved_cycles_between_for_machines(window_start, window_end, machine_keys)
     lines = [
         "Raport Laser TruMatic L3030",
         f"Masini: {', '.join(machine_labels)}",
-        f"Pana la: {now.strftime('%d.%m.%Y %H:%M')}",
+        f"Interval: {window_start.strftime('%d.%m.%Y %H:%M')} - {window_end.strftime('%d.%m.%Y %H:%M')}",
         "",
-        build_telegram_period_section("Ziua curenta", day_records),
+        build_telegram_period_section(period_title, records),
     ]
 
-    if include_week:
-        week_records = fetch_saved_cycles_between_for_machines(week_start, now, machine_keys)
-        lines.extend(
-            [
-                "",
-                build_telegram_period_section(
-                    f"Saptamana curenta ({week_start.strftime('%d.%m')} - {now.strftime('%d.%m')})",
-                    week_records,
-                ),
-            ]
-        )
-
     return "\n".join(lines)
+
+
+def build_telegram_laser_report(include_week: bool = True, machine_keys: list[str] | None = None) -> str:
+    report_text = build_telegram_laser_period_report("day", machine_keys=machine_keys)
+    if not include_week:
+        return report_text
+
+    machine_keys = machine_keys or resolve_telegram_report_machine_keys()
+    return "\n\n".join(
+        [
+            report_text,
+            build_telegram_laser_period_report("week", machine_keys=machine_keys),
+        ]
+    )
 
 
 def normalize_dosar_query(raw_value: str | None) -> str:
@@ -5527,12 +5538,28 @@ def send_telegram_message(chat_id: str, text: str, reply_markup: str | None = No
         telegram_api_request("sendMessage", payload, timeout_seconds=15.0)
 
 
-def send_telegram_report_to_configured_chats() -> None:
+def send_telegram_report_to_configured_chats(period_key: str = "day") -> None:
     if not TELEGRAM_CHAT_IDS:
         return
-    report_text = build_telegram_laser_summary_report()
+    report_text = build_telegram_laser_period_report(
+        period_key,
+        machine_keys=["laser1modbus", "laser2modbus"],
+    )
     for chat_id in TELEGRAM_CHAT_IDS:
         send_telegram_message(chat_id, report_text)
+
+
+def is_last_day_of_month(current_dt: datetime) -> bool:
+    return (current_dt.date() + timedelta(days=1)).day == 1
+
+
+def resolve_due_telegram_report_periods(current_dt: datetime) -> list[str]:
+    periods = ["day"]
+    if current_dt.weekday() == 6:
+        periods.append("week")
+    if is_last_day_of_month(current_dt):
+        periods.append("month")
+    return periods
 
 
 def telegram_chat_is_allowed(chat_id: str) -> bool:
@@ -5691,15 +5718,25 @@ def telegram_polling_loop() -> None:
 
 
 def telegram_scheduled_report_loop() -> None:
-    last_sent_key: str | None = None
+    sent_report_keys: set[str] = set()
     report_hour, report_minute = resolve_telegram_report_time()
     while True:
         try:
             now = now_local()
-            current_key = now.strftime("%Y-%m-%d %H:%M")
-            if now.hour == report_hour and now.minute == report_minute and current_key != last_sent_key:
-                send_telegram_report_to_configured_chats()
-                last_sent_key = current_key
+            if now.hour == report_hour and now.minute == report_minute:
+                for period_key in resolve_due_telegram_report_periods(now):
+                    current_key = f"{now.strftime('%Y-%m-%d %H:%M')}:{period_key}"
+                    if current_key in sent_report_keys:
+                        continue
+                    send_telegram_report_to_configured_chats(period_key)
+                    sent_report_keys.add(current_key)
+                if len(sent_report_keys) > 30:
+                    today_prefix = now.strftime("%Y-%m-")
+                    sent_report_keys = {
+                        report_key
+                        for report_key in sent_report_keys
+                        if report_key.startswith(today_prefix)
+                    }
             time_module.sleep(20)
         except Exception as exc:
             print(f"Telegram scheduled report warning: {exc}")

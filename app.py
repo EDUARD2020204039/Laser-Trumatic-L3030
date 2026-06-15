@@ -4786,7 +4786,7 @@ def fetch_operator_workcenter_checkins(
         print(f"Pontaj check-in warning for employee {employee_id}: {exc}")
         return []
 
-    first_by_workcenter: dict[int, dict] = {}
+    selected_by_workcenter: dict[int, dict] = {}
     for row in rows:
         workcenter_id = parse_optional_int(row[0])
         check_in = coerce_pontaj_datetime(row[1], row[2])
@@ -4800,11 +4800,21 @@ def fetch_operator_workcenter_checkins(
             check_out += timedelta(days=1)
         if check_in > end_dt or check_out < start_dt:
             continue
-        if workcenter_id not in first_by_workcenter or check_in < first_by_workcenter[workcenter_id]["check_in"]:
-            first_by_workcenter[workcenter_id] = {
-                "check_in": check_in,
-                "is_active": is_active,
-            }
+        starts_inside_window = check_in >= start_dt
+        candidate = {
+            "check_in": check_in,
+            "is_active": is_active,
+            "starts_inside_window": starts_inside_window,
+        }
+        selected = selected_by_workcenter.get(workcenter_id)
+        if selected is None:
+            selected_by_workcenter[workcenter_id] = candidate
+            continue
+        if starts_inside_window and not selected["starts_inside_window"]:
+            selected_by_workcenter[workcenter_id] = candidate
+            continue
+        if starts_inside_window == selected["starts_inside_window"] and check_in < selected["check_in"]:
+            selected_by_workcenter[workcenter_id] = candidate
 
     return [
         {
@@ -4813,7 +4823,7 @@ def fetch_operator_workcenter_checkins(
             "is_active": payload["is_active"],
         }
         for workcenter_id, payload in sorted(
-            first_by_workcenter.items(),
+            selected_by_workcenter.items(),
             key=lambda item: (item[1]["check_in"], item[0]),
         )
     ]

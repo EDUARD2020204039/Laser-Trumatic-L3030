@@ -4163,6 +4163,15 @@ def build_prometheus_saved_cycle_label_filter(
     return "{" + ",".join(matchers) + "}"
 
 
+def prometheus_range_query(
+    metric_name: str,
+    label_filter: str,
+    period_range: str,
+    range_function: str = "max_over_time",
+) -> str:
+    return f"{range_function}({metric_name}{label_filter}[{period_range}])"
+
+
 def build_prometheus_cycle_series_key(labels: dict) -> str | None:
     cycle_id = str(labels.get("cycle_id") or "").strip()
     if not cycle_id:
@@ -4213,10 +4222,10 @@ def build_prometheus_operator_summaries() -> list[dict]:
         query_map = {
             "records_count": f'count by (operator_id, operator_name) (max_over_time(haba_saved_cycle_completed[{period_range}]))',
             "setup_count": f'sum by (operator_id, operator_name) (max_over_time(haba_saved_cycle_setup_changed[{period_range}]))',
-            "machine_on_seconds": f'sum by (operator_id, operator_name) (max_over_time(haba_saved_cycle_machine_on_seconds[{period_range}]))',
-            "cutting_seconds": f'sum by (operator_id, operator_name) (max_over_time(haba_saved_cycle_cutting_seconds[{period_range}]))',
-            "idle_seconds": f'sum by (operator_id, operator_name) (max_over_time(haba_saved_cycle_idle_seconds[{period_range}]))',
-            "table_change_seconds": f'sum by (operator_id, operator_name) (max_over_time(haba_saved_cycle_table_change_seconds[{period_range}]))',
+            "machine_on_seconds": f'sum by (operator_id, operator_name) (last_over_time(haba_saved_cycle_machine_on_seconds[{period_range}]))',
+            "cutting_seconds": f'sum by (operator_id, operator_name) (last_over_time(haba_saved_cycle_cutting_seconds[{period_range}]))',
+            "idle_seconds": f'sum by (operator_id, operator_name) (last_over_time(haba_saved_cycle_idle_seconds[{period_range}]))',
+            "table_change_seconds": f'sum by (operator_id, operator_name) (last_over_time(haba_saved_cycle_table_change_seconds[{period_range}]))',
         }
         for field_name, query in query_map.items():
             period_query_map[f"{period}:{field_name}"] = query
@@ -4295,7 +4304,7 @@ def build_prometheus_saved_records_for_range(
         machine_key=machine_key,
         completed_at_regex=completed_at_regex,
     )
-    base_query = f"max_over_time(haba_saved_cycle_completed{label_filter}[{period_range}])"
+    base_query = prometheus_range_query("haba_saved_cycle_completed", label_filter, period_range)
     base_records: dict[str, dict] = {}
 
     for series in fetch_prometheus_vector(base_query):
@@ -4344,7 +4353,7 @@ def build_prometheus_saved_records_for_range(
         "setup_changed": "haba_saved_cycle_setup_changed",
     }
     metric_query_map = {
-        field_name: f"max_over_time({metric_name}{label_filter}[{period_range}])"
+        field_name: prometheus_range_query(metric_name, label_filter, period_range, "last_over_time")
         for field_name, metric_name in metric_map.items()
     }
     for field_name, result_series in fetch_prometheus_query_map(metric_query_map).items():
@@ -4943,6 +4952,7 @@ def build_prometheus_dosar_metric_query(
     dosar_query: str,
     period_range: str,
     machine_keys: list[str] | None = None,
+    range_function: str = "max_over_time",
 ) -> str:
     dosar_regex = build_dosar_program_regex(dosar_query)
     resolved_machine_keys = machine_keys or resolve_telegram_report_machine_keys()
@@ -4955,7 +4965,7 @@ def build_prometheus_dosar_metric_query(
     base_matcher = ",".join(matchers)
     program_fields = ("selected_program", "active_program", "next_program")
     return " or ".join(
-        f'max_over_time({metric_name}{{{base_matcher},{field}=~"{dosar_regex}"}}[{period_range}])'
+        f'{range_function}({metric_name}{{{base_matcher},{field}=~"{dosar_regex}"}}[{period_range}])'
         for field in program_fields
     )
 
@@ -5020,7 +5030,13 @@ def build_prometheus_saved_records_for_dosar(dosar_query: str) -> list[dict]:
         "setup_changed": "haba_saved_cycle_setup_changed",
     }
     metric_query_map = {
-        field_name: build_prometheus_dosar_metric_query(metric_name, dosar_query, period_range, machine_keys=machine_keys)
+        field_name: build_prometheus_dosar_metric_query(
+            metric_name,
+            dosar_query,
+            period_range,
+            machine_keys=machine_keys,
+            range_function="last_over_time",
+        )
         for field_name, metric_name in metric_map.items()
     }
     for field_name, result_series in fetch_prometheus_query_map(metric_query_map).items():

@@ -147,6 +147,8 @@ except (TypeError, ValueError):
 MODBUS_TCP_RETRY_DELAY_SECONDS = min(max(MODBUS_TCP_RETRY_DELAY_SECONDS, 0.0), 2.0)
 MODBUS_SNAPSHOT_GRACE_SECONDS = max(int(os.getenv("MODBUS_SNAPSHOT_GRACE_SECONDS", "180")), 0)
 OPERATOR_CACHE_SECONDS = max(int(os.getenv("OPERATOR_CACHE_SECONDS", "20")), 3)
+PONTAJ_WORK_INTERVAL_CACHE_SECONDS = max(int(os.getenv("PONTAJ_WORK_INTERVAL_CACHE_SECONDS", "60")), 5)
+PONTAJ_LIMIT_IDLE_TO_ACTIVE_OPERATOR = os.getenv("PONTAJ_LIMIT_IDLE_TO_ACTIVE_OPERATOR", "1") != "0"
 PROMETHEUS_MAX_PARALLEL_QUERIES = max(int(os.getenv("PROMETHEUS_MAX_PARALLEL_QUERIES", "6")), 1)
 try:
     PROMETHEUS_QUERY_TIMEOUT_SECONDS = float(os.getenv("PROMETHEUS_QUERY_TIMEOUT_SECONDS", "2.5") or 2.5)
@@ -197,6 +199,7 @@ TELEGRAM_TABLE_CHANGE_FREE_SECONDS = max(int(os.getenv("TELEGRAM_TABLE_CHANGE_FR
 UNKNOWN_OPERATOR_LABEL = "Fara operator la salvare"
 SAVED_CYCLE_INSERT_PLACEHOLDERS = ", ".join(["?"] * 23)
 _operator_snapshot_cache: dict[int, dict] = {}
+_work_interval_cache: dict[tuple[int, str, str], dict] = {}
 
 if pytesseract is not None:  # pragma: no cover - runtime environment specific
     windows_tesseract = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
@@ -3455,6 +3458,156 @@ def fetch_current_operator(workcenter_id: int | None) -> dict:
     return payload
 
 
+def coerce_pontaj_datetime(date_value, time_value) -> datetime | None:
+    if date_value is None or time_value is None:
+        return None
+
+    if isinstance(date_value, datetime):
+        date_part = date_value.date()
+    elif isinstance(date_value, date):
+        date_part = date_value
+    else:
+        date_text = str(date_value).strip()
+        if not date_text:
+            return None
+        try:
+            date_part = datetime.fromisoformat(date_text[:10]).date()
+        except ValueError:
+            return None
+
+    if isinstance(time_value, datetime):
+        time_part = time_value.time().replace(microsecond=0)
+    elif isinstance(time_value, time):
+        time_part = time_value.replace(microsecond=0)
+    else:
+        time_text = str(time_value).strip()
+        if not time_text:
+            return None
+        try:
+            time_part = datetime.strptime(time_text.split(".", 1)[0], "%H:%M:%S").time()
+        except ValueError:
+            try:
+                time_part = datetime.strptime(time_text.split(".", 1)[0], "%H:%M").time()
+            except ValueError:
+                return None
+
+    return datetime.combine(date_part, time_part)
+
+
+def merge_time_intervals(intervals: list[tuple[datetime, datetime]]) -> list[tuple[datetime, datetime]]:
+    valid_intervals = sorted(
+        (start_dt, end_dt)
+        for start_dt, end_dt in intervals
+        if start_dt and end_dt and end_dt > start_dt
+    )
+    merged: list[tuple[datetime, datetime]] = []
+    for start_dt, end_dt in valid_intervals:
+        if not merged or start_dt > merged[-1][1]:
+            merged.append((start_dt, end_dt))
+            continue
+        if end_dt > merged[-1][1]:
+            merged[-1] = (merged[-1][0], end_dt)
+    return merged
+
+
+def fetch_workcenter_active_intervals(
+    workcenter_id: int | None,
+    start_dt: datetime,
+    end_dt: datetime,
+) -> list[tuple[datetime, datetime]] | None:
+    if not PONTAJ_LIMIT_IDLE_TO_ACTIVE_OPERATOR or workcenter_id is None or end_dt <= start_dt:
+        return None
+
+    cache_key = (
+        int(workcenter_id),
+        start_dt.isoformat(timespec="seconds"),
+        end_dt.isoformat(timespec="seconds"),
+    )
+    cached_payload = _work_interval_cache.get(cache_key)
+    if cached_payload and (time_module.time() - float(cached_payload["cached_at"])) < PONTAJ_WORK_INTERVAL_CACHE_SECONDS:
+        return cached_payload["intervals"]
+
+    query_start_date = (start_dt.date() - timedelta(days=1)).isoformat()
+    query_end_date = end_dt.date().isoformat()
+    try:
+        with get_pontaj_connection() as connection:
+            cursor = connection.cursor()
+            cursor.execute(
+                """
+                SELECT
+                    P.Data,
+                    P.OraCheckIn,
+                    P.OraCheckOut
+                FROM PontajWorkCenter P
+                WHERE P.WorkCenterID = ?
+                  AND P.Data >= ?
+                  AND P.Data <= ?
+                ORDER BY P.Data ASC, P.OraCheckIn ASC
+                """,
+                (workcenter_id, query_start_date, query_end_date),
+            )
+            rows = cursor.fetchall()
+            cursor.close()
+    except Exception as exc:  # pragma: no cover - depends on networked SQL Server
+        print(f"Pontaj interval warning for workcenter {workcenter_id}: {exc}")
+        return None
+
+    intervals: list[tuple[datetime, datetime]] = []
+    for row in rows:
+        check_in = coerce_pontaj_datetime(row[0], row[1])
+        if not check_in:
+            continue
+        check_out = coerce_pontaj_datetime(row[0], row[2]) if row[2] is not None else end_dt
+        if not check_out:
+            continue
+        if check_out < check_in:
+            check_out += timedelta(days=1)
+
+        clipped_start = max(check_in, start_dt)
+        clipped_end = min(check_out, end_dt)
+        if clipped_end > clipped_start:
+            intervals.append((clipped_start, clipped_end))
+
+    merged_intervals = merge_time_intervals(intervals)
+    _work_interval_cache[cache_key] = {
+        "cached_at": time_module.time(),
+        "intervals": merged_intervals,
+    }
+    return merged_intervals
+
+
+def get_machine_work_intervals(
+    machine_key: str,
+    start_dt: datetime,
+    end_dt: datetime,
+) -> list[tuple[datetime, datetime]] | None:
+    if machine_key not in MODBUS_MACHINE_KEYS:
+        return None
+    try:
+        workcenter_id = get_machine_profile(machine_key).get("workcenter_id")
+    except Exception:
+        workcenter_id = None
+    return fetch_workcenter_active_intervals(workcenter_id, start_dt, end_dt)
+
+
+def calculate_active_seconds_in_intervals(
+    machine_key: str,
+    signal_name: str,
+    start_dt: datetime,
+    end_dt: datetime,
+    intervals: list[tuple[datetime, datetime]] | None,
+) -> int:
+    if intervals is None:
+        return calculate_active_seconds(machine_key, signal_name, start_dt, end_dt)
+    total_seconds = 0
+    for interval_start, interval_end in intervals:
+        clipped_start = max(start_dt, interval_start)
+        clipped_end = min(end_dt, interval_end)
+        if clipped_end > clipped_start:
+            total_seconds += calculate_active_seconds(machine_key, signal_name, clipped_start, clipped_end)
+    return max(total_seconds, 0)
+
+
 def fetch_recent_events(machine_key: str, limit: int = 18) -> list[dict]:
     with get_sqlite_connection() as connection:
         rows = connection.execute(
@@ -3533,11 +3686,24 @@ def calculate_saved_cycle_metrics(
     if end_dt < start_dt:
         end_dt = start_dt
 
-    machine_on_seconds = calculate_active_seconds(machine_key, "machine_on", start_dt, end_dt)
+    work_intervals = get_machine_work_intervals(machine_key, start_dt, end_dt)
+    machine_on_seconds = calculate_active_seconds_in_intervals(
+        machine_key,
+        "machine_on",
+        start_dt,
+        end_dt,
+        work_intervals,
+    )
     cutting_seconds = calculate_active_seconds(machine_key, "cutting_active", start_dt, end_dt)
     table_change_seconds = calculate_active_seconds(machine_key, "table_change", start_dt, end_dt)
     idle_seconds = (
-        calculate_active_seconds(machine_key, "idle_abort", start_dt, end_dt)
+        calculate_active_seconds_in_intervals(
+            machine_key,
+            "idle_abort",
+            start_dt,
+            end_dt,
+            work_intervals,
+        )
         if machine_supports_idle_signal(machine_key)
         else max(machine_on_seconds - cutting_seconds - table_change_seconds, 0)
     )
@@ -5139,6 +5305,7 @@ def build_telegram_formula_text() -> str:
             "Executie = timpul in care cutting este activ.",
             "Schimb = timpul in care table_change este activ.",
             "Idle = timpul in care idle/abort este activ; daca utilajul nu are semnal idle, se deduce ca ON - executie - schimb.",
+            "Pentru lasere, ON si Idle se iau in calcul doar pe intervalele in care exista operator pontat pe workcenter; daca pontajul nu raspunde, se foloseste regula veche.",
             "",
             "Randament salvat in pagina:",
             "randament = (executie + schimb) / ON * 100",
@@ -5190,7 +5357,7 @@ def send_telegram_message(chat_id: str, text: str, reply_markup: str | None = No
 def send_telegram_report_to_configured_chats() -> None:
     if not TELEGRAM_CHAT_IDS:
         return
-    report_text = build_telegram_laser_report(include_week=True)
+    report_text = build_telegram_laser_summary_report()
     for chat_id in TELEGRAM_CHAT_IDS:
         send_telegram_message(chat_id, report_text)
 
@@ -6357,11 +6524,26 @@ def build_today_stats(machine_key: str) -> dict:
     now = now_local()
     stats_window_start = resolve_stats_window_start(machine_key, now)
     elapsed_seconds = max(int((now - stats_window_start).total_seconds()), 1)
-    machine_on_seconds = calculate_active_seconds(machine_key, "machine_on", stats_window_start, now)
+    work_intervals = get_machine_work_intervals(machine_key, stats_window_start, now)
+    machine_on_seconds = calculate_active_seconds_in_intervals(
+        machine_key,
+        "machine_on",
+        stats_window_start,
+        now,
+        work_intervals,
+    )
     cutting_seconds = calculate_active_seconds(machine_key, "cutting_active", stats_window_start, now)
     table_change_seconds = calculate_active_seconds(machine_key, "table_change", stats_window_start, now)
+    if machine_on_seconds < cutting_seconds + table_change_seconds:
+        machine_on_seconds = cutting_seconds + table_change_seconds
     idle_seconds = (
-        calculate_active_seconds(machine_key, "idle_abort", stats_window_start, now)
+        calculate_active_seconds_in_intervals(
+            machine_key,
+            "idle_abort",
+            stats_window_start,
+            now,
+            work_intervals,
+        )
         if machine_supports_idle_signal(machine_key)
         else max(machine_on_seconds - cutting_seconds - table_change_seconds, 0)
     )

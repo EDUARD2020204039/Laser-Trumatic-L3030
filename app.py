@@ -6419,8 +6419,8 @@ def build_completed_cycle_notification_key(record: dict) -> str:
         completed_at = parse_timestamp(completed_at_raw)
     except Exception:
         completed_at = now_local()
-    minute_bucket = completed_at.strftime("%Y%m%d%H%M")
-    return f"completed-cycle:{machine_key}:{selected_program}:{minute_bucket}"
+    day_bucket = completed_at.strftime("%Y%m%d")
+    return f"completed-cycle:{machine_key}:{selected_program}:{day_bucket}"
 
 
 def reserve_completed_cycle_telegram_notification(record: dict) -> bool:

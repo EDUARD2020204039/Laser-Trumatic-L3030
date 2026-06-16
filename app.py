@@ -5249,6 +5249,13 @@ def normalize_dosar_query(raw_value: str | None) -> str:
     return match.group(0) if match else ""
 
 
+def resolve_dosar_group(value: str | None) -> str:
+    dosar_id = extract_dosar_id(value)
+    if dosar_id:
+        return dosar_id
+    return normalize_dosar_query(value)
+
+
 def build_dosar_program_regex(dosar_query: str) -> str:
     safe_dosar_query = re.sub(r"[^A-Za-z0-9_-]", "", dosar_query)
     escaped_query = escape_prometheus_label_matcher(safe_dosar_query)
@@ -5527,6 +5534,111 @@ def build_telegram_dosar_report(raw_dosar_query: str | None) -> str:
     return "\n".join(lines)
 
 
+def build_telegram_today_dosare_report(machine_keys: list[str] | None = None) -> str:
+    now = now_local()
+    today_start = datetime.combine(date.today(), time.min)
+    resolved_machine_keys = machine_keys or ["laser1modbus", "laser2modbus"]
+    records = fetch_saved_cycles_between_for_machines(today_start, now, resolved_machine_keys)
+    if not records:
+        return "Nu exista inca dosare salvate azi."
+
+    dosar_map: dict[str, dict] = {}
+    for record in records:
+        program_value = (
+            normalize_context_token(record.get("selected_program"))
+            or normalize_context_token(record.get("active_program"))
+            or "Necitit"
+        )
+        dosar_key = resolve_dosar_group(program_value) or program_value
+        entry = dosar_map.setdefault(
+            dosar_key,
+            {
+                "dosar_id": dosar_key,
+                "records_count": 0,
+                "machine_on_seconds": 0,
+                "cutting_seconds": 0,
+                "idle_seconds": 0,
+                "table_change_seconds": 0,
+                "table_change_allowed_seconds": 0,
+                "machines": set(),
+                "operators": set(),
+                "programs": set(),
+                "first_start": None,
+                "last_end": None,
+            },
+        )
+        table_change_seconds = int(record.get("table_change_duration_seconds") or 0)
+        entry["records_count"] += 1
+        entry["machine_on_seconds"] += int(record.get("machine_on_duration_seconds") or 0)
+        entry["cutting_seconds"] += int(record.get("cycle_duration_seconds") or 0)
+        entry["idle_seconds"] += int(record.get("idle_duration_seconds") or 0)
+        entry["table_change_seconds"] += table_change_seconds
+        entry["table_change_allowed_seconds"] += min(table_change_seconds, TELEGRAM_TABLE_CHANGE_FREE_SECONDS)
+        entry["machines"].add(record.get("machine_label") or record.get("machine_key") or "")
+        entry["operators"].add((record.get("operator_name") or UNKNOWN_OPERATOR_LABEL).strip() or UNKNOWN_OPERATOR_LABEL)
+        if program_value and program_value != "Necitit":
+            entry["programs"].add(program_value)
+        record_start, record_end = get_record_timestamp_window(record)
+        if record_start and (entry["first_start"] is None or record_start < entry["first_start"]):
+            entry["first_start"] = record_start
+        if record_end and (entry["last_end"] is None or record_end > entry["last_end"]):
+            entry["last_end"] = record_end
+
+    grouped_entries = list(dosar_map.values())
+    grouped_entries.sort(
+        key=lambda item: (
+            item["last_end"] or datetime.min,
+            item["first_start"] or datetime.min,
+            item["dosar_id"],
+        ),
+        reverse=True,
+    )
+
+    lines = [
+        f"Dosare azi ({len(grouped_entries)})",
+        f"Interval: {today_start.strftime('%d.%m.%Y %H:%M')} - {now.strftime('%d.%m.%Y %H:%M')}",
+    ]
+    for index, entry in enumerate(grouped_entries, start=1):
+        machine_on_seconds = int(entry["machine_on_seconds"] or 0)
+        cutting_seconds = int(entry["cutting_seconds"] or 0)
+        table_change_seconds = int(entry["table_change_seconds"] or 0)
+        allowed_table_change_seconds = int(entry["table_change_allowed_seconds"] or 0)
+        efficiency_percent = calculate_telegram_efficiency_percent(
+            cutting_seconds,
+            allowed_table_change_seconds,
+            machine_on_seconds,
+        )
+        calendar_duration_seconds = 0
+        if entry["first_start"] and entry["last_end"]:
+            calendar_duration_seconds = max(int((entry["last_end"] - entry["first_start"]).total_seconds()), 0)
+        program_list = sorted(entry["programs"])
+        program_label = program_list[0] if program_list else "Necitit"
+        if len(program_list) > 1:
+            program_label = f"{program_label} (+{len(program_list) - 1})"
+        operator_label = ", ".join(sorted(operator for operator in entry["operators"] if operator))
+        machine_label = ", ".join(sorted(machine for machine in entry["machines"] if machine))
+        finished_at_label = (
+            entry["last_end"].strftime("%H:%M:%S")
+            if entry["last_end"]
+            else "necunoscut"
+        )
+        lines.extend(
+            [
+                "",
+                f"{index}. Dosar {entry['dosar_id']}",
+                f"Program: {program_label}",
+                f"Utilaj: {machine_label or '-'}",
+                f"Operator: {operator_label or UNKNOWN_OPERATOR_LABEL}",
+                f"Randament: {efficiency_percent}%",
+                f"Timp realizare: {format_seconds(calendar_duration_seconds)}",
+                f"Timp ON: {format_seconds(machine_on_seconds)}",
+                f"Cicluri salvate: {entry['records_count']}",
+                f"Ultima finalizare: {finished_at_label}",
+            ]
+        )
+    return "\n".join(lines)
+
+
 def telegram_api_request(method: str, payload: dict | None = None, timeout_seconds: float = 30.0) -> dict:
     if not TELEGRAM_BOT_TOKEN:
         raise RuntimeError("TELEGRAM_BOT_TOKEN lipseste.")
@@ -5569,6 +5681,10 @@ def configure_telegram_bot_commands() -> None:
                         "description": "Randament total pentru un dosar",
                     },
                     {
+                        "command": "dosare_azi",
+                        "description": "Dosarele finalizate azi cu timp si operatori",
+                    },
+                    {
                         "command": "formule",
                         "description": "Explica formulele de randament",
                     },
@@ -5597,7 +5713,7 @@ def build_telegram_reply_keyboard() -> str:
             "keyboard": [
                 [{"text": "/raportzi"}],
                 [{"text": "/raportziLB"}, {"text": "/raportziLA"}],
-                [{"text": "/randament_dosar"}],
+                [{"text": "/dosare_azi"}, {"text": "/randament_dosar"}],
             ],
             "resize_keyboard": True,
             "one_time_keyboard": False,
@@ -5623,6 +5739,7 @@ def build_telegram_help_text() -> str:
             "/raportzi - sumar scurt pe LASER1MODBUS si LASER2MODBUS: randament si operatori",
             "/raportziLB - raport detaliat zi doar pentru LASER1MODBUS / Laser Belgia",
             "/raportziLA - raport detaliat zi doar pentru LASER2MODBUS / Laser A",
+            "/dosare_azi - lista dosarelor salvate azi cu timp, operator si randament",
             "/randament_dosar 34158 - cauta dosarul in istoricul salvat si calculeaza randamentul lui",
             "/formule - explica formulele si de unde vin timpii",
             "/chatid - afiseaza ID-ul chatului pentru autorizare",
@@ -5774,7 +5891,7 @@ def handle_telegram_command(message: dict) -> None:
     command_parts = text.split(maxsplit=1)
     command = command_parts[0].split("@", 1)[0].lower()
     command_argument = command_parts[1].strip() if len(command_parts) > 1 else ""
-    if command not in {"/raportzi", "/raportzilb", "/raportzila", "/randament_dosar", "/dosar", "/formule", "/meniu", "/menu", "/chatid", "/id", "/start", "/help"}:
+    if command not in {"/raportzi", "/raportzilb", "/raportzila", "/dosare_azi", "/randament_dosar", "/dosar", "/formule", "/meniu", "/menu", "/chatid", "/id", "/start", "/help"}:
         return
 
     if command in {"/chatid", "/id"}:
@@ -5820,6 +5937,14 @@ def handle_telegram_command(message: dict) -> None:
         send_telegram_message(
             chat_id,
             build_telegram_laser_report(include_week=False, machine_keys=command_machine_keys),
+            reply_markup=build_telegram_reply_keyboard(),
+        )
+        return
+
+    if command == "/dosare_azi":
+        send_telegram_message(
+            chat_id,
+            build_telegram_today_dosare_report(),
             reply_markup=build_telegram_reply_keyboard(),
         )
         return
@@ -6471,9 +6596,14 @@ def resolve_completed_cycle_selected_program(record: dict) -> str:
     return normalize_context_token(record.get("selected_program"))
 
 
+def resolve_completed_cycle_program_group(record: dict | None) -> str:
+    selected_program = resolve_completed_cycle_selected_program(record or {})
+    return resolve_dosar_group(selected_program) or selected_program
+
+
 def build_completed_cycle_report_key(record: dict) -> str:
     machine_group, _ = resolve_completed_cycle_machine_group(record.get("machine_key"))
-    selected_program = resolve_completed_cycle_selected_program(record)
+    selected_program = resolve_completed_cycle_program_group(record)
     completed_at_raw = (
         record.get("table_change_ended_at")
         or record.get("created_at")
@@ -6487,25 +6617,27 @@ def build_completed_cycle_report_key(record: dict) -> str:
 
 
 def find_open_completed_cycle_report_key(machine_group: str, selected_program: str) -> str | None:
+    target_group = resolve_dosar_group(selected_program) or normalize_context_token(selected_program)
     with get_sqlite_connection() as connection:
-        row = connection.execute(
+        rows = connection.execute(
             """
-            SELECT report_key
+            SELECT report_key, selected_program
             FROM telegram_cycle_report_queue
             WHERE machine_group = ?
-              AND selected_program = ?
               AND sent_at IS NULL
             ORDER BY updated_at DESC
-            LIMIT 1
             """,
-            (machine_group, selected_program),
-        ).fetchone()
-    return str(row["report_key"]) if row and row["report_key"] else None
+            (machine_group,),
+        ).fetchall()
+    for row in rows:
+        if (resolve_dosar_group(row["selected_program"]) or normalize_context_token(row["selected_program"])) == target_group:
+            return str(row["report_key"]) if row["report_key"] else None
+    return None
 
 
 def build_completed_cycle_telegram_message(record: dict) -> str:
     machine_label = record.get("machine_label") or resolve_completed_cycle_machine_group(record.get("machine_key"))[1]
-    dosar_name = resolve_completed_cycle_selected_program(record) or normalize_context_token(record.get("selected_program")) or "Necitit"
+    dosar_name = resolve_completed_cycle_program_group(record) or resolve_completed_cycle_selected_program(record) or normalize_context_token(record.get("selected_program")) or "Necitit"
     operator_name = record.get("operator_name") or UNKNOWN_OPERATOR_LABEL
     duration_seconds = int(record.get("machine_on_duration_seconds") or record.get("cycle_duration_seconds") or 0)
     cycle_seconds = int(record.get("cycle_duration_seconds") or duration_seconds)
@@ -6534,7 +6666,7 @@ def build_completed_cycle_telegram_message(record: dict) -> str:
 def enqueue_completed_cycle_telegram_report(record: dict) -> None:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_IDS or not TELEGRAM_REPORTS_ENABLED:
         return
-    selected_program = resolve_completed_cycle_selected_program(record)
+    selected_program = resolve_completed_cycle_program_group(record)
     if not selected_program:
         return
 
@@ -6567,6 +6699,7 @@ def enqueue_completed_cycle_telegram_report(record: dict) -> None:
             VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, NULL, NULL)
             ON CONFLICT(report_key) DO UPDATE SET
                 machine_label = excluded.machine_label,
+                selected_program = excluded.selected_program,
                 operator_name = CASE
                     WHEN telegram_cycle_report_queue.operator_name IS NULL
                          OR telegram_cycle_report_queue.operator_name = ''
@@ -6601,16 +6734,25 @@ def enqueue_completed_cycle_telegram_report(record: dict) -> None:
             ),
         )
         ready_at = (now_local() + timedelta(seconds=TELEGRAM_COMPLETED_CYCLE_AGGREGATION_SECONDS)).isoformat(timespec="seconds")
-        connection.execute(
+        open_rows = connection.execute(
             """
-            UPDATE telegram_cycle_report_queue
-            SET ready_at = COALESCE(ready_at, ?)
+            SELECT report_key, selected_program, ready_at
+            FROM telegram_cycle_report_queue
             WHERE machine_group = ?
-              AND selected_program <> ?
               AND sent_at IS NULL
             """,
-            (ready_at, machine_group, selected_program),
-        )
+            (machine_group,),
+        ).fetchall()
+        for row in open_rows:
+            row_group = resolve_dosar_group(row["selected_program"]) or normalize_context_token(row["selected_program"])
+            if row_group == selected_program:
+                continue
+            if row["ready_at"]:
+                continue
+            connection.execute(
+                "UPDATE telegram_cycle_report_queue SET ready_at = ? WHERE report_key = ?",
+                (ready_at, row["report_key"]),
+            )
         connection.commit()
 
 
@@ -6630,19 +6772,23 @@ def build_queued_completed_cycle_record(row: sqlite3.Row) -> dict:
 
 
 def fetch_open_completed_cycle_report(machine_group: str, selected_program: str) -> sqlite3.Row | None:
+    target_group = resolve_dosar_group(selected_program) or normalize_context_token(selected_program)
     with get_sqlite_connection() as connection:
-        return connection.execute(
+        rows = connection.execute(
             """
             SELECT *
             FROM telegram_cycle_report_queue
             WHERE machine_group = ?
-              AND selected_program = ?
               AND sent_at IS NULL
             ORDER BY updated_at DESC
-            LIMIT 1
             """,
-            (machine_group, selected_program),
-        ).fetchone()
+            (machine_group,),
+        ).fetchall()
+    for row in rows:
+        row_group = resolve_dosar_group(row["selected_program"]) or normalize_context_token(row["selected_program"])
+        if row_group == target_group:
+            return row
+    return None
 
 
 def fetch_due_completed_cycle_reports(limit: int = 20) -> list[sqlite3.Row]:

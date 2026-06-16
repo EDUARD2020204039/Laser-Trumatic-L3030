@@ -2556,6 +2556,11 @@ def init_db() -> None:
                 in4_signal TEXT NOT NULL DEFAULT 'idle_abort',
                 updated_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS telegram_notifications (
+                notification_key TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL
+            );
             """
         )
 
@@ -3176,6 +3181,8 @@ def get_laser_ocr_snapshot(machine_key: str) -> dict:
         "connected": True,
         "endpoint": endpoint,
         "captured_at": now_local().isoformat(timespec="seconds"),
+        "ocr_selected_program": selected_program or "",
+        "ocr_active_program": active_program or "",
         "selected_program": selected_program or "Necitit",
         "active_program": active_program or "Necitit",
         "material": material or "Necitit",
@@ -6370,11 +6377,10 @@ def cache_live_snapshot(machine_key: str, snapshot: dict) -> None:
 def build_completed_cycle_telegram_message(record: dict) -> str:
     machine_key = record.get("machine_key") or DEFAULT_MACHINE_KEY
     machine_label = MACHINE_DEFINITIONS.get(machine_key, {}).get("label", machine_key)
-    dosar_name = (
-        normalize_context_token(record.get("selected_program"))
-        or normalize_context_token(record.get("active_program"))
-        or "Necitit"
-    )
+    if "telegram_selected_program" in record:
+        dosar_name = normalize_context_token(record.get("telegram_selected_program")) or "Necitit"
+    else:
+        dosar_name = normalize_context_token(record.get("selected_program")) or "Necitit"
     operator_name = record.get("operator_name") or UNKNOWN_OPERATOR_LABEL
     duration_seconds = int(record.get("machine_on_duration_seconds") or record.get("cycle_duration_seconds") or 0)
     efficiency_percent = round(float(record.get("efficiency_percent") or 0.0), 1)
@@ -6399,8 +6405,50 @@ def build_completed_cycle_telegram_message(record: dict) -> str:
     )
 
 
+def build_completed_cycle_notification_key(record: dict) -> str:
+    machine_key = ensure_machine_key(record.get("machine_key") or DEFAULT_MACHINE_KEY)
+    selected_program = normalize_context_token(record.get("telegram_selected_program"))
+    if not selected_program:
+        selected_program = normalize_context_token(record.get("selected_program"))
+    completed_at_raw = (
+        record.get("table_change_ended_at")
+        or record.get("created_at")
+        or now_local().isoformat(timespec="seconds")
+    )
+    try:
+        completed_at = parse_timestamp(completed_at_raw)
+    except Exception:
+        completed_at = now_local()
+    minute_bucket = completed_at.strftime("%Y%m%d%H%M")
+    return f"completed-cycle:{machine_key}:{selected_program}:{minute_bucket}"
+
+
+def reserve_completed_cycle_telegram_notification(record: dict) -> bool:
+    notification_key = build_completed_cycle_notification_key(record)
+    created_at = now_local().isoformat(timespec="seconds")
+    cleanup_before = (now_local() - timedelta(days=14)).isoformat(timespec="seconds")
+    with get_sqlite_connection() as connection:
+        connection.execute(
+            "DELETE FROM telegram_notifications WHERE created_at < ?",
+            (cleanup_before,),
+        )
+        cursor = connection.execute(
+            """
+            INSERT OR IGNORE INTO telegram_notifications (notification_key, created_at)
+            VALUES (?, ?)
+            """,
+            (notification_key, created_at),
+        )
+        connection.commit()
+        return cursor.rowcount == 1
+
+
 def send_completed_cycle_telegram_report(record: dict) -> None:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_IDS or not TELEGRAM_REPORTS_ENABLED:
+        return
+    if "telegram_selected_program" in record and not normalize_context_token(record.get("telegram_selected_program")):
+        return
+    if not reserve_completed_cycle_telegram_notification(record):
         return
     message = build_completed_cycle_telegram_message(record)
     for chat_id in TELEGRAM_CHAT_IDS:
@@ -6431,6 +6479,7 @@ def open_pending_cycle(
         "lower_tool": snapshot.get("lower_tool"),
         "setup_signature": resolve_abkant_tool_signature(snapshot),
         "setup_changed": bool(snapshot.get("setup_changed")),
+        "telegram_selected_program": resolve_snapshot_selected_program(snapshot),
         "completion_percent": coerce_completion_percent(snapshot.get("completion_percent")),
         "estimated_completion_at": snapshot.get("estimated_completion_at"),
         "cutting_started_at": current_signals["cutting_active"]["changed_at"] if current_signals["cutting_active"]["active"] else None,
@@ -6592,7 +6641,8 @@ def finalize_pending_cycle(machine_key: str, current_snapshot: dict) -> None:
             saved_cycle_record = {
                 "machine_key": machine_key,
                 "operator_name": pending_cycle.get("operator_name"),
-                "selected_program": pending_cycle.get("selected_program"),
+                "telegram_selected_program": pending_cycle.get("telegram_selected_program"),
+                "selected_program": pending_cycle.get("telegram_selected_program") or pending_cycle.get("selected_program"),
                 "active_program": pending_cycle.get("active_program"),
                 "machine_on_duration_seconds": cycle_metrics["machine_on_duration_seconds"],
                 "cycle_duration_seconds": cycle_metrics["cutting_duration_seconds"],
@@ -6623,6 +6673,14 @@ def resolve_snapshot_program(snapshot: dict | None) -> str:
     return selected_program or active_program
 
 
+def resolve_snapshot_selected_program(snapshot: dict | None) -> str:
+    if not snapshot:
+        return ""
+    if "ocr_selected_program" in snapshot:
+        return normalize_context_token(snapshot.get("ocr_selected_program"))
+    return normalize_context_token(snapshot.get("selected_program"))
+
+
 def save_cycle_on_program_change(
     machine_key: str,
     machine_profile: dict,
@@ -6632,8 +6690,8 @@ def save_cycle_on_program_change(
     current_signals: dict[str, dict],
     previous_stats_anchor: dict | None = None,
 ) -> None:
-    previous_program = resolve_snapshot_program(previous_snapshot)
-    current_program = resolve_snapshot_program(current_snapshot)
+    previous_program = resolve_snapshot_selected_program(previous_snapshot)
+    current_program = resolve_snapshot_selected_program(current_snapshot)
     if not previous_program or not current_program or previous_program == current_program:
         return
 
@@ -6736,7 +6794,7 @@ def save_cycle_on_program_change(
                     machine_profile.get("workcenter_id"),
                     operator.get("employee_id"),
                     operator.get("full_name"),
-                    previous_snapshot.get("selected_program") or previous_program,
+                    previous_program,
                     previous_snapshot.get("active_program") or previous_program,
                     previous_snapshot.get("material"),
                     f"{previous_snapshot.get('program_status') or 'Necitit'} -> program schimbat",
@@ -6770,7 +6828,8 @@ def save_cycle_on_program_change(
             saved_cycle_record = {
                 "machine_key": machine_key,
                 "operator_name": operator.get("full_name"),
-                "selected_program": previous_snapshot.get("selected_program") or previous_program,
+                "telegram_selected_program": previous_program,
+                "selected_program": previous_program,
                 "active_program": previous_snapshot.get("active_program") or previous_program,
                 "machine_on_duration_seconds": cycle_metrics["machine_on_duration_seconds"],
                 "cycle_duration_seconds": cycle_metrics["cutting_duration_seconds"],

@@ -196,6 +196,10 @@ TELEGRAM_REPORT_MACHINE_KEYS = tuple(
 TELEGRAM_REPORT_TOP_LIMIT = max(int(os.getenv("TELEGRAM_REPORT_TOP_LIMIT", "10") or "10"), 1)
 TELEGRAM_DOSAR_LOOKBACK_DAYS = max(int(os.getenv("TELEGRAM_DOSAR_LOOKBACK_DAYS", "730") or "730"), 1)
 TELEGRAM_TABLE_CHANGE_FREE_SECONDS = max(int(os.getenv("TELEGRAM_TABLE_CHANGE_FREE_SECONDS", "90") or "90"), 0)
+TELEGRAM_COMPLETED_CYCLE_AGGREGATION_SECONDS = max(
+    int(os.getenv("TELEGRAM_COMPLETED_CYCLE_AGGREGATION_SECONDS", "60") or "60"),
+    5,
+)
 UNKNOWN_OPERATOR_LABEL = "Fara operator la salvare"
 SAVED_CYCLE_INSERT_PLACEHOLDERS = ", ".join(["?"] * 25)
 _operator_snapshot_cache: dict[int, dict] = {}
@@ -2563,6 +2567,22 @@ def init_db() -> None:
                 notification_key TEXT PRIMARY KEY,
                 created_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS telegram_cycle_report_queue (
+                report_key TEXT PRIMARY KEY,
+                machine_group TEXT NOT NULL,
+                machine_label TEXT NOT NULL,
+                selected_program TEXT NOT NULL,
+                operator_name TEXT,
+                records_count INTEGER NOT NULL DEFAULT 0,
+                total_machine_on_seconds INTEGER NOT NULL DEFAULT 0,
+                total_cycle_seconds INTEGER NOT NULL DEFAULT 0,
+                first_completed_at TEXT NOT NULL,
+                last_completed_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                ready_at TEXT,
+                sent_at TEXT
+            );
             """
         )
 
@@ -2601,6 +2621,13 @@ def init_db() -> None:
             connection.execute("ALTER TABLE saved_cycles ADD COLUMN completion_percent REAL")
         if "estimated_completion_at" not in saved_cycle_columns:
             connection.execute("ALTER TABLE saved_cycles ADD COLUMN estimated_completion_at TEXT")
+
+        telegram_cycle_queue_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(telegram_cycle_report_queue)").fetchall()
+        }
+        if "ready_at" not in telegram_cycle_queue_columns:
+            connection.execute("ALTER TABLE telegram_cycle_report_queue ADD COLUMN ready_at TEXT")
 
         machine_runtime_columns = {
             row["name"]
@@ -5887,6 +5914,11 @@ def ensure_telegram_bot_started() -> None:
             name="telegram-scheduled-report",
             daemon=True,
         ).start()
+        threading.Thread(
+            target=telegram_completed_cycle_report_loop,
+            name="telegram-completed-cycle-report",
+            daemon=True,
+        ).start()
     if TELEGRAM_POLLING_ENABLED:
         threading.Thread(
             target=telegram_polling_loop,
@@ -6376,40 +6408,24 @@ def cache_live_snapshot(machine_key: str, snapshot: dict) -> None:
     save_machine_runtime(machine_key, snapshot, runtime.get("pending_cycle"))
 
 
-def build_completed_cycle_telegram_message(record: dict) -> str:
-    machine_key = record.get("machine_key") or DEFAULT_MACHINE_KEY
-    machine_label = MACHINE_DEFINITIONS.get(machine_key, {}).get("label", machine_key)
+def resolve_completed_cycle_machine_group(machine_key: str | None) -> tuple[str, str]:
+    normalized_key = ensure_machine_key(machine_key or DEFAULT_MACHINE_KEY)
+    if normalized_key in {"laser1", "laser1modbus"}:
+        return "laser1", "LASER1MODBUS"
+    if normalized_key in {"laser2", "laser2modbus"}:
+        return "laser2", "LASER2MODBUS"
+    return normalized_key, MACHINE_DEFINITIONS.get(normalized_key, {}).get("label", normalized_key)
+
+
+def resolve_completed_cycle_selected_program(record: dict) -> str:
     if "telegram_selected_program" in record:
-        dosar_name = normalize_context_token(record.get("telegram_selected_program")) or "Necitit"
-    else:
-        dosar_name = normalize_context_token(record.get("selected_program")) or "Necitit"
-    operator_name = record.get("operator_name") or UNKNOWN_OPERATOR_LABEL
-    duration_seconds = int(record.get("machine_on_duration_seconds") or record.get("cycle_duration_seconds") or 0)
-    efficiency_percent = round(float(record.get("efficiency_percent") or 0.0), 1)
-    completed_at = record.get("table_change_ended_at") or record.get("created_at") or now_local().isoformat(timespec="seconds")
-    try:
-        completed_at_label = parse_timestamp(completed_at).strftime("%d.%m.%Y %H:%M:%S")
-    except Exception:
-        completed_at_label = str(completed_at)
-
-    return "\n".join(
-        [
-            "Dosar finalizat",
-            f"Utilaj: {machine_label}",
-            f"Dosar: {dosar_name}",
-            f"A terminat in: {format_seconds(duration_seconds)}",
-            f"Randament: {efficiency_percent}%",
-            f"Operator: {operator_name}",
-            f"Finalizat la: {completed_at_label}",
-        ]
-    )
+        return normalize_context_token(record.get("telegram_selected_program"))
+    return normalize_context_token(record.get("selected_program"))
 
 
-def build_completed_cycle_notification_key(record: dict) -> str:
-    machine_key = ensure_machine_key(record.get("machine_key") or DEFAULT_MACHINE_KEY)
-    selected_program = normalize_context_token(record.get("telegram_selected_program"))
-    if not selected_program:
-        selected_program = normalize_context_token(record.get("selected_program"))
+def build_completed_cycle_report_key(record: dict) -> str:
+    machine_group, _ = resolve_completed_cycle_machine_group(record.get("machine_key"))
+    selected_program = resolve_completed_cycle_selected_program(record)
     completed_at_raw = (
         record.get("table_change_ended_at")
         or record.get("created_at")
@@ -6419,43 +6435,220 @@ def build_completed_cycle_notification_key(record: dict) -> str:
         completed_at = parse_timestamp(completed_at_raw)
     except Exception:
         completed_at = now_local()
-    day_bucket = completed_at.strftime("%Y%m%d")
-    return f"completed-cycle:{machine_key}:{selected_program}:{day_bucket}"
+    return f"completed-cycle:{machine_group}:{selected_program}:{completed_at.strftime('%Y%m%d')}"
 
 
-def reserve_completed_cycle_telegram_notification(record: dict) -> bool:
-    notification_key = build_completed_cycle_notification_key(record)
-    created_at = now_local().isoformat(timespec="seconds")
-    cleanup_before = (now_local() - timedelta(days=14)).isoformat(timespec="seconds")
+def build_completed_cycle_telegram_message(record: dict) -> str:
+    machine_label = record.get("machine_label") or resolve_completed_cycle_machine_group(record.get("machine_key"))[1]
+    dosar_name = resolve_completed_cycle_selected_program(record) or normalize_context_token(record.get("selected_program")) or "Necitit"
+    operator_name = record.get("operator_name") or UNKNOWN_OPERATOR_LABEL
+    duration_seconds = int(record.get("machine_on_duration_seconds") or record.get("cycle_duration_seconds") or 0)
+    cycle_seconds = int(record.get("cycle_duration_seconds") or duration_seconds)
+    efficiency_percent = calculate_runtime_efficiency_percent(duration_seconds, cycle_seconds, 0)
+    records_count = int(record.get("records_count") or 1)
+    completed_at = record.get("table_change_ended_at") or record.get("created_at") or now_local().isoformat(timespec="seconds")
+    try:
+        completed_at_label = parse_timestamp(completed_at).strftime("%d.%m.%Y %H:%M:%S")
+    except Exception:
+        completed_at_label = str(completed_at)
+
+    lines = [
+        "Dosar finalizat",
+        f"Utilaj: {machine_label}",
+        f"Dosar: {dosar_name}",
+        f"A terminat in: {format_seconds(duration_seconds)}",
+        f"Randament: {efficiency_percent}%",
+        f"Operator: {operator_name}",
+        f"Finalizat la: {completed_at_label}",
+    ]
+    if records_count > 1:
+        lines.insert(4, f"Salvari adunate: {records_count}")
+    return "\n".join(lines)
+
+
+def enqueue_completed_cycle_telegram_report(record: dict) -> None:
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_IDS or not TELEGRAM_REPORTS_ENABLED:
+        return
+    selected_program = resolve_completed_cycle_selected_program(record)
+    if not selected_program:
+        return
+
+    machine_group, machine_label = resolve_completed_cycle_machine_group(record.get("machine_key"))
+    report_key = build_completed_cycle_report_key(record)
+    operator_name = record.get("operator_name") or UNKNOWN_OPERATOR_LABEL
+    machine_on_seconds = int(record.get("machine_on_duration_seconds") or record.get("cycle_duration_seconds") or 0)
+    cycle_seconds = int(record.get("cycle_duration_seconds") or machine_on_seconds)
+    completed_at = record.get("table_change_ended_at") or record.get("created_at") or now_local().isoformat(timespec="seconds")
+    updated_at = now_local().isoformat(timespec="seconds")
+
     with get_sqlite_connection() as connection:
         connection.execute(
-            "DELETE FROM telegram_notifications WHERE created_at < ?",
-            (cleanup_before,),
+            """
+            INSERT INTO telegram_cycle_report_queue (
+                report_key,
+                machine_group,
+                machine_label,
+                selected_program,
+                operator_name,
+                records_count,
+                total_machine_on_seconds,
+                total_cycle_seconds,
+                first_completed_at,
+                last_completed_at,
+                updated_at,
+                ready_at,
+                sent_at
+            )
+            VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, NULL, NULL)
+            ON CONFLICT(report_key) DO UPDATE SET
+                machine_label = excluded.machine_label,
+                operator_name = CASE
+                    WHEN telegram_cycle_report_queue.operator_name IS NULL
+                         OR telegram_cycle_report_queue.operator_name = ''
+                         OR telegram_cycle_report_queue.operator_name = ?
+                    THEN excluded.operator_name
+                    WHEN telegram_cycle_report_queue.operator_name = excluded.operator_name
+                    THEN telegram_cycle_report_queue.operator_name
+                    WHEN instr(telegram_cycle_report_queue.operator_name, excluded.operator_name) > 0
+                    THEN telegram_cycle_report_queue.operator_name
+                    ELSE telegram_cycle_report_queue.operator_name || ', ' || excluded.operator_name
+                END,
+                records_count = telegram_cycle_report_queue.records_count + 1,
+                total_machine_on_seconds = telegram_cycle_report_queue.total_machine_on_seconds + excluded.total_machine_on_seconds,
+                total_cycle_seconds = telegram_cycle_report_queue.total_cycle_seconds + excluded.total_cycle_seconds,
+                last_completed_at = excluded.last_completed_at,
+                updated_at = excluded.updated_at,
+                ready_at = NULL
+            WHERE telegram_cycle_report_queue.sent_at IS NULL
+            """,
+            (
+                report_key,
+                machine_group,
+                machine_label,
+                selected_program,
+                operator_name,
+                machine_on_seconds,
+                cycle_seconds,
+                completed_at,
+                completed_at,
+                updated_at,
+                UNKNOWN_OPERATOR_LABEL,
+            ),
         )
+        ready_at = (now_local() + timedelta(seconds=TELEGRAM_COMPLETED_CYCLE_AGGREGATION_SECONDS)).isoformat(timespec="seconds")
+        connection.execute(
+            """
+            UPDATE telegram_cycle_report_queue
+            SET ready_at = COALESCE(ready_at, ?)
+            WHERE machine_group = ?
+              AND selected_program <> ?
+              AND sent_at IS NULL
+            """,
+            (ready_at, machine_group, selected_program),
+        )
+        connection.commit()
+
+
+def build_queued_completed_cycle_record(row: sqlite3.Row) -> dict:
+    return {
+        "machine_key": row["machine_group"],
+        "machine_label": row["machine_label"],
+        "telegram_selected_program": row["selected_program"],
+        "selected_program": row["selected_program"],
+        "operator_name": row["operator_name"] or UNKNOWN_OPERATOR_LABEL,
+        "records_count": row["records_count"],
+        "machine_on_duration_seconds": row["total_machine_on_seconds"],
+        "cycle_duration_seconds": row["total_cycle_seconds"],
+        "table_change_ended_at": row["last_completed_at"],
+        "created_at": row["last_completed_at"],
+    }
+
+
+def fetch_due_completed_cycle_reports(limit: int = 20) -> list[sqlite3.Row]:
+    current_time = now_local().isoformat(timespec="seconds")
+    with get_sqlite_connection() as connection:
+        return connection.execute(
+            """
+            SELECT *
+            FROM telegram_cycle_report_queue
+            WHERE sent_at IS NULL
+              AND ready_at IS NOT NULL
+              AND ready_at <= ?
+            ORDER BY updated_at ASC
+            LIMIT ?
+            """,
+            (current_time, limit),
+        ).fetchall()
+
+
+def try_mark_completed_cycle_report_sending(report_key: str, marker: str) -> bool:
+    with get_sqlite_connection() as connection:
         cursor = connection.execute(
             """
-            INSERT OR IGNORE INTO telegram_notifications (notification_key, created_at)
-            VALUES (?, ?)
+            UPDATE telegram_cycle_report_queue
+            SET sent_at = ?
+            WHERE report_key = ?
+              AND sent_at IS NULL
             """,
-            (notification_key, created_at),
+            (marker, report_key),
         )
         connection.commit()
         return cursor.rowcount == 1
 
 
-def send_completed_cycle_telegram_report(record: dict) -> None:
+def mark_completed_cycle_report_sent(report_key: str) -> None:
+    with get_sqlite_connection() as connection:
+        connection.execute(
+            "UPDATE telegram_cycle_report_queue SET sent_at = ? WHERE report_key = ?",
+            (now_local().isoformat(timespec="seconds"), report_key),
+        )
+        connection.commit()
+
+
+def reset_completed_cycle_report_send_marker(report_key: str, marker: str) -> None:
+    with get_sqlite_connection() as connection:
+        connection.execute(
+            """
+            UPDATE telegram_cycle_report_queue
+            SET sent_at = NULL
+            WHERE report_key = ?
+              AND sent_at = ?
+            """,
+            (report_key, marker),
+        )
+        connection.commit()
+
+
+def send_due_completed_cycle_telegram_reports() -> None:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_IDS or not TELEGRAM_REPORTS_ENABLED:
         return
-    if "telegram_selected_program" in record and not normalize_context_token(record.get("telegram_selected_program")):
-        return
-    if not reserve_completed_cycle_telegram_notification(record):
-        return
-    message = build_completed_cycle_telegram_message(record)
-    for chat_id in TELEGRAM_CHAT_IDS:
+    for row in fetch_due_completed_cycle_reports():
+        marker = f"sending:{now_local().isoformat(timespec='seconds')}"
+        report_key = row["report_key"]
+        if not try_mark_completed_cycle_report_sending(report_key, marker):
+            continue
+        message = build_completed_cycle_telegram_message(build_queued_completed_cycle_record(row))
         try:
-            send_telegram_message(chat_id, message)
+            for chat_id in TELEGRAM_CHAT_IDS:
+                send_telegram_message(chat_id, message)
+            mark_completed_cycle_report_sent(report_key)
         except Exception as exc:
-            print(f"Telegram completed cycle warning for chat_id={chat_id}: {exc}")
+            reset_completed_cycle_report_send_marker(report_key, marker)
+            print(f"Telegram completed cycle warning for report_key={report_key}: {exc}")
+
+
+def telegram_completed_cycle_report_loop() -> None:
+    while True:
+        try:
+            send_due_completed_cycle_telegram_reports()
+            time_module.sleep(10)
+        except Exception as exc:
+            print(f"Telegram completed cycle loop warning: {exc}")
+            time_module.sleep(30)
+
+
+def send_completed_cycle_telegram_report(record: dict) -> None:
+    enqueue_completed_cycle_telegram_report(record)
 
 
 def open_pending_cycle(

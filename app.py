@@ -6386,7 +6386,6 @@ def build_completed_cycle_telegram_message(record: dict) -> str:
     operator_name = record.get("operator_name") or UNKNOWN_OPERATOR_LABEL
     duration_seconds = int(record.get("machine_on_duration_seconds") or record.get("cycle_duration_seconds") or 0)
     efficiency_percent = round(float(record.get("efficiency_percent") or 0.0), 1)
-    completion_label = format_completion_percent(record.get("completion_percent"))
     completed_at = record.get("table_change_ended_at") or record.get("created_at") or now_local().isoformat(timespec="seconds")
     try:
         completed_at_label = parse_timestamp(completed_at).strftime("%d.%m.%Y %H:%M:%S")
@@ -6400,7 +6399,6 @@ def build_completed_cycle_telegram_message(record: dict) -> str:
             f"Dosar: {dosar_name}",
             f"A terminat in: {format_seconds(duration_seconds)}",
             f"Randament: {efficiency_percent}%",
-            f"Procent feed: {completion_label}",
             f"Operator: {operator_name}",
             f"Finalizat la: {completed_at_label}",
         ]

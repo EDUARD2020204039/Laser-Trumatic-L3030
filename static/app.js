@@ -1445,6 +1445,14 @@ function renderStats(stats) {
         production_window_started_at: stats.production_window_started_at || null,
         randament_percent: Number(stats.randament_percent || 0),
         availability_percent: Number(stats.availability_percent || 0),
+        current_dosar: stats.current_dosar || "Necitit",
+        completion_percent: stats.completion_percent !== null && stats.completion_percent !== undefined && Number.isFinite(Number(stats.completion_percent)) ? Number(stats.completion_percent) : null,
+        completion_label: stats.completion_label || "Necitit",
+        estimated_remaining_seconds: stats.estimated_remaining_seconds !== null && stats.estimated_remaining_seconds !== undefined && Number.isFinite(Number(stats.estimated_remaining_seconds)) ? Number(stats.estimated_remaining_seconds) : null,
+        estimated_remaining_label: stats.estimated_remaining_label || "In asteptare",
+        estimated_completion_at: stats.estimated_completion_at || null,
+        estimated_completion_label: stats.estimated_completion_label || "Necunoscut",
+        seconds_per_percent_label: stats.seconds_per_percent_label || "Necunoscut",
         cutting_metric_label: stats.cutting_metric_label || "Cutting",
         table_change_metric_label: stats.table_change_metric_label || "Table change",
         signals: {
@@ -1478,6 +1486,9 @@ function computeDisplayedStats() {
         ? roundToOneDecimal((Math.min(productiveSeconds, machineOnSeconds) / machineOnSeconds) * 100)
         : 0;
     const availabilityPrefix = getAvailabilityPrefix(snapshot.machine_key);
+    const estimatedRemainingSeconds = Number.isFinite(snapshot.estimated_remaining_seconds)
+        ? Math.max(Math.round(snapshot.estimated_remaining_seconds - elapsedSeconds), 0)
+        : null;
 
     return {
         machineOnSeconds,
@@ -1486,6 +1497,15 @@ function computeDisplayedStats() {
         idleSeconds,
         sessionWindowSeconds,
         randamentPercent,
+        currentDosar: snapshot.current_dosar,
+        completionLabel: snapshot.completion_label,
+        estimatedRemainingLabel: Number.isFinite(estimatedRemainingSeconds)
+            ? formatSeconds(estimatedRemainingSeconds)
+            : snapshot.estimated_remaining_label,
+        estimatedCompletionLabel: snapshot.estimated_completion_at
+            ? `Finalizare estimata ${formatDateTime(snapshot.estimated_completion_at)}`
+            : "Ora estimata necunoscuta",
+        secondsPerPercentLabel: snapshot.seconds_per_percent_label,
         availabilityLabel: `${availabilityPrefix} ${randamentPercent}%`,
         cuttingMetricLabel: snapshot.cutting_metric_label,
         tableChangeMetricLabel: snapshot.table_change_metric_label
@@ -1503,6 +1523,11 @@ function updateStatsDisplay(displayedStats) {
     document.getElementById("metric-label-table-change").textContent = displayedStats.tableChangeMetricLabel || "Table change";
     document.getElementById("metric-label-idle").textContent = "Idle";
     document.getElementById("metric-randament").textContent = `${displayedStats.randamentPercent}%`;
+    document.getElementById("metric-current-dosar").textContent = displayedStats.currentDosar || "Necitit";
+    document.getElementById("metric-completion-percent").textContent = displayedStats.completionLabel || "Necitit";
+    document.getElementById("metric-seconds-per-percent").textContent = `Aprox. ${displayedStats.secondsPerPercentLabel || "necunoscut"} / 1%`;
+    document.getElementById("metric-estimated-completion").textContent = displayedStats.estimatedRemainingLabel || "In asteptare";
+    document.getElementById("metric-estimated-completion-at").textContent = displayedStats.estimatedCompletionLabel || "Ora estimata necunoscuta";
     document.getElementById("metric-availability").textContent = displayedStats.availabilityLabel;
     document.getElementById("metric-window").textContent = formatSeconds(displayedStats.sessionWindowSeconds);
     document.getElementById("metric-machine-on").textContent = formatSeconds(displayedStats.machineOnSeconds);
@@ -1582,6 +1607,7 @@ function renderLiveExtraction(snapshot) {
             { slot: "active_program", label: "Active program", value: snapshot.active_program || "Necitit" },
             { slot: "material", label: "Material", value: snapshot.material || "Necitit" },
             { slot: "program_status", label: "Program status", value: snapshot.program_status || "Necitit" },
+            { slot: "completion_percent", label: "Procent completare", value: formatCompletionPercent(snapshot.completion_percent, snapshot.completion_label) },
             { slot: "table_sheet", label: "Tabla pe masa de schimb", value: renderTableSheetPresence(snapshot) },
             { slot: "in1", label: "IN1", value: renderModbusInputValue(snapshot.modbus_inputs, "in1") },
             { slot: "in2", label: "IN2", value: renderModbusInputValue(snapshot.modbus_inputs, "in2") },
@@ -1598,6 +1624,7 @@ function renderLiveExtraction(snapshot) {
             { slot: "active_program", label: "Active program", value: snapshot.active_program || "Necitit" },
             { slot: "material", label: "Material", value: snapshot.material || "Necitit" },
             { slot: "program_status", label: "Program status", value: snapshot.program_status || "Necitit" },
+            { slot: "completion_percent", label: "Procent completare", value: formatCompletionPercent(snapshot.completion_percent, snapshot.completion_label) },
             { slot: "machine_on", label: "Feed activ", value: signals.machine_on ? "DA" : "NU" },
             { slot: "cutting", label: "Cutting", value: signals.cutting_active ? "DA" : "NU" },
             { slot: "table_change", label: "Table change", value: signals.table_change ? "DA" : "NU" },
@@ -2790,6 +2817,10 @@ function renderSavedModbusRecords(payload, periodMeta) {
                         <span>Idle</span>
                         <strong>${record.idle_duration_label || "00:00:00"}</strong>
                     </div>
+                    <div>
+                        <span>Procent feed</span>
+                        <strong>${formatCompletionPercent(record.completion_percent, record.completion_label || "Necitit")}</strong>
+                    </div>
                 </div>
                 <p class="saved-record-note">
                     ${resetSummary} Salvare: ${resetMoment ? formatDateTime(resetMoment) : "Necunoscut"}.
@@ -2850,6 +2881,17 @@ function formatDateTime(value) {
         dateStyle: "short",
         timeStyle: "medium"
     }).format(date);
+}
+
+function formatCompletionPercent(value, fallbackLabel = "Necitit") {
+    if (value === null || value === undefined || value === "") {
+        return fallbackLabel || "Necitit";
+    }
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue)) {
+        return fallbackLabel || "Necitit";
+    }
+    return `${roundToOneDecimal(numericValue)}%`.replace(".0%", "%");
 }
 
 function formatSeconds(totalSeconds) {

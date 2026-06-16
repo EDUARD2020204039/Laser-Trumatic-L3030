@@ -197,7 +197,7 @@ TELEGRAM_REPORT_TOP_LIMIT = max(int(os.getenv("TELEGRAM_REPORT_TOP_LIMIT", "10")
 TELEGRAM_DOSAR_LOOKBACK_DAYS = max(int(os.getenv("TELEGRAM_DOSAR_LOOKBACK_DAYS", "730") or "730"), 1)
 TELEGRAM_TABLE_CHANGE_FREE_SECONDS = max(int(os.getenv("TELEGRAM_TABLE_CHANGE_FREE_SECONDS", "90") or "90"), 0)
 UNKNOWN_OPERATOR_LABEL = "Fara operator la salvare"
-SAVED_CYCLE_INSERT_PLACEHOLDERS = ", ".join(["?"] * 23)
+SAVED_CYCLE_INSERT_PLACEHOLDERS = ", ".join(["?"] * 25)
 _operator_snapshot_cache: dict[int, dict] = {}
 _work_interval_cache: dict[tuple[int, str, str], dict] = {}
 
@@ -721,6 +721,7 @@ LASER_OCR_ZONES = {
     "top_banner": (0, 40, 1280, 110),
     "right_panel": (620, 170, 620, 550),
     "left_panel": (0, 170, 620, 260),
+    "completion_percent": (650, 160, 360, 95),
 }
 
 MODBUS_MACHINE_KEYS = {"laser1modbus", "laser2modbus"}
@@ -1539,6 +1540,107 @@ def extract_material(text: str) -> str:
         if match:
             return clean_ocr_text(match.group(0))
     return ""
+
+
+def coerce_completion_percent(value) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        number = float(value)
+    else:
+        text = str(value).replace(",", ".").strip()
+        if not text:
+            return None
+        match = re.search(r"\d{1,3}(?:\.\d+)?", text)
+        if not match:
+            return None
+        try:
+            number = float(match.group(0))
+        except (TypeError, ValueError):
+            return None
+    if number < 0 or number > 100:
+        return None
+    return round(number, 1)
+
+
+def format_completion_percent(value) -> str:
+    percent = coerce_completion_percent(value)
+    if percent is None:
+        return "Necitit"
+    if percent.is_integer():
+        return f"{int(percent)}%"
+    return f"{percent}%"
+
+
+def extract_completion_percent(*texts: str) -> float | None:
+    candidates: list[float] = []
+    for text in texts:
+        if not text:
+            continue
+        for match in re.finditer(r"(?<![0-9A-Za-z])([0-9Oo]{1,3})(?:[\.,](\d))?\s*%", text):
+            integer_part = match.group(1).upper().replace("O", "0")
+            decimal_part = match.group(2)
+            raw_value = f"{integer_part}.{decimal_part}" if decimal_part else integer_part
+            percent = coerce_completion_percent(raw_value)
+            if percent is not None:
+                candidates.append(percent)
+
+    if not candidates:
+        return None
+
+    non_feed_candidates = [candidate for candidate in candidates if candidate != 90]
+    return non_feed_candidates[0] if non_feed_candidates else candidates[0]
+
+
+def detect_completion_percent_from_progress_bar(image) -> float | None:
+    if not CV_IMAGE_AVAILABLE or image is None:
+        return None
+
+    height, width = image.shape[:2]
+    x1 = int(width * 0.28)
+    x2 = int(width * 0.58)
+    y1 = int(height * 0.20)
+    y2 = int(height * 0.33)
+    crop = image[y1:y2, x1:x2]
+    if crop.size == 0:
+        return None
+
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    yellow_mask = cv2.inRange(hsv, np.array([15, 80, 120]), np.array([40, 255, 255]))
+    contours, _ = cv2.findContours(yellow_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    candidates = []
+    for contour in contours:
+        x, y, contour_width, contour_height = cv2.boundingRect(contour)
+        area = cv2.contourArea(contour)
+        if contour_width >= 12 and contour_height >= 6 and area >= 50:
+            candidates.append((x, y, contour_width, contour_height, area))
+    if not candidates:
+        return None
+
+    fill_x, fill_y, fill_width, fill_height, _ = max(candidates, key=lambda item: item[4])
+    row_y = min(max(fill_y + fill_height // 2, 0), crop.shape[0] - 1)
+    gray_row = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)[row_y]
+    search_start = min(fill_x + fill_width, len(gray_row) - 1)
+    search_end = min(fill_x + max(fill_width * 4, 160), len(gray_row) - 1)
+    bar_right = fill_x + fill_width
+    current_start = None
+    dark_segments: list[tuple[int, int]] = []
+    for index in range(search_start, search_end + 1):
+        is_dark = gray_row[index] < 70
+        if is_dark and current_start is None:
+            current_start = index
+        if (not is_dark or index == search_end) and current_start is not None:
+            segment_end = index - 1 if not is_dark else index
+            if segment_end - current_start + 1 >= 4:
+                dark_segments.append((current_start, segment_end))
+            current_start = None
+    if dark_segments:
+        bar_right = max(segment[1] for segment in dark_segments)
+
+    total_width = max(bar_right - fill_x + 1, fill_width)
+    if total_width <= 0:
+        return None
+    return round(min(max((fill_width / total_width) * 100, 0), 100), 1)
 
 
 def detect_laser_warning(image) -> str:
@@ -2419,6 +2521,8 @@ def init_db() -> None:
                 machine_on_duration_seconds INTEGER,
                 idle_duration_seconds INTEGER,
                 efficiency_percent REAL,
+                completion_percent REAL,
+                estimated_completion_at TEXT,
                 source TEXT NOT NULL DEFAULT 'live-ocr',
                 snapshot_json TEXT,
                 created_at TEXT NOT NULL
@@ -2486,6 +2590,10 @@ def init_db() -> None:
             connection.execute("ALTER TABLE saved_cycles ADD COLUMN idle_duration_seconds INTEGER")
         if "efficiency_percent" not in saved_cycle_columns:
             connection.execute("ALTER TABLE saved_cycles ADD COLUMN efficiency_percent REAL")
+        if "completion_percent" not in saved_cycle_columns:
+            connection.execute("ALTER TABLE saved_cycles ADD COLUMN completion_percent REAL")
+        if "estimated_completion_at" not in saved_cycle_columns:
+            connection.execute("ALTER TABLE saved_cycles ADD COLUMN estimated_completion_at TEXT")
 
         machine_runtime_columns = {
             row["name"]
@@ -3047,11 +3155,20 @@ def get_laser_ocr_snapshot(machine_key: str) -> dict:
         right_panel_text = read_ocr_block(image, LASER_OCR_ZONES["right_panel"], psm=6)
         right_panel_variants = [right_panel_text] if right_panel_text else []
     left_panel_text = read_ocr_block(image, LASER_OCR_ZONES["left_panel"], psm=11)
+    completion_text = read_ocr_zone(
+        image,
+        LASER_OCR_ZONES["completion_percent"],
+        "0123456789%",
+        psm=7,
+    )
 
     selected_program = extract_section_token(right_panel_text, "Selected program", "Active program")
     active_program = extract_section_token(right_panel_text, "Active program", "NC blocks")
     material = extract_material(left_panel_text)
     program_status = extract_program_status(*right_panel_variants)
+    completion_percent = extract_completion_percent(completion_text, left_panel_text, *right_panel_variants)
+    if completion_percent is None:
+        completion_percent = detect_completion_percent_from_progress_bar(image)
     warning_message = detect_laser_warning(image)
 
     return {
@@ -3063,6 +3180,8 @@ def get_laser_ocr_snapshot(machine_key: str) -> dict:
         "active_program": active_program or "Necitit",
         "material": material or "Necitit",
         "program_status": program_status or "Necitit",
+        "completion_percent": completion_percent,
+        "completion_label": format_completion_percent(completion_percent),
         "warning_message": warning_message,
     }
 
@@ -3803,6 +3922,7 @@ def format_saved_cycle_row(row: sqlite3.Row) -> dict:
     machine_on_seconds = row["machine_on_duration_seconds"] or 0
     idle_seconds = row["idle_duration_seconds"] or 0
     efficiency_percent = float(row["efficiency_percent"] or 0.0)
+    completion_percent = coerce_completion_percent(row["completion_percent"])
     return {
         "id": row["id"],
         "machine_key": machine_key,
@@ -3830,6 +3950,9 @@ def format_saved_cycle_row(row: sqlite3.Row) -> dict:
         "idle_duration_seconds": idle_seconds,
         "idle_duration_label": format_seconds(idle_seconds),
         "efficiency_percent": efficiency_percent,
+        "completion_percent": completion_percent,
+        "completion_label": format_completion_percent(completion_percent),
+        "estimated_completion_at": row["estimated_completion_at"],
         "activity_label": cutting_meta.get("report_label", cutting_meta["label"]),
         "change_label": table_change_meta.get("report_label", table_change_meta["label"]),
         "close_reason": close_reason,
@@ -6244,6 +6367,49 @@ def cache_live_snapshot(machine_key: str, snapshot: dict) -> None:
     save_machine_runtime(machine_key, snapshot, runtime.get("pending_cycle"))
 
 
+def build_completed_cycle_telegram_message(record: dict) -> str:
+    machine_key = record.get("machine_key") or DEFAULT_MACHINE_KEY
+    machine_label = MACHINE_DEFINITIONS.get(machine_key, {}).get("label", machine_key)
+    dosar_name = (
+        normalize_context_token(record.get("selected_program"))
+        or normalize_context_token(record.get("active_program"))
+        or "Necitit"
+    )
+    operator_name = record.get("operator_name") or UNKNOWN_OPERATOR_LABEL
+    duration_seconds = int(record.get("machine_on_duration_seconds") or record.get("cycle_duration_seconds") or 0)
+    efficiency_percent = round(float(record.get("efficiency_percent") or 0.0), 1)
+    completion_label = format_completion_percent(record.get("completion_percent"))
+    completed_at = record.get("table_change_ended_at") or record.get("created_at") or now_local().isoformat(timespec="seconds")
+    try:
+        completed_at_label = parse_timestamp(completed_at).strftime("%d.%m.%Y %H:%M:%S")
+    except Exception:
+        completed_at_label = str(completed_at)
+
+    return "\n".join(
+        [
+            "Dosar finalizat",
+            f"Utilaj: {machine_label}",
+            f"Dosar: {dosar_name}",
+            f"A terminat in: {format_seconds(duration_seconds)}",
+            f"Randament: {efficiency_percent}%",
+            f"Procent feed: {completion_label}",
+            f"Operator: {operator_name}",
+            f"Finalizat la: {completed_at_label}",
+        ]
+    )
+
+
+def send_completed_cycle_telegram_report(record: dict) -> None:
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_IDS or not TELEGRAM_REPORTS_ENABLED:
+        return
+    message = build_completed_cycle_telegram_message(record)
+    for chat_id in TELEGRAM_CHAT_IDS:
+        try:
+            send_telegram_message(chat_id, message)
+        except Exception as exc:
+            print(f"Telegram completed cycle warning for chat_id={chat_id}: {exc}")
+
+
 def open_pending_cycle(
     machine_key: str,
     machine_profile: dict,
@@ -6265,6 +6431,8 @@ def open_pending_cycle(
         "lower_tool": snapshot.get("lower_tool"),
         "setup_signature": resolve_abkant_tool_signature(snapshot),
         "setup_changed": bool(snapshot.get("setup_changed")),
+        "completion_percent": coerce_completion_percent(snapshot.get("completion_percent")),
+        "estimated_completion_at": snapshot.get("estimated_completion_at"),
         "cutting_started_at": current_signals["cutting_active"]["changed_at"] if current_signals["cutting_active"]["active"] else None,
         "table_change_started_at": now_local().isoformat(timespec="seconds"),
         "source": snapshot.get("source", "live-ocr"),
@@ -6335,6 +6503,7 @@ def finalize_pending_cycle(machine_key: str, current_snapshot: dict) -> None:
     )
 
     recent_cutoff_iso = datetime.fromtimestamp(table_change_ended_at.timestamp() - 45).isoformat(timespec="seconds")
+    saved_cycle_record = None
     with get_sqlite_connection() as connection:
         duplicate = connection.execute(
             """
@@ -6376,6 +6545,8 @@ def finalize_pending_cycle(machine_key: str, current_snapshot: dict) -> None:
                     machine_on_duration_seconds,
                     idle_duration_seconds,
                     efficiency_percent,
+                    completion_percent,
+                    estimated_completion_at,
                     source,
                     snapshot_json,
                     created_at
@@ -6403,6 +6574,8 @@ def finalize_pending_cycle(machine_key: str, current_snapshot: dict) -> None:
                     cycle_metrics["machine_on_duration_seconds"],
                     cycle_metrics["idle_duration_seconds"],
                     cycle_metrics["efficiency_percent"],
+                    pending_cycle.get("completion_percent"),
+                    pending_cycle.get("estimated_completion_at"),
                     pending_cycle.get("source", "live-ocr"),
                     json.dumps(
                         {
@@ -6416,6 +6589,21 @@ def finalize_pending_cycle(machine_key: str, current_snapshot: dict) -> None:
                 ),
             )
             connection.commit()
+            saved_cycle_record = {
+                "machine_key": machine_key,
+                "operator_name": pending_cycle.get("operator_name"),
+                "selected_program": pending_cycle.get("selected_program"),
+                "active_program": pending_cycle.get("active_program"),
+                "machine_on_duration_seconds": cycle_metrics["machine_on_duration_seconds"],
+                "cycle_duration_seconds": cycle_metrics["cutting_duration_seconds"],
+                "efficiency_percent": cycle_metrics["efficiency_percent"],
+                "completion_percent": pending_cycle.get("completion_percent"),
+                "table_change_ended_at": table_change_ended_at.isoformat(timespec="seconds"),
+                "created_at": table_change_ended_at.isoformat(timespec="seconds"),
+            }
+
+    if saved_cycle_record:
+        send_completed_cycle_telegram_report(saved_cycle_record)
 
     stats_anchor = RUNTIME_VALUE_UNCHANGED
     if machine_key in PROGRAM_STATS_MACHINE_KEYS:
@@ -6493,6 +6681,7 @@ def save_cycle_on_program_change(
         return
 
     recent_cutoff_iso = datetime.fromtimestamp(change_detected_at.timestamp() - 45).isoformat(timespec="seconds")
+    saved_cycle_record = None
     with get_sqlite_connection() as connection:
         duplicate = connection.execute(
             """
@@ -6534,6 +6723,8 @@ def save_cycle_on_program_change(
                     machine_on_duration_seconds,
                     idle_duration_seconds,
                     efficiency_percent,
+                    completion_percent,
+                    estimated_completion_at,
                     source,
                     snapshot_json,
                     created_at
@@ -6561,6 +6752,8 @@ def save_cycle_on_program_change(
                     cycle_metrics["machine_on_duration_seconds"],
                     cycle_metrics["idle_duration_seconds"],
                     cycle_metrics["efficiency_percent"],
+                    coerce_completion_percent(previous_snapshot.get("completion_percent")),
+                    previous_snapshot.get("estimated_completion_at"),
                     previous_snapshot.get("source", "live-ocr"),
                     json.dumps(
                         {
@@ -6574,6 +6767,21 @@ def save_cycle_on_program_change(
                 ),
             )
             connection.commit()
+            saved_cycle_record = {
+                "machine_key": machine_key,
+                "operator_name": operator.get("full_name"),
+                "selected_program": previous_snapshot.get("selected_program") or previous_program,
+                "active_program": previous_snapshot.get("active_program") or previous_program,
+                "machine_on_duration_seconds": cycle_metrics["machine_on_duration_seconds"],
+                "cycle_duration_seconds": cycle_metrics["cutting_duration_seconds"],
+                "efficiency_percent": cycle_metrics["efficiency_percent"],
+                "completion_percent": previous_snapshot.get("completion_percent"),
+                "table_change_ended_at": change_detected_at.isoformat(timespec="seconds"),
+                "created_at": change_detected_at.isoformat(timespec="seconds"),
+            }
+
+    if saved_cycle_record:
+        send_completed_cycle_telegram_report(saved_cycle_record)
 
 
 def fetch_current_signals(machine_key: str) -> dict[str, dict]:
@@ -6718,7 +6926,58 @@ def format_seconds(total_seconds: int) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
-def build_today_stats(machine_key: str) -> dict:
+def build_completion_estimate(
+    live_snapshot: dict | None,
+    stats_window_start: datetime,
+    now: datetime,
+    elapsed_basis_seconds: int | None = None,
+) -> dict:
+    snapshot = live_snapshot if isinstance(live_snapshot, dict) else {}
+    dosar_name = resolve_snapshot_program(snapshot) or "Necitit"
+    completion_percent = coerce_completion_percent(snapshot.get("completion_percent"))
+    elapsed_seconds = max(
+        int(elapsed_basis_seconds)
+        if elapsed_basis_seconds is not None and int(elapsed_basis_seconds) > 0
+        else int((now - stats_window_start).total_seconds()),
+        0,
+    )
+    estimate = {
+        "current_dosar": dosar_name,
+        "completion_percent": completion_percent,
+        "completion_label": format_completion_percent(completion_percent),
+        "estimated_remaining_seconds": None,
+        "estimated_remaining_label": "In asteptare",
+        "estimated_completion_at": None,
+        "estimated_completion_label": "Necunoscut",
+        "seconds_per_percent": None,
+        "seconds_per_percent_label": "Necunoscut",
+    }
+
+    if completion_percent is None or completion_percent <= 0 or elapsed_seconds < 30:
+        return estimate
+
+    seconds_per_percent = elapsed_seconds / completion_percent if elapsed_seconds > 0 else 0
+    estimate["seconds_per_percent"] = round(seconds_per_percent, 1)
+    estimate["seconds_per_percent_label"] = format_seconds(int(round(seconds_per_percent)))
+
+    if completion_percent >= 100:
+        estimate["estimated_remaining_seconds"] = 0
+        estimate["estimated_remaining_label"] = format_seconds(0)
+        estimate["estimated_completion_at"] = now.isoformat(timespec="seconds")
+        estimate["estimated_completion_label"] = now.strftime("%H:%M:%S")
+        return estimate
+
+    total_estimated_seconds = int(round(elapsed_seconds * (100 / completion_percent)))
+    remaining_seconds = max(total_estimated_seconds - elapsed_seconds, 0)
+    estimated_at = now + timedelta(seconds=remaining_seconds)
+    estimate["estimated_remaining_seconds"] = remaining_seconds
+    estimate["estimated_remaining_label"] = format_seconds(remaining_seconds)
+    estimate["estimated_completion_at"] = estimated_at.isoformat(timespec="seconds")
+    estimate["estimated_completion_label"] = estimated_at.strftime("%H:%M:%S")
+    return estimate
+
+
+def build_today_stats(machine_key: str, live_snapshot: dict | None = None) -> dict:
     now = now_local()
     stats_window_start = resolve_stats_window_start(machine_key, now)
     elapsed_seconds = max(int((now - stats_window_start).total_seconds()), 1)
@@ -6778,6 +7037,7 @@ def build_today_stats(machine_key: str) -> dict:
         "production_window_label": format_seconds(elapsed_seconds),
         "production_window_started_at": stats_window_start.isoformat(timespec="seconds"),
         "updated_at": now.isoformat(timespec="seconds"),
+        **build_completion_estimate(live_snapshot, stats_window_start, now, machine_on_seconds or None),
     }
 
 
@@ -7086,7 +7346,8 @@ def sync_machine_events_from_live_snapshot(machine_key: str) -> dict | None:
             f"material={snapshot.get('material')}; "
             f"upper={snapshot.get('upper_tool', 'n/a')}; "
             f"lower={snapshot.get('lower_tool', 'n/a')}; "
-            f"status={snapshot.get('program_status')}"
+            f"status={snapshot.get('program_status')}; "
+            f"completion={format_completion_percent(snapshot.get('completion_percent'))}"
         )
     else:
         note = f"Auto-stop: snapshot indisponibil. Motiv: {snapshot.get('message') or 'necunoscut'}"
@@ -7335,7 +7596,7 @@ def build_dashboard_payload(machine_key: str = DEFAULT_MACHINE_KEY) -> dict:
     current_state = derive_machine_state(machine_key, current_signals)
     if machine_uses_modbus(machine_key):
         current_state = derive_modbus_machine_state_from_snapshot(machine_key, live_extraction, current_state)
-    stats_today = build_today_stats(machine_key)
+    stats_today = build_today_stats(machine_key, live_extraction)
     machines = [
         {
             **profile,

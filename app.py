@@ -6423,17 +6423,40 @@ def normalize_api_text(value: str | None) -> str | None:
     return normalized or None
 
 
-def extract_dosar_id(program_name: str | None) -> str | None:
+def extract_dosar_candidates(program_name: str | None) -> list[str]:
     normalized = normalize_context_token(program_name)
     if not normalized:
+        return []
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(r"\d{5,}", normalized):
+        digits = match.group(0)
+        for candidate in (digits, digits[1:] if len(digits) == 6 else None):
+            if not candidate:
+                continue
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            candidates.append(candidate)
+    return candidates
+
+
+def extract_dosar_id(program_name: str | None) -> str | None:
+    candidates = extract_dosar_candidates(program_name)
+    if not candidates:
         return None
-    match = re.match(r"^(\d{3,})\b", normalized)
-    if match:
-        return match.group(1)
-    fallback_match = re.search(r"(\d{3,})", normalized)
-    if fallback_match:
-        return fallback_match.group(1)
-    return None
+    ranked = sorted(
+        candidates,
+        key=lambda candidate: (
+            0 if len(candidate) == 5 and candidate.startswith("34") else
+            1 if len(candidate) == 5 else
+            2 if candidate.startswith("34") else
+            3,
+            len(candidate),
+            candidates.index(candidate),
+        ),
+    )
+    return ranked[0] if ranked else None
 
 
 def format_bool_label(value: bool | None, unknown_label: str = "Necunoscut") -> str:

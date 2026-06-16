@@ -430,8 +430,9 @@ body.dark-mode .script-status {
 }
 
 .overview-line {
-    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     margin: 18px 0;
+    align-items: stretch;
 }
 
 .metric-line {
@@ -440,8 +441,16 @@ body.dark-mode .script-status {
 
 .line-item,
 .metric-item {
-    padding: 16px 0 16px 16px;
+    padding: 16px 18px;
     border-left: 3px solid #800000;
+}
+
+.line-item {
+    min-height: 132px;
+}
+
+.metric-item {
+    min-height: 104px;
 }
 
 body.dark-mode .line-item,
@@ -452,6 +461,7 @@ body.dark-mode .metric-item {
 .line-item strong,
 .metric-item strong {
     font-size: 24px;
+    overflow-wrap: anywhere;
 }
 
 .line-item small {

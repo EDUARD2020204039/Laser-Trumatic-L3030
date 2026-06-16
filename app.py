@@ -6994,7 +6994,7 @@ def build_completion_estimate(
     elapsed_basis_seconds: int | None = None,
 ) -> dict:
     snapshot = live_snapshot if isinstance(live_snapshot, dict) else {}
-    dosar_name = resolve_snapshot_program(snapshot) or "Necitit"
+    dosar_name = resolve_snapshot_selected_program(snapshot) or "Necitit"
     completion_percent = coerce_completion_percent(snapshot.get("completion_percent"))
     elapsed_seconds = max(
         int(elapsed_basis_seconds)

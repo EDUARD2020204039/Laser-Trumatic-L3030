@@ -996,6 +996,7 @@ function renderDashboard(payload) {
     renderSource(payload.real_data_source);
     renderLiveExtraction(payload.live_extraction);
     renderMachineFeeds(payload.machine_feeds || []);
+    renderFeedProgramSummary(payload.feed_program_summary);
     renderStats(payload.stats_today);
     renderTimeline(payload.recent_events);
 }
@@ -1744,6 +1745,68 @@ function renderMachineFeeds(feeds) {
         }, refreshMs);
         state.feedRefreshTimers.push(timerId);
     });
+}
+
+function renderFeedProgramSummary(summary) {
+    const container = document.getElementById("feed-program-summary");
+    if (!container) {
+        return;
+    }
+
+    if (!summary || !summary.selected_program) {
+        container.innerHTML = `<p class="empty-state">Nu exista inca un dosar citit din feed.</p>`;
+        return;
+    }
+
+    const completedRecordsCount = Number(summary.completed_records_count || 0);
+    const trackedRecordsCount = Number(summary.tracked_records_count || 0);
+    const completedSheetsLabel = completedRecordsCount === 1
+        ? "1 foaie terminata"
+        : `${completedRecordsCount} foi terminate`;
+    const trackedSheetsLabel = trackedRecordsCount <= 1
+        ? "prima foaie in lucru"
+        : `${trackedRecordsCount} foi urmarite in dosar`;
+    const numericCompletion = Number(summary.completion_percent);
+    const completionLabel = formatCompletionPercent(summary.completion_percent, summary.completion_label || "Necitit");
+    const completionHint = Number.isFinite(numericCompletion) && numericCompletion >= 100
+        ? "Foaia curenta este la final in feed"
+        : summary.seconds_per_percent_label && !["Necunoscut", "00:00:00"].includes(summary.seconds_per_percent_label)
+            ? `Ritm curent: ${summary.seconds_per_percent_label} / 1%`
+            : "Ritm curent: in asteptare";
+    const remainingHint = summary.estimated_completion_label && summary.estimated_completion_label !== "Necunoscut"
+        ? `Estimare finalizare foaie: ${summary.estimated_completion_label}`
+        : "Estimare finalizare foaie: necunoscuta";
+    const totalTimeHint = completedRecordsCount > 0
+        ? `${completedSheetsLabel} + foaia curenta`
+        : "Se aduna din foaia curenta";
+    const lastCompletedHint = summary.last_completed_at
+        ? `Ultima foaie terminata: ${summary.last_completed_label}`
+        : "Nu exista inca foi terminate pe acest dosar";
+
+    container.innerHTML = `
+        <div class="feed-program-summary-grid">
+            <article class="feed-program-card">
+                <span>Dosar din feed</span>
+                <strong>${summary.selected_program}</strong>
+                <small>${trackedSheetsLabel}</small>
+            </article>
+            <article class="feed-program-card">
+                <span>Progres foaie curenta</span>
+                <strong>${completionLabel}</strong>
+                <small>${completionHint}</small>
+            </article>
+            <article class="feed-program-card">
+                <span>Aprox. ramas</span>
+                <strong>${summary.estimated_remaining_label || "In asteptare"}</strong>
+                <small>${remainingHint}</small>
+            </article>
+            <article class="feed-program-card">
+                <span>Timp adunat pe dosar</span>
+                <strong>${summary.total_machine_on_label || "00:00:00"}</strong>
+                <small>${totalTimeHint}. ${lastCompletedHint}</small>
+            </article>
+        </div>
+    `;
 }
 
 function renderTimeline(events) {

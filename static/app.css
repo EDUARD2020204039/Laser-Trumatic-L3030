@@ -640,6 +640,16 @@ body.dark-mode .secondary-btn {
     gap: 16px;
 }
 
+.feed-program-summary {
+    margin-top: 16px;
+}
+
+.feed-program-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 16px;
+}
+
 .feed-grid.is-single-feed {
     grid-template-columns: minmax(0, 1fr);
 }
@@ -653,6 +663,45 @@ body.dark-mode .secondary-btn {
 body.dark-mode .feed-card {
     border-color: #555;
     border-left-color: #80dfff;
+}
+
+.feed-program-card {
+    padding: 16px 18px;
+    border: 1px solid rgba(128, 0, 0, 0.1);
+    border-left: 3px solid #800000;
+    min-height: 120px;
+}
+
+body.dark-mode .feed-program-card {
+    border-color: #555;
+    border-left-color: #80dfff;
+}
+
+.feed-program-card span {
+    display: block;
+    color: #7a5a5a;
+    margin-bottom: 10px;
+}
+
+body.dark-mode .feed-program-card span {
+    color: #cfcfcf;
+}
+
+.feed-program-card strong {
+    display: block;
+    font-size: 24px;
+    overflow-wrap: anywhere;
+}
+
+.feed-program-card small {
+    display: block;
+    margin-top: 8px;
+    color: #7a5a5a;
+    line-height: 1.5;
+}
+
+body.dark-mode .feed-program-card small {
+    color: #cfcfcf;
 }
 
 .feed-card-head {
@@ -1379,6 +1428,7 @@ body.dark-mode .saved-record-grid span {
     .signal-grid,
     .live-screen-row,
     .feed-grid,
+    .feed-program-summary-grid,
     .modbus-grid,
     .saved-summary-grid,
     .saved-report-grid,

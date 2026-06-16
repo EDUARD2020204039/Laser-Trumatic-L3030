@@ -6581,6 +6581,22 @@ def build_queued_completed_cycle_record(row: sqlite3.Row) -> dict:
     }
 
 
+def fetch_open_completed_cycle_report(machine_group: str, selected_program: str) -> sqlite3.Row | None:
+    with get_sqlite_connection() as connection:
+        return connection.execute(
+            """
+            SELECT *
+            FROM telegram_cycle_report_queue
+            WHERE machine_group = ?
+              AND selected_program = ?
+              AND sent_at IS NULL
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (machine_group, selected_program),
+        ).fetchone()
+
+
 def fetch_due_completed_cycle_reports(limit: int = 20) -> list[sqlite3.Row]:
     current_time = now_local().isoformat(timespec="seconds")
     with get_sqlite_connection() as connection:
@@ -7310,6 +7326,66 @@ def build_today_stats(machine_key: str, live_snapshot: dict | None = None) -> di
     }
 
 
+def build_feed_program_summary(
+    machine_key: str,
+    live_snapshot: dict | None,
+    stats_today: dict | None,
+) -> dict | None:
+    snapshot = live_snapshot if isinstance(live_snapshot, dict) else {}
+    stats = stats_today if isinstance(stats_today, dict) else {}
+    selected_program = resolve_snapshot_selected_program(snapshot)
+    if not selected_program:
+        return None
+
+    machine_group, machine_label = resolve_completed_cycle_machine_group(machine_key)
+    queued_row = fetch_open_completed_cycle_report(machine_group, selected_program)
+    completed_records_count = int(queued_row["records_count"]) if queued_row else 0
+    completed_machine_on_seconds = int(queued_row["total_machine_on_seconds"]) if queued_row else 0
+    current_machine_on_seconds = int(stats.get("machine_on_seconds") or 0)
+    total_machine_on_seconds = completed_machine_on_seconds + current_machine_on_seconds
+    completion_percent = coerce_completion_percent(stats.get("completion_percent"))
+    tracked_records_count = completed_records_count + 1
+    last_completed_at = queued_row["last_completed_at"] if queued_row else None
+    last_completed_label = "In asteptare"
+    if last_completed_at:
+        try:
+            last_completed_label = parse_timestamp(last_completed_at).strftime("%d.%m.%Y %H:%M:%S")
+        except Exception:
+            last_completed_label = str(last_completed_at)
+
+    estimated_completion_at = stats.get("estimated_completion_at")
+    estimated_completion_label = stats.get("estimated_completion_label") or "Necunoscut"
+    if estimated_completion_at:
+        try:
+            estimated_completion_label = parse_timestamp(estimated_completion_at).strftime("%d.%m.%Y %H:%M:%S")
+        except Exception:
+            estimated_completion_label = str(estimated_completion_at)
+
+    return {
+        "machine_key": machine_key,
+        "machine_label": machine_label,
+        "selected_program": selected_program,
+        "completion_percent": completion_percent,
+        "completion_label": stats.get("completion_label") or format_completion_percent(completion_percent),
+        "estimated_remaining_seconds": stats.get("estimated_remaining_seconds"),
+        "estimated_remaining_label": stats.get("estimated_remaining_label") or "In asteptare",
+        "estimated_completion_at": estimated_completion_at,
+        "estimated_completion_label": estimated_completion_label,
+        "seconds_per_percent": stats.get("seconds_per_percent"),
+        "seconds_per_percent_label": stats.get("seconds_per_percent_label") or "Necunoscut",
+        "completed_records_count": completed_records_count,
+        "tracked_records_count": tracked_records_count,
+        "completed_machine_on_seconds": completed_machine_on_seconds,
+        "completed_machine_on_label": format_seconds(completed_machine_on_seconds),
+        "current_machine_on_seconds": current_machine_on_seconds,
+        "current_machine_on_label": format_seconds(current_machine_on_seconds),
+        "total_machine_on_seconds": total_machine_on_seconds,
+        "total_machine_on_label": format_seconds(total_machine_on_seconds),
+        "last_completed_at": last_completed_at,
+        "last_completed_label": last_completed_label,
+    }
+
+
 def count_saved_cycles(machine_key: str) -> int:
     with get_sqlite_connection() as connection:
         row = connection.execute(
@@ -7888,6 +7964,7 @@ def build_dashboard_payload(machine_key: str = DEFAULT_MACHINE_KEY) -> dict:
         "operator_snapshot": operator_snapshot,
         "real_data_source": get_real_data_settings(machine_profile),
         "machine_feeds": build_machine_feeds(machine_key),
+        "feed_program_summary": build_feed_program_summary(machine_key, live_extraction, stats_today),
         "live_extraction": live_extraction,
         "recent_events": fetch_recent_events(machine_key),
         "signal_definitions": SIGNAL_DEFINITIONS,

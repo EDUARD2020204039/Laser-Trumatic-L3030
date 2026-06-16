@@ -6435,7 +6435,24 @@ def build_completed_cycle_report_key(record: dict) -> str:
         completed_at = parse_timestamp(completed_at_raw)
     except Exception:
         completed_at = now_local()
-    return f"completed-cycle:{machine_group}:{selected_program}:{completed_at.strftime('%Y%m%d')}"
+    return f"completed-cycle:{machine_group}:{selected_program}:{completed_at.strftime('%Y%m%d%H%M%S')}"
+
+
+def find_open_completed_cycle_report_key(machine_group: str, selected_program: str) -> str | None:
+    with get_sqlite_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT report_key
+            FROM telegram_cycle_report_queue
+            WHERE machine_group = ?
+              AND selected_program = ?
+              AND sent_at IS NULL
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (machine_group, selected_program),
+        ).fetchone()
+    return str(row["report_key"]) if row and row["report_key"] else None
 
 
 def build_completed_cycle_telegram_message(record: dict) -> str:
@@ -6474,7 +6491,7 @@ def enqueue_completed_cycle_telegram_report(record: dict) -> None:
         return
 
     machine_group, machine_label = resolve_completed_cycle_machine_group(record.get("machine_key"))
-    report_key = build_completed_cycle_report_key(record)
+    report_key = find_open_completed_cycle_report_key(machine_group, selected_program) or build_completed_cycle_report_key(record)
     operator_name = record.get("operator_name") or UNKNOWN_OPERATOR_LABEL
     machine_on_seconds = int(record.get("machine_on_duration_seconds") or record.get("cycle_duration_seconds") or 0)
     cycle_seconds = int(record.get("cycle_duration_seconds") or machine_on_seconds)

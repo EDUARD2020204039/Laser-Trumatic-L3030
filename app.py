@@ -129,6 +129,16 @@ APP_TITLE = "HABA Production Monitor"
 DASHBOARD_TITLE = "Laser TruMatic L3030"
 DEFAULT_MACHINE_KEY = "laser1modbus"
 HIDDEN_MACHINE_KEYS = {"laser1", "laser2"}
+WORKSTATION_API_DEFINITIONS = {
+    "laser1modbus": {
+        "workstation_id": "laser_ws_1",
+        "workstation_name": "Laser WS 1",
+    },
+    "laser2modbus": {
+        "workstation_id": "laser_ws_2",
+        "workstation_name": "Laser WS 2",
+    },
+}
 MANUAL_SOURCE_PREFIX = "manual"
 OCR_AVAILABLE = cv2 is not None and np is not None and pytesseract is not None
 CV_IMAGE_AVAILABLE = cv2 is not None and np is not None
@@ -6283,6 +6293,44 @@ def normalize_context_token(value: str | None) -> str:
     return normalized
 
 
+def normalize_api_text(value: str | None) -> str | None:
+    normalized = normalize_context_token(value)
+    return normalized or None
+
+
+def extract_dosar_id(program_name: str | None) -> str | None:
+    normalized = normalize_context_token(program_name)
+    if not normalized:
+        return None
+    match = re.match(r"^(\d{3,})\b", normalized)
+    if match:
+        return match.group(1)
+    fallback_match = re.search(r"(\d{3,})", normalized)
+    if fallback_match:
+        return fallback_match.group(1)
+    return None
+
+
+def format_bool_label(value: bool | None, unknown_label: str = "Necunoscut") -> str:
+    if value is None:
+        return unknown_label
+    return "DA" if value else "NU"
+
+
+def calculate_signal_elapsed_seconds(signal_state: dict | None, now: datetime | None = None) -> int:
+    state = signal_state if isinstance(signal_state, dict) else {}
+    if not state.get("active") or not state.get("changed_at"):
+        return 0
+    current_time = now or now_local()
+    try:
+        changed_at = parse_timestamp(state["changed_at"])
+    except Exception:
+        return 0
+    if changed_at > current_time:
+        return 0
+    return max(int((current_time - changed_at).total_seconds()), 0)
+
+
 def resolve_snapshot_context(snapshot: dict | None) -> dict[str, str]:
     if not snapshot:
         return {"program": "", "material": "", "setup_signature": ""}
@@ -7914,7 +7962,7 @@ def snapshot_is_stale(snapshot: dict | None, max_age_seconds: int = SNAPSHOT_FRE
     return (now_local() - captured_at).total_seconds() >= max_age_seconds
 
 
-def build_dashboard_payload(machine_key: str = DEFAULT_MACHINE_KEY) -> dict:
+def collect_live_machine_context(machine_key: str = DEFAULT_MACHINE_KEY) -> dict:
     machine_key = ensure_machine_key(machine_key)
     if machine_key in HIDDEN_MACHINE_KEYS:
         machine_key = DEFAULT_MACHINE_KEY
@@ -7942,6 +7990,138 @@ def build_dashboard_payload(machine_key: str = DEFAULT_MACHINE_KEY) -> dict:
     if machine_uses_modbus(machine_key):
         current_state = derive_modbus_machine_state_from_snapshot(machine_key, live_extraction, current_state)
     stats_today = build_today_stats(machine_key, live_extraction)
+    return {
+        "machine_key": machine_key,
+        "machine_profile": machine_profile,
+        "live_extraction": live_extraction,
+        "current_signals": current_signals,
+        "operator_snapshot": operator_snapshot,
+        "current_state": current_state,
+        "stats_today": stats_today,
+    }
+
+
+def build_workstation_inputs_payload(snapshot: dict | None) -> dict[str, dict[str, object]]:
+    payload: dict[str, dict[str, object]] = {}
+    for item in (snapshot or {}).get("modbus_inputs") or []:
+        label = str(item.get("label") or "").upper()
+        if not label:
+            continue
+        payload[label] = {
+            "value": 1 if bool(item.get("active")) else 0,
+            "label": str(item.get("signal") or "").strip().lower() or "unused",
+        }
+    return payload
+
+
+def build_workstation_screen_values(
+    snapshot: dict | None,
+    current_signals: dict[str, dict],
+) -> dict[str, str]:
+    live_snapshot = snapshot if isinstance(snapshot, dict) else {}
+    selected_program = normalize_api_text(resolve_snapshot_selected_program(live_snapshot))
+    active_program = normalize_api_text(live_snapshot.get("active_program"))
+    material = normalize_api_text(live_snapshot.get("material"))
+    program_status = normalize_api_text(live_snapshot.get("program_status"))
+    completion_percent = coerce_completion_percent(live_snapshot.get("completion_percent"))
+    table_sheet_detection = live_snapshot.get("table_sheet_detection") or {}
+    exchange_table_value = (
+        format_bool_label(bool(live_snapshot.get("table_sheet_on_change_table")))
+        if table_sheet_detection.get("available")
+        else "Necunoscut"
+    )
+    return {
+        "SELECTED PROGRAM": selected_program or "Necitit",
+        "ACTIVE PROGRAM": active_program or "Necitit",
+        "MATERIAL": material or "Necitit",
+        "PROGRAM STATUS": program_status or "Necitit",
+        "PROCENT COMPLETARE": format_completion_percent(completion_percent),
+        "TABLA PE MASA DE SCHIMB": exchange_table_value,
+        "MACHINE ON": format_bool_label(bool(current_signals.get("machine_on", {}).get("active"))),
+        "CUTTING": format_bool_label(bool(current_signals.get("cutting_active", {}).get("active"))),
+        "TABLE CHANGE": format_bool_label(bool(current_signals.get("table_change", {}).get("active"))),
+        "IDLE / ABORTED": format_bool_label(bool(current_signals.get("idle_abort", {}).get("active"))),
+    }
+
+
+def build_workstation_status_payload(machine_key: str = DEFAULT_MACHINE_KEY) -> dict:
+    context = collect_live_machine_context(machine_key)
+    resolved_machine_key = context["machine_key"]
+    machine_profile = context["machine_profile"]
+    live_extraction = context["live_extraction"] if isinstance(context["live_extraction"], dict) else {}
+    current_signals = context["current_signals"]
+    stats_today = context["stats_today"]
+    current_time = now_local()
+    workstation_meta = WORKSTATION_API_DEFINITIONS.get(
+        resolved_machine_key,
+        {
+            "workstation_id": resolved_machine_key,
+            "workstation_name": machine_profile.get("label") or resolved_machine_key,
+        },
+    )
+    selected_program = normalize_api_text(resolve_snapshot_selected_program(live_extraction))
+    active_program = normalize_api_text(live_extraction.get("active_program"))
+    material = normalize_api_text(live_extraction.get("material"))
+    program_status = normalize_api_text(live_extraction.get("program_status"))
+    completion_percent = coerce_completion_percent(live_extraction.get("completion_percent"))
+    estimated_finish_seconds = stats_today.get("estimated_remaining_seconds")
+    if estimated_finish_seconds is not None:
+        estimated_finish_seconds = max(int(estimated_finish_seconds), 0)
+    machine_on_active = bool(current_signals.get("machine_on", {}).get("active"))
+    cutting_active = bool(current_signals.get("cutting_active", {}).get("active"))
+    table_change_active = bool(current_signals.get("table_change", {}).get("active"))
+    idle_aborted = bool(current_signals.get("idle_abort", {}).get("active"))
+    idle = bool((live_extraction.get("derived_signals") or {}).get("idle"))
+    if not idle:
+        idle = bool(machine_on_active and not cutting_active and not table_change_active and idle_aborted)
+    timestamp = live_extraction.get("captured_at") or current_time.isoformat(timespec="seconds")
+    table_sheet_detection = live_extraction.get("table_sheet_detection") or {}
+
+    return {
+        "timestamp": timestamp,
+        "workstation_id": workstation_meta["workstation_id"],
+        "workstation_name": workstation_meta["workstation_name"],
+        "machine_key": resolved_machine_key,
+        "machine_label": machine_profile.get("label"),
+        "selected_program": selected_program,
+        "active_program": active_program,
+        "dosar_id": extract_dosar_id(selected_program),
+        "material": material,
+        "program_status": program_status,
+        "completion_percent": completion_percent,
+        "estimated_finish_at": stats_today.get("estimated_completion_at"),
+        "estimated_finish_seconds": estimated_finish_seconds,
+        "exchange_table": bool(live_extraction.get("table_sheet_on_change_table")),
+        "estimated_yield_percent": round(float(stats_today.get("randament_percent") or 0), 1),
+        "machine_on": machine_on_active,
+        "machine_on_seconds": calculate_signal_elapsed_seconds(current_signals.get("machine_on"), current_time),
+        "program_active_seconds": int(stats_today.get("machine_on_seconds") or 0),
+        "cutting_active": cutting_active,
+        "idle": idle,
+        "idle_aborted": idle_aborted,
+        "table_change": table_change_active,
+        "inputs": build_workstation_inputs_payload(live_extraction),
+        "screen_values": build_workstation_screen_values(live_extraction, current_signals),
+        "raw_payload": {
+            "live_extraction": live_extraction,
+            "current_signals": current_signals,
+            "stats_today": stats_today,
+            "operator_snapshot": context["operator_snapshot"],
+            "current_state": context["current_state"],
+            "table_sheet_detection": table_sheet_detection,
+        },
+    }
+
+
+def build_dashboard_payload(machine_key: str = DEFAULT_MACHINE_KEY) -> dict:
+    context = collect_live_machine_context(machine_key)
+    machine_key = context["machine_key"]
+    machine_profile = context["machine_profile"]
+    live_extraction = context["live_extraction"]
+    current_signals = context["current_signals"]
+    operator_snapshot = context["operator_snapshot"]
+    current_state = context["current_state"]
+    stats_today = context["stats_today"]
     machines = [
         {
             **profile,
@@ -8080,6 +8260,20 @@ def dashboard():
     machine_key = request.args.get("machine", DEFAULT_MACHINE_KEY)
     try:
         payload = build_dashboard_payload(machine_key)
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 400
+    return jsonify(payload)
+
+
+@app.route("/api/laser/workstation/status")
+def laser_workstation_status():
+    machine_key = (
+        request.args.get("machine")
+        or request.args.get("machine_key")
+        or DEFAULT_MACHINE_KEY
+    )
+    try:
+        payload = build_workstation_status_payload(machine_key)
     except ValueError as exc:
         return jsonify({"success": False, "message": str(exc)}), 400
     return jsonify(payload)

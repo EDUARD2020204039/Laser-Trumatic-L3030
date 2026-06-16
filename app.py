@@ -721,7 +721,7 @@ LASER_OCR_ZONES = {
     "top_banner": (0, 40, 1280, 110),
     "right_panel": (620, 170, 620, 550),
     "left_panel": (0, 170, 620, 260),
-    "completion_percent": (650, 160, 360, 95),
+    "completion_percent": (430, 220, 390, 80),
 }
 
 MODBUS_MACHINE_KEYS = {"laser1modbus", "laser2modbus"}
@@ -1618,29 +1618,31 @@ def detect_completion_percent_from_progress_bar(image) -> float | None:
         return None
 
     fill_x, fill_y, fill_width, fill_height, _ = max(candidates, key=lambda item: item[4])
-    row_y = min(max(fill_y + fill_height // 2, 0), crop.shape[0] - 1)
-    gray_row = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)[row_y]
-    search_start = min(fill_x + fill_width, len(gray_row) - 1)
-    search_end = min(fill_x + max(fill_width * 4, 160), len(gray_row) - 1)
-    bar_right = fill_x + fill_width
-    current_start = None
-    dark_segments: list[tuple[int, int]] = []
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    edge_y1 = max(fill_y - 6, 0)
+    edge_y2 = min(fill_y + fill_height + 7, gray.shape[0])
+    search_start = min(fill_x + fill_width, gray.shape[1] - 1)
+    search_end = min(fill_x + 220, gray.shape[1] - 1)
+    bar_right = None
+    min_edge_pixels = max(4, min(fill_height, edge_y2 - edge_y1) // 2)
+
     for index in range(search_start, search_end + 1):
-        is_dark = gray_row[index] < 70
-        if is_dark and current_start is None:
-            current_start = index
-        if (not is_dark or index == search_end) and current_start is not None:
-            segment_end = index - 1 if not is_dark else index
-            if segment_end - current_start + 1 >= 4:
-                dark_segments.append((current_start, segment_end))
-            current_start = None
-    if dark_segments:
-        bar_right = max(segment[1] for segment in dark_segments)
+        column = gray[edge_y1:edge_y2, index]
+        bright_pixels = int(np.count_nonzero(column > 165))
+        if bright_pixels >= min_edge_pixels:
+            bar_right = index - 1
+            break
+
+    if bar_right is None:
+        return 100.0 if fill_width >= 75 else None
 
     total_width = max(bar_right - fill_x + 1, fill_width)
     if total_width <= 0:
         return None
-    return round(min(max((fill_width / total_width) * 100, 0), 100), 1)
+    percent = round(min(max((fill_width / total_width) * 100, 0), 100), 1)
+    if percent > 96:
+        return 100.0
+    return percent
 
 
 def detect_laser_warning(image) -> str:
@@ -3163,7 +3165,7 @@ def get_laser_ocr_snapshot(machine_key: str) -> dict:
     completion_text = read_ocr_zone(
         image,
         LASER_OCR_ZONES["completion_percent"],
-        "0123456789%",
+        "0123456789%Oo",
         psm=7,
     )
 

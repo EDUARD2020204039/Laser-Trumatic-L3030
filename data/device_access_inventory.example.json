@@ -1,0 +1,16 @@
+[
+  {
+    "name": "Abkant Raspberry Pi",
+    "ssh_alias": "abkant",
+    "host": "192.168.2.153",
+    "user": "pi",
+    "auth": "ssh-key",
+    "services": {
+      "ssh": "22",
+      "motion_stream": "8081",
+      "motion_control": "8088",
+      "modbus_tcp_bridge": "502"
+    },
+    "notes": "Copiaza acest fisier in data/device_access_inventory.local.json pentru detalii locale."
+  }
+]

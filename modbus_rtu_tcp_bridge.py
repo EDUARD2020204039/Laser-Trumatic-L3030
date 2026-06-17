@@ -57,9 +57,9 @@ class ModbusRtuBridge:
                 raise RuntimeError(f"Nu pot deschide portul serial {self.config.serial_port}.")
 
             if function_code == MODBUS_FUNCTION_READ_COILS:
-                response = self._client.read_coils(address, count=count, device_id=target_unit_id)
+                response = self._read_coils(address, count=count, unit_id=target_unit_id)
             elif function_code == MODBUS_FUNCTION_READ_DISCRETE_INPUTS:
-                response = self._client.read_discrete_inputs(address, count=count, device_id=target_unit_id)
+                response = self._read_discrete_inputs(address, count=count, unit_id=target_unit_id)
             else:
                 raise NotImplementedError(f"Cod de functie nesuportat: {function_code}")
 
@@ -76,6 +76,18 @@ class ModbusRtuBridge:
             if bit_value:
                 payload[bit_index // 8] |= 1 << (bit_index % 8)
         return bytes(payload)
+
+    def _read_coils(self, address: int, count: int, unit_id: int):
+        try:
+            return self._client.read_coils(address, count=count, device_id=unit_id)
+        except TypeError:
+            return self._client.read_coils(address, count=count, slave=unit_id)
+
+    def _read_discrete_inputs(self, address: int, count: int, unit_id: int):
+        try:
+            return self._client.read_discrete_inputs(address, count=count, device_id=unit_id)
+        except TypeError:
+            return self._client.read_discrete_inputs(address, count=count, slave=unit_id)
 
 
 class ThreadedModbusTcpServer(socketserver.ThreadingTCPServer):

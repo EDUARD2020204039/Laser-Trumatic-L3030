@@ -3,3 +3,4 @@ __pycache__/
 .env
 .venv/
 data/*.db
+data/device_access_inventory.local.json

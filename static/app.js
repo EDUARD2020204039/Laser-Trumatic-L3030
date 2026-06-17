@@ -58,7 +58,7 @@ if (!["dashboard", "saved_modbus"].includes(state.currentView)) {
 if (!["day", "yesterday", "week", "month", "all"].includes(state.savedModbusPeriod)) {
     state.savedModbusPeriod = "day";
 }
-if (!["laser1modbus", "laser2modbus", "all"].includes(state.savedModbusMachineKey)) {
+if (!["laser1modbus", "laser2modbus", "abkant1modbus", "all"].includes(state.savedModbusMachineKey)) {
     state.savedModbusMachineKey = "laser1modbus";
 }
 
@@ -66,8 +66,12 @@ function getMachineOnMetricLabel(machineKey) {
     return "Timp activ pe program";
 }
 
+function isAbkantMachine(machineKey) {
+    return ["abkant", "abkant1modbus"].includes(machineKey);
+}
+
 function getAvailabilityPrefix(machineKey) {
-    return machineKey === "abkant"
+    return isAbkantMachine(machineKey)
         ? "Disponibilitate indoire/feed_activ"
         : "Disponibilitate taiere/feed_activ";
 }
@@ -1589,7 +1593,7 @@ function renderLiveExtraction(snapshot) {
 
     const signals = snapshot.derived_signals || {};
     let cells;
-    if (currentMachineKey === "abkant") {
+    if (isAbkantMachine(currentMachineKey)) {
         cells = [
             { slot: "program", label: "Program curent", value: snapshot.active_program || "Necitit" },
             { slot: "upper_tool", label: "Upper", value: snapshot.upper_tool || "n/a" },
@@ -1597,9 +1601,14 @@ function renderLiveExtraction(snapshot) {
             { slot: "total", label: "Piese de indoit", value: snapshot.total_pieces ?? "Necunoscut" },
             { slot: "produced", label: "Piese indoite", value: snapshot.produced_pieces ?? 0 },
             { slot: "progress", label: "Progres", value: snapshot.pieces_label || "n/a" },
-            { slot: "machine_on", label: "Feed activ", value: signals.machine_on ? "DA" : "NU" },
-            { slot: "bending", label: "Bending", value: signals.cutting_active ? "DA" : "NU" },
+            { slot: "in1", label: "IN1", value: renderModbusInputValue(snapshot.modbus_inputs, "in1") },
+            { slot: "in2", label: "IN2", value: renderModbusInputValue(snapshot.modbus_inputs, "in2") },
+            { slot: "in3", label: "IN3", value: renderModbusInputValue(snapshot.modbus_inputs, "in3") },
+            { slot: "in4", label: "IN4", value: renderModbusInputValue(snapshot.modbus_inputs, "in4") },
+            { slot: "machine_on", label: "Modbus activ", value: signals.machine_on ? "DA" : "NU" },
+            { slot: "bending", label: "Indoire", value: signals.cutting_active ? "DA" : "NU" },
             { slot: "setup_change", label: "Setup change", value: signals.table_change ? "DA" : "NU" },
+            { slot: "idle", label: "Idle", value: signals.idle_abort || signals.idle ? "DA" : "NU" },
             { slot: "status", label: "Status program", value: snapshot.program_status || "Necitit" }
         ];
     } else if (state.dashboard?.machine?.modbus_config) {
@@ -1847,7 +1856,7 @@ function getSavedOperatorPeriod(operatorEntry, periodKey) {
 
 function isAbkantOnlyOperator(operatorEntry) {
     const machines = operatorEntry?.machines || [];
-    return machines.length > 0 && machines.every((machineLabel) => machineLabel === "Abkant");
+    return machines.length > 0 && machines.every((machineLabel) => ["Abkant", "ABKANT1MODBUS"].includes(machineLabel));
 }
 
 function getSavedUnitLabels(operatorEntry) {
@@ -1865,7 +1874,7 @@ function getSavedUnitLabels(operatorEntry) {
 }
 
 function getSavedUnitLabelsForMachine(machineKey) {
-    if (machineKey === "abkant") {
+    if (isAbkantMachine(machineKey)) {
         return {
             plural: "piese",
             singular: "piesa"
@@ -1984,6 +1993,7 @@ function renderSavedModbusMachineFilter(payload = null) {
         : [
             { value: "laser1modbus", label: "LASER1MODBUS" },
             { value: "laser2modbus", label: "LASER2MODBUS" },
+            { value: "abkant1modbus", label: "ABKANT1MODBUS" },
             { value: "all", label: "Toate MODBUS" }
         ];
     const selectedMachineKey = payload?.machine_key || state.savedModbusMachineKey || "laser1modbus";

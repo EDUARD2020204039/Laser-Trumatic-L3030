@@ -138,6 +138,10 @@ WORKSTATION_API_DEFINITIONS = {
         "workstation_id": "laser_ws_2",
         "workstation_name": "Laser WS 2",
     },
+    "abkant1modbus": {
+        "workstation_id": "abkant_ws_1",
+        "workstation_name": "Abkant WS 1",
+    },
 }
 MANUAL_SOURCE_PREFIX = "manual"
 OCR_AVAILABLE = cv2 is not None and np is not None and pytesseract is not None
@@ -246,6 +250,11 @@ MACHINE_DEFINITIONS = {
         "description": "Zona de indoire si lucru pe utilajul abkant.",
         "accent": "teal",
     },
+    "abkant1modbus": {
+        "label": "ABKANT1MODBUS",
+        "description": "Abkant cu timpi cititi din Modbus si feed motion dedicat.",
+        "accent": "teal",
+    },
 }
 
 LOCKED_MACHINE_MODBUS_CONFIGS: dict[str, dict[str, object]] = {
@@ -275,6 +284,7 @@ DEFAULT_MACHINE_HMI_URLS = {
     "laser2": "",
     "laser2modbus": "http://192.168.2.138:8081/",
     "abkant": "https://abkant.helpan.ro/",
+    "abkant1modbus": "http://192.168.2.153:8081/",
 }
 
 DEFAULT_REAL_DATA_ENDPOINT_FALLBACKS = {
@@ -323,7 +333,14 @@ DEFAULT_MACHINE_CAMERA_FEEDS = {
         "auth": "basic",
     },
     "abkant": {
-        "url": "",
+        "url": "http://192.168.2.153:8081/",
+        "mode": "image",
+        "username": "",
+        "password": "",
+        "auth": "basic",
+    },
+    "abkant1modbus": {
+        "url": "http://192.168.2.153:8081/",
         "mode": "image",
         "username": "",
         "password": "",
@@ -494,6 +511,35 @@ REAL_DATA_FEEDS = {
             "Scriptul urmareste programul activ, numarul de bucati si setup-ul Upper/Lower",
         ],
     },
+    "abkant1modbus": {
+        "script_name": "app.py",
+        "display_name": "Abkant1 Modbus bridge",
+        "endpoint": "http://192.168.2.153:8081/",
+        "transport": "Modbus TCP + motion feed",
+        "left_panel": [
+            {"label": "Feed motion", "value": "192.168.2.153:8081"},
+            {"label": "Modbus bits", "value": "IN1 .. IN4"},
+            {"label": "Semnal live", "value": "complet din Modbus"},
+        ],
+        "screen_rows": [
+            {"label": "Machine ON", "value": "bit Modbus mapat pe IN1..IN4 sau derivat din stari"},
+            {"label": "Indoire", "value": "bit Modbus mapat pe Cutting/Indoire"},
+            {"label": "Setup change", "value": "bit Modbus mapat pe Table change/Setup"},
+            {"label": "Idle", "value": "bit Modbus mapat pe Idle / Aborted"},
+            {"label": "Randament", "value": "Indoire / Machine ON"},
+        ],
+        "derivation_rules": [
+            {"label": "Indoire", "value": "DA cand bitul mapat pe Cutting/Indoire este 1"},
+            {"label": "Setup change", "value": "DA cand bitul mapat pe Table change/Setup este 1"},
+            {"label": "Idle", "value": "DA cand bitul mapat pe Idle / Aborted este 1 sau masina e pornita fara indoire/setup"},
+            {"label": "Feed", "value": "Feedul motion ramane vizibil separat pe 192.168.2.153:8081"},
+        ],
+        "details": [
+            "Modbus TCP pregatit pe Raspberry Pi Abkant 192.168.2.153:502",
+            "Convertor USB-RS485 FTDI expus prin bridge RTU -> TCP",
+            "Fara PostgreSQL: site-ul citeste direct bitii Modbus",
+        ],
+    },
 }
 
 SIGNAL_DEFINITIONS = {
@@ -631,6 +677,40 @@ MACHINE_SIGNAL_OVERRIDES = {
             "metric_label": "Setup change",
             "report_label": "Setup change",
         },
+    },
+    "abkant1modbus": {
+        "machine_on": {
+            "label": "Modbus activ",
+            "description": "Abkantul are cel putin un semnal Modbus activ sau bitul Machine ON este activ.",
+            "button_on_label": "Marcheaza Modbus inactiv",
+            "button_off_label": "Marcheaza Modbus activ",
+            "metric_label": "Modbus activ",
+            "report_label": "Modbus activ",
+        },
+        "cutting_active": {
+            "label": "Indoire",
+            "description": "Bitul Modbus mapat pe indoire este activ.",
+            "button_on_label": "Opreste indoirea",
+            "button_off_label": "Porneste indoirea",
+            "metric_label": "Indoire",
+            "report_label": "Indoire",
+        },
+        "table_change": {
+            "label": "Setup change",
+            "description": "Bitul Modbus mapat pe schimbare setup este activ.",
+            "button_on_label": "Opreste schimbarea",
+            "button_off_label": "Porneste schimbarea",
+            "metric_label": "Setup change",
+            "report_label": "Setup change",
+        },
+        "idle_abort": {
+            "label": "Idle",
+            "description": "Bitul Modbus mapat pe idle este activ.",
+            "button_on_label": "Opreste idle",
+            "button_off_label": "Porneste idle",
+            "metric_label": "Idle",
+            "report_label": "Idle",
+        },
     }
 }
 
@@ -728,6 +808,28 @@ MACHINE_STATE_OVERRIDES = {
             "label": "Setup change",
             "description": "Abkantul schimba sculele Upper/Lower si pregateste urmatoarea indoire.",
         },
+    },
+    "abkant1modbus": {
+        "off": {
+            "label": "Modbus indisponibil",
+            "description": "Dashboardul nu poate citi inca bitii Modbus de la Abkant.",
+        },
+        "ready": {
+            "label": "Pregatit",
+            "description": "Abkantul este activ in Modbus, dar nu indoaie si nu schimba setup acum.",
+        },
+        "idle": {
+            "label": "Idle",
+            "description": "Bitul dedicat de idle este activ in Modbus.",
+        },
+        "cutting": {
+            "label": "In indoire",
+            "description": "Bitul de indoire este activ in Modbus.",
+        },
+        "table_change": {
+            "label": "Setup change",
+            "description": "Bitul de schimbare setup este activ in Modbus.",
+        },
     }
 }
 
@@ -737,8 +839,21 @@ LASER_OCR_ZONES = {
     "left_panel": (0, 170, 620, 260),
     "completion_percent": (430, 220, 390, 80),
 }
+ABKANT_OCR_TARGET_WIDTH = 1400
+ABKANT_OCR_ZONES = {
+    "program": (23, 220, 300, 50),
+    "pieces": (340, 210, 200, 70),
+    "actual": (660, 270, 200, 50),
+    "upper_tool": (150, 55, 430, 55),
+    "lower_tool": (150, 105, 430, 55),
+}
+ABKANT_PROGRAM_WHITELIST = "ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
+ABKANT_TOOL_WHITELIST = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/-_ "
+ABKANT_PIECES_WHITELIST = "0123456789/ "
 
-MODBUS_MACHINE_KEYS = {"laser1modbus", "laser2modbus"}
+ABKANT_MACHINE_KEYS = {"abkant", "abkant1modbus"}
+MODBUS_MACHINE_KEYS = {"laser1modbus", "laser2modbus", "abkant1modbus"}
+MODBUS_MACHINE_ORDER = ("laser1modbus", "laser2modbus", "abkant1modbus")
 MODBUS_TRANSPORT_CHOICES = ("tcp", "rtu")
 MODBUS_SIGNAL_TARGET_CHOICES = (
     "unused",
@@ -749,7 +864,7 @@ MODBUS_SIGNAL_TARGET_CHOICES = (
 )
 MODBUS_SERIAL_PARITY_CHOICES = ("N", "E", "O")
 MODBUS_SERIAL_STOPBITS_CHOICES = (1, 2)
-PROGRAM_STATS_MACHINE_KEYS = {"laser1", "laser1modbus", "laser2modbus"}
+PROGRAM_STATS_MACHINE_KEYS = {"laser1", "laser1modbus", "laser2modbus", "abkant1modbus"}
 
 app = Flask(__name__)
 app.config["JSON_SORT_KEYS"] = False
@@ -849,6 +964,13 @@ def normalize_modbus_serial_parity(value: str | None) -> str:
 
 def machine_uses_modbus(machine_key: str) -> bool:
     return ensure_machine_key(machine_key) in MODBUS_MACHINE_KEYS
+
+
+def machine_is_abkant(machine_key: str | None) -> bool:
+    try:
+        return ensure_machine_key(machine_key or DEFAULT_MACHINE_KEY) in ABKANT_MACHINE_KEYS
+    except ValueError:
+        return False
 
 
 def machine_supports_idle_signal(machine_key: str) -> bool:
@@ -1078,7 +1200,7 @@ def build_machine_feeds(machine_key: str) -> list[dict]:
             }
         )
 
-    if machine_key == "abkant":
+    if machine_is_abkant(machine_key):
         return feeds
 
     if not hmi_url or normalize_feed_url(hmi_url) in seen_feed_urls:
@@ -2027,6 +2149,9 @@ def analyze_abkant_live_snapshot(machine_key: str) -> dict | None:
 
 
 def get_live_machine_snapshot(machine_key: str) -> dict | None:
+    machine_key = ensure_machine_key(machine_key)
+    if machine_key == "abkant1modbus":
+        return analyze_abkant_modbus_live_snapshot(machine_key)
     if machine_uses_modbus(machine_key):
         return analyze_laser_modbus_live_snapshot(machine_key)
     if machine_key in {"laser1", "laser2"}:
@@ -2089,6 +2214,17 @@ def get_default_machine_profiles() -> list[dict]:
             "workcenter_id": parse_optional_int(os.getenv("PONTAJ_ABKANT_WORKCENTER_ID", "2")),
             "sort_order": 5,
         },
+        {
+            "machine_key": "abkant1modbus",
+            "label": MACHINE_DEFINITIONS["abkant1modbus"]["label"],
+            "workcenter_id": parse_optional_int(
+                os.getenv(
+                    "PONTAJ_ABKANT1MODBUS_WORKCENTER_ID",
+                    os.getenv("PONTAJ_ABKANT_WORKCENTER_ID", "2"),
+                )
+            ),
+            "sort_order": 6,
+        },
     ]
 
 
@@ -2108,9 +2244,16 @@ def get_default_machine_modbus_configs() -> list[dict]:
             "in3_signal": "cutting_active",
             "in4_signal": "idle_abort",
         },
+        "abkant1modbus": {
+            "host": "192.168.2.153",
+            "in1_signal": "cutting_active",
+            "in2_signal": "table_change",
+            "in3_signal": "idle_abort",
+            "in4_signal": "machine_on",
+        },
     }
     configs = []
-    for machine_key in ("laser1modbus", "laser2modbus"):
+    for machine_key in MODBUS_MACHINE_ORDER:
         defaults = defaults_by_machine[machine_key]
         serial_port = get_machine_env_value(machine_key, "MODBUS_SERIAL_PORT")
         host = get_machine_env_value(machine_key, "MODBUS_HOST") or defaults["host"]
@@ -2148,8 +2291,8 @@ def get_modbus_signal_target_options() -> list[dict[str, str]]:
     return [
         {"value": "unused", "label": "Neutilizat"},
         {"value": "machine_on", "label": "Machine ON"},
-        {"value": "cutting_active", "label": "Cutting"},
-        {"value": "table_change", "label": "Table change"},
+        {"value": "cutting_active", "label": "Cutting / Indoire"},
+        {"value": "table_change", "label": "Table change / Setup"},
         {"value": "idle_abort", "label": "Idle / Aborted"},
     ]
 
@@ -3232,6 +3375,136 @@ def get_laser_ocr_snapshot(machine_key: str) -> dict:
     }
 
 
+def prepare_abkant_ocr_image(image):
+    if image is None or not CV_IMAGE_AVAILABLE:
+        return None, "Lipseste cadrul video pentru OCR."
+
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    if cv2.mean(gray)[0] < 8:
+        return None, "Captura Abkant pare goala sau ecranul este stins."
+
+    height, width = image.shape[:2]
+    if width <= 0:
+        return None, "Captura Abkant are dimensiuni invalide."
+    scale = ABKANT_OCR_TARGET_WIDTH / float(width)
+    resized = cv2.resize(
+        image,
+        (ABKANT_OCR_TARGET_WIDTH, max(int(height * scale), 1)),
+        interpolation=cv2.INTER_LINEAR,
+    )
+    return resized, ""
+
+
+def normalize_abkant_program_text(raw_text: str | None) -> str:
+    cleaned = clean_ocr_text(raw_text or "").replace(" ", "_").replace(".", "_")
+    cleaned = re.sub(r"[^A-Za-z0-9_-]", "", cleaned)
+    return cleaned.strip("_")
+
+
+def parse_abkant_pieces_text(raw_text: str | None) -> tuple[str, int | None, int | None]:
+    cleaned = clean_ocr_text(raw_text or "")
+    cleaned = re.sub(r"[^0-9/]", "", cleaned)
+    match = re.search(r"(\d*)/(\d*)", cleaned)
+    if not match:
+        return cleaned or "n/a", None, None
+
+    done_text, total_text = match.groups()
+    produced = parse_optional_int(done_text) if done_text else 0
+    total = parse_optional_int(total_text) if total_text else None
+    label = f"{produced if produced is not None else 0}/{total if total is not None else 0}"
+    return label, produced, total
+
+
+def get_abkant_ocr_snapshot(machine_key: str) -> dict:
+    endpoints = resolve_real_data_endpoint_candidates(machine_key)
+    endpoint = endpoints[0] if endpoints else ""
+    image = None
+    error_message = "Endpointul live Abkant nu este configurat."
+    endpoint_errors: list[str] = []
+
+    for candidate_endpoint in endpoints:
+        image, candidate_error = fetch_mjpeg_frame(candidate_endpoint)
+        if image is not None:
+            endpoint = candidate_endpoint
+            error_message = ""
+            break
+        endpoint_errors.append(f"{candidate_endpoint}: {candidate_error}")
+        error_message = candidate_error or error_message
+
+    if image is None:
+        joined_errors = " | ".join(endpoint_errors) if endpoint_errors else error_message
+        return {
+            "available": False,
+            "connected": False,
+            "endpoint": endpoint,
+            "message": f"Nu pot citi OCR Abkant din feed. Endpointuri incercate: {joined_errors}",
+        }
+
+    prepared, prepare_error = prepare_abkant_ocr_image(image)
+    if prepared is None:
+        return {
+            "available": False,
+            "connected": True,
+            "endpoint": endpoint,
+            "message": prepare_error,
+        }
+
+    actual_text = read_ocr_block(prepared, ABKANT_OCR_ZONES["actual"], psm=10)
+    program_text = read_ocr_zone(
+        prepared,
+        ABKANT_OCR_ZONES["program"],
+        ABKANT_PROGRAM_WHITELIST,
+        psm=10,
+    )
+    pieces_text = read_ocr_zone(
+        prepared,
+        ABKANT_OCR_ZONES["pieces"],
+        ABKANT_PIECES_WHITELIST,
+        psm=10,
+    )
+    if "/" not in pieces_text:
+        pieces_text = read_ocr_zone(
+            prepared,
+            ABKANT_OCR_ZONES["pieces"],
+            ABKANT_PIECES_WHITELIST,
+            psm=13,
+        )
+    upper_tool = normalize_abkant_tool_value(
+        read_ocr_zone(prepared, ABKANT_OCR_ZONES["upper_tool"], ABKANT_TOOL_WHITELIST, psm=7)
+    )
+    lower_tool = normalize_abkant_tool_value(
+        read_ocr_zone(prepared, ABKANT_OCR_ZONES["lower_tool"], ABKANT_TOOL_WHITELIST, psm=7)
+    )
+
+    program = normalize_abkant_program_text(program_text)
+    pieces_label, produced_pieces, total_pieces = parse_abkant_pieces_text(pieces_text)
+    setup_signature = build_abkant_tool_signature_from_values(upper_tool, lower_tool)
+    screen_mode_ok = "ctua" in (actual_text or "").lower()
+
+    return {
+        "available": True,
+        "connected": True,
+        "endpoint": endpoint,
+        "captured_at": now_local().isoformat(timespec="seconds"),
+        "ocr_selected_program": program,
+        "selected_program": program or "Necitit",
+        "active_program": program or "Necitit",
+        "material": pieces_label or "n/a",
+        "program_status": "OCR Abkant OK" if screen_mode_ok else "OCR Abkant: ecran neconfirmat",
+        "pieces_label": pieces_label or "n/a",
+        "produced_pieces": produced_pieces if produced_pieces is not None else 0,
+        "total_pieces": total_pieces,
+        "upper_tool": upper_tool or "n/a",
+        "lower_tool": lower_tool or "n/a",
+        "setup_signature": setup_signature,
+        "screen_mode_text": actual_text,
+        "message": (
+            f"OCR Abkant: program={program or 'necitit'}, piese={pieces_label or 'n/a'}, "
+            f"Upper={upper_tool or 'n/a'}, Lower={lower_tool or 'n/a'}."
+        ),
+    }
+
+
 def build_modbus_grace_snapshot(machine_key: str, error_message: str) -> dict | None:
     if MODBUS_SNAPSHOT_GRACE_SECONDS <= 0:
         return None
@@ -3483,6 +3756,176 @@ def analyze_laser_modbus_live_snapshot(machine_key: str) -> dict | None:
         "table_sheet_on_change_table": table_sheet_detection.get("present"),
         "table_sheet_detection": table_sheet_detection,
         "message": message,
+    }
+
+
+def analyze_abkant_modbus_live_snapshot(machine_key: str) -> dict | None:
+    config = get_machine_modbus_config(machine_key)
+    if not config.get("enabled"):
+        transport = config.get("transport", "tcp")
+        transport_hint = (
+            "Configureaza portul serial, baud rate-ul si maparea IN1..IN4 pentru Modbus RTU."
+            if transport == "rtu"
+            else "Configureaza hostul, portul si maparea IN1..IN4 pentru Modbus TCP."
+        )
+        return {
+            "available": False,
+            "connected": False,
+            "source": "modbus",
+            "endpoint": "",
+            "machine_mode": machine_key,
+            "message": transport_hint,
+        }
+
+    try:
+        if config.get("transport") == "rtu":
+            inputs = read_modbus_rtu_bits(
+                serial_port=config["serial_port"],
+                baudrate=config["serial_baudrate"],
+                unit_id=config["unit_id"],
+                start_address=config["start_address"],
+                count=4,
+                bit_source=config["bit_source"],
+                timeout_seconds=config["poll_timeout_seconds"],
+                parity=config["serial_parity"],
+                stopbits=config["serial_stopbits"],
+            )
+        else:
+            inputs = read_modbus_tcp_bits(
+                host=config["host"],
+                port=config["port"],
+                unit_id=config["unit_id"],
+                start_address=config["start_address"],
+                count=4,
+                bit_source=config["bit_source"],
+                timeout_seconds=config["poll_timeout_seconds"],
+            )
+    except Exception as exc:
+        transport_label = "Modbus RTU" if config.get("transport") == "rtu" else "Modbus TCP"
+        error_message = f"Nu pot citi {transport_label} de la {config['endpoint']}. Motiv: {exc}"
+        ocr_snapshot = get_abkant_ocr_snapshot(machine_key)
+        if ocr_snapshot.get("available"):
+            return {
+                **ocr_snapshot,
+                "available": True,
+                "connected": False,
+                "source": "abkant-ocr+modbus-error",
+                "machine_mode": machine_key,
+                "program_status": "OCR activ / Modbus indisponibil",
+                "endpoint": config["endpoint"],
+                "modbus_endpoint": config["endpoint"],
+                "ocr_endpoint": ocr_snapshot.get("endpoint") or resolve_machine_camera_feed_url(machine_key),
+                "ocr_available": True,
+                "ocr_message": ocr_snapshot.get("message") or "",
+                "modbus_inputs": [],
+                "derived_signals": {
+                    "machine_on": False,
+                    "cutting_active": False,
+                    "table_change": False,
+                    "idle_abort": False,
+                    "idle": False,
+                },
+                "message": f"{error_message}. {ocr_snapshot.get('message') or ''}".strip(),
+            }
+        return {
+            "available": False,
+            "connected": False,
+            "source": "modbus",
+            "endpoint": config["endpoint"],
+            "machine_mode": machine_key,
+            "message": error_message,
+        }
+
+    derived_signals, raw_inputs = build_modbus_signal_state(config, inputs)
+    idle = bool(
+        derived_signals["idle_abort"]
+        or (
+            derived_signals["machine_on"]
+            and not derived_signals["cutting_active"]
+            and not derived_signals["table_change"]
+        )
+    )
+    if derived_signals["cutting_active"]:
+        program_status = "Indoire activa"
+    elif derived_signals["table_change"]:
+        program_status = "Setup change"
+    elif idle:
+        program_status = "Idle"
+    elif derived_signals["machine_on"]:
+        program_status = "Pregatit"
+    else:
+        program_status = "Modbus fara semnale active"
+
+    active_inputs = ", ".join(input_item["label"] for input_item in raw_inputs if input_item["active"]) or "niciunul"
+    feed_url = resolve_machine_camera_feed_url(machine_key)
+    ocr_snapshot = get_abkant_ocr_snapshot(machine_key)
+    selected_program = normalize_context_token(ocr_snapshot.get("selected_program")) if ocr_snapshot.get("available") else ""
+    active_program = normalize_context_token(ocr_snapshot.get("active_program")) if ocr_snapshot.get("available") else ""
+    pieces_label = ocr_snapshot.get("pieces_label") if ocr_snapshot.get("available") else ""
+    produced_pieces = ocr_snapshot.get("produced_pieces") if ocr_snapshot.get("available") else 0
+    total_pieces = ocr_snapshot.get("total_pieces") if ocr_snapshot.get("available") else None
+    upper_tool = ocr_snapshot.get("upper_tool") if ocr_snapshot.get("available") else "n/a"
+    lower_tool = ocr_snapshot.get("lower_tool") if ocr_snapshot.get("available") else "n/a"
+    setup_signature = ocr_snapshot.get("setup_signature") if ocr_snapshot.get("available") else ""
+
+    if derived_signals["machine_on"] and not (selected_program or active_program):
+        try:
+            runtime = get_machine_runtime(machine_key)
+            previous_snapshot = runtime.get("last_snapshot") or {}
+            pending_cycle = runtime.get("pending_cycle") or {}
+        except Exception:
+            previous_snapshot = {}
+            pending_cycle = {}
+
+        fallback_program = (
+            normalize_context_token(resolve_snapshot_program(previous_snapshot))
+            or normalize_context_token(pending_cycle.get("selected_program"))
+            or normalize_context_token(pending_cycle.get("active_program"))
+        )
+        if fallback_program:
+            selected_program = fallback_program
+            active_program = fallback_program
+
+    if selected_program and not active_program:
+        active_program = selected_program
+    elif active_program and not selected_program:
+        selected_program = active_program
+
+    ocr_message = ocr_snapshot.get("message") or "OCR Abkant indisponibil."
+    return {
+        "available": True,
+        "connected": True,
+        "source": "modbus+abkant-ocr",
+        "captured_at": now_local().isoformat(timespec="seconds"),
+        "machine_mode": machine_key,
+        "selected_program": selected_program or "Necitit",
+        "active_program": active_program or "Necitit",
+        "material": pieces_label or "n/a",
+        "program_status": program_status,
+        "pieces_label": pieces_label or "n/a",
+        "produced_pieces": produced_pieces if produced_pieces is not None else 0,
+        "total_pieces": total_pieces,
+        "upper_tool": upper_tool or "n/a",
+        "lower_tool": lower_tool or "n/a",
+        "setup_signature": setup_signature or "",
+        "endpoint": config["endpoint"],
+        "modbus_endpoint": config["endpoint"],
+        "feed_endpoint": feed_url,
+        "ocr_endpoint": ocr_snapshot.get("endpoint") or feed_url,
+        "ocr_available": bool(ocr_snapshot.get("available")),
+        "ocr_message": ocr_message,
+        "modbus_inputs": raw_inputs,
+        "derived_signals": {
+            "machine_on": derived_signals["machine_on"],
+            "cutting_active": derived_signals["cutting_active"],
+            "table_change": derived_signals["table_change"],
+            "idle_abort": derived_signals["idle_abort"],
+            "idle": idle,
+        },
+        "message": (
+            f"ABKANT1MODBUS citeste bitii din {config['endpoint']} si OCR din feedul {feed_url or 'neconfigurat'}. "
+            f"IN activ: {active_inputs}. {ocr_message}"
+        ),
     }
 
 
@@ -6122,6 +6565,7 @@ def get_saved_modbus_machine_options() -> list[dict[str, str]]:
     return [
         {"value": "laser1modbus", "label": MACHINE_DEFINITIONS["laser1modbus"]["label"]},
         {"value": "laser2modbus", "label": MACHINE_DEFINITIONS["laser2modbus"]["label"]},
+        {"value": "abkant1modbus", "label": MACHINE_DEFINITIONS["abkant1modbus"]["label"]},
         {"value": "all", "label": "Toate utilajele MODBUS"},
     ]
 
@@ -6175,7 +6619,7 @@ def build_saved_modbus_payload(
     normalized_period = resolve_saved_modbus_period(period)
     normalized_machine_key = resolve_saved_modbus_machine_key(machine_key)
     selected_machine_keys = (
-        ["laser1modbus", "laser2modbus"]
+        list(MODBUS_MACHINE_ORDER)
         if normalized_machine_key == "all"
         else [normalized_machine_key]
     )
@@ -6610,6 +7054,8 @@ def resolve_completed_cycle_machine_group(machine_key: str | None) -> tuple[str,
         return "laser1", "LASER1MODBUS"
     if normalized_key in {"laser2", "laser2modbus"}:
         return "laser2", "LASER2MODBUS"
+    if normalized_key in ABKANT_MACHINE_KEYS:
+        return "abkant", "ABKANT1MODBUS" if normalized_key == "abkant1modbus" else "Abkant"
     return normalized_key, MACHINE_DEFINITIONS.get(normalized_key, {}).get("label", normalized_key)
 
 
@@ -7138,7 +7584,7 @@ def save_cycle_on_program_change(
     if not previous_program or not current_program or previous_program == current_program:
         return
 
-    if machine_key == "abkant" and (
+    if machine_is_abkant(machine_key) and (
         resolve_abkant_tool_signature(previous_snapshot)
         or resolve_abkant_tool_signature(current_snapshot)
     ):
@@ -7517,7 +7963,7 @@ def build_today_stats(machine_key: str, live_snapshot: dict | None = None) -> di
     table_change_meta = resolve_signal_definition(machine_key, "table_change")
     availability_prefix = (
         "Disponibilitate indoire/feed_activ"
-        if machine_key == "abkant"
+        if machine_is_abkant(machine_key)
         else "Disponibilitate taiere/feed_activ"
     )
 

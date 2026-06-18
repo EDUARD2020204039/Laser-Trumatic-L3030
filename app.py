@@ -154,6 +154,7 @@ SAVED_RECORDS_PROMETHEUS_ENABLED = os.getenv("SAVED_RECORDS_PROMETHEUS_ENABLED",
 SNAPSHOT_FRESHNESS_SECONDS = max(int(os.getenv("SNAPSHOT_FRESHNESS_SECONDS", "3")), 1)
 ABKANT_IDLE_STAGNATION_SECONDS = max(int(os.getenv("ABKANT_IDLE_STAGNATION_SECONDS", "600")), 60)
 ABKANT_OCR_BENDING_GRACE_SECONDS = max(int(os.getenv("ABKANT_OCR_BENDING_GRACE_SECONDS", "180")), 30)
+ABKANT_MIN_COMPLETED_CYCLE_SECONDS = max(int(os.getenv("ABKANT_MIN_COMPLETED_CYCLE_SECONDS", "60")), 1)
 ABKANT_FEED_STALE_SECONDS = max(int(os.getenv("ABKANT_FEED_STALE_SECONDS", "120")), 15)
 MODBUS_TCP_RETRY_ATTEMPTS = max(int(os.getenv("MODBUS_TCP_RETRY_ATTEMPTS", "3")), 1)
 try:
@@ -855,6 +856,7 @@ ABKANT_OCR_ZONES = {
     "program": (23, 220, 300, 50),
     "pieces": (340, 210, 200, 70),
     "actual": (660, 270, 200, 50),
+    "setup_view": (95, 250, 840, 560),
     "upper_tool": (150, 55, 430, 55),
     "lower_tool": (150, 105, 430, 55),
 }
@@ -3420,7 +3422,24 @@ def prepare_abkant_ocr_image(image):
 def normalize_abkant_program_text(raw_text: str | None) -> str:
     cleaned = clean_ocr_text(raw_text or "").replace(" ", "_").replace(".", "_")
     cleaned = re.sub(r"[^A-Za-z0-9_-]", "", cleaned)
-    return cleaned.strip("_")
+    return cleaned.strip("_").upper()
+
+
+def is_valid_abkant_program_name(value: str | None) -> bool:
+    program = normalize_context_token(value)
+    if len(program) < 5:
+        return False
+    if not re.search(r"[A-Z]", program):
+        return False
+    return "_" in program or bool(re.search(r"\d", program))
+
+
+def resolve_valid_abkant_program(*values: str | None) -> str:
+    for value in values:
+        program = normalize_abkant_program_text(value)
+        if is_valid_abkant_program_name(program):
+            return program
+    return ""
 
 
 def parse_abkant_pieces_text(raw_text: str | None) -> tuple[str, int | None, int | None]:
@@ -3485,6 +3504,7 @@ def get_abkant_ocr_snapshot(machine_key: str) -> dict:
         }
 
     actual_text = read_ocr_block(prepared, ABKANT_OCR_ZONES["actual"], psm=10)
+    setup_view_text = read_ocr_block(prepared, ABKANT_OCR_ZONES["setup_view"], psm=6)
     program_text = read_ocr_zone(
         prepared,
         ABKANT_OCR_ZONES["program"],
@@ -3518,6 +3538,18 @@ def get_abkant_ocr_snapshot(machine_key: str) -> dict:
         completion_percent = coerce_completion_percent(round((produced_pieces / total_pieces) * 100, 1))
     setup_signature = build_abkant_tool_signature_from_values(upper_tool, lower_tool)
     screen_mode_ok = "ctua" in (actual_text or "").lower()
+    normalized_setup_text = normalize_person_name_for_match(setup_view_text)
+    setup_screen_detected = any(
+        keyword in normalized_setup_text
+        for keyword in (
+            "tools upper",
+            "tools lower",
+            "segmentation",
+            "station",
+            "set up plan",
+            "setup plan",
+        )
+    )
 
     return {
         "available": True,
@@ -3538,6 +3570,8 @@ def get_abkant_ocr_snapshot(machine_key: str) -> dict:
         "lower_tool": lower_tool or "n/a",
         "setup_signature": setup_signature,
         "screen_mode_text": actual_text,
+        "setup_view_text": setup_view_text,
+        "setup_screen_detected": setup_screen_detected,
         "message": (
             f"OCR Abkant: program={program or 'necitit'}, piese={pieces_label or 'n/a'}, "
             f"Upper={upper_tool or 'n/a'}, Lower={lower_tool or 'n/a'}."
@@ -3710,10 +3744,13 @@ def derive_abkant_ocr_signal_state(
     previous_signature = resolve_abkant_tool_signature(previous_snapshot)
     tool_changed = bool(previous_signature and setup_signature and previous_signature != setup_signature)
     old_setup_change = bool(current_signals.get("table_change", {}).get("active"))
+    setup_screen_detected = bool(ocr_snapshot.get("setup_screen_detected"))
     setup_change = bool(
         machine_on
         and not bending_active
         and (
+            setup_screen_detected
+            or
             tool_changed
             or counter_reset
             or (old_setup_change and not abkant_snapshot_is_completed(ocr_snapshot))
@@ -3982,8 +4019,12 @@ def analyze_abkant_modbus_live_snapshot(machine_key: str) -> dict | None:
             "message": f"OCR Abkant indisponibil: {ocr_snapshot.get('message') or 'necunoscut'}.",
         }
 
-    selected_program = normalize_context_token(ocr_snapshot.get("selected_program"))
-    active_program = normalize_context_token(ocr_snapshot.get("active_program"))
+    selected_program = resolve_valid_abkant_program(
+        ocr_snapshot.get("selected_program"),
+        ocr_snapshot.get("active_program"),
+        ocr_snapshot.get("ocr_selected_program"),
+    )
+    active_program = selected_program
     pieces_label = ocr_snapshot.get("pieces_label") or ""
     produced_pieces = ocr_snapshot.get("produced_pieces")
     total_pieces = ocr_snapshot.get("total_pieces")
@@ -3999,24 +4040,55 @@ def analyze_abkant_modbus_live_snapshot(machine_key: str) -> dict | None:
         previous_snapshot = {}
         current_signals = {signal_name: {"active": False, "changed_at": None} for signal_name in SIGNAL_DEFINITIONS}
 
-    if not (selected_program or active_program):
-        try:
-            pending_cycle = runtime.get("pending_cycle") or {}
-        except Exception:
-            pending_cycle = {}
-        fallback_program = (
-            normalize_context_token(resolve_snapshot_program(previous_snapshot))
-            or normalize_context_token(pending_cycle.get("selected_program"))
-            or normalize_context_token(pending_cycle.get("active_program"))
-        )
-        if fallback_program:
-            selected_program = fallback_program
-            active_program = fallback_program
+    try:
+        pending_cycle = runtime.get("pending_cycle") or {}
+    except Exception:
+        pending_cycle = {}
+    fallback_program = resolve_valid_abkant_program(
+        resolve_snapshot_program(previous_snapshot),
+        previous_snapshot.get("ocr_selected_program") if isinstance(previous_snapshot, dict) else "",
+        pending_cycle.get("selected_program"),
+        pending_cycle.get("active_program"),
+    )
+    if not selected_program and fallback_program:
+        selected_program = fallback_program
+        active_program = fallback_program
 
-    if selected_program and not active_program:
-        active_program = selected_program
-    elif active_program and not selected_program:
-        selected_program = active_program
+    piece_payload = resolve_cycle_piece_payload(ocr_snapshot)
+    has_current_piece_reading = bool(
+        piece_payload["pieces_label"]
+        and piece_payload["pieces_label"].lower() != "n/a"
+        and (
+            piece_payload["produced_pieces"] is not None
+            or piece_payload["total_pieces"] is not None
+        )
+    )
+    same_program_as_previous = bool(
+        selected_program
+        and selected_program == resolve_valid_abkant_program(resolve_snapshot_program(previous_snapshot))
+    )
+    if has_current_piece_reading:
+        ocr_snapshot["last_valid_pieces_label"] = piece_payload["pieces_label"]
+        ocr_snapshot["last_valid_produced_pieces"] = piece_payload["produced_pieces"]
+        ocr_snapshot["last_valid_total_pieces"] = piece_payload["total_pieces"]
+    elif same_program_as_previous:
+        previous_piece_payload = resolve_cycle_piece_payload(
+            {
+                "pieces_label": previous_snapshot.get("last_valid_pieces_label") or previous_snapshot.get("pieces_label"),
+                "produced_pieces": previous_snapshot.get("last_valid_produced_pieces", previous_snapshot.get("produced_pieces")),
+                "total_pieces": previous_snapshot.get("last_valid_total_pieces", previous_snapshot.get("total_pieces")),
+            }
+        )
+        if previous_piece_payload["pieces_label"]:
+            pieces_label = previous_piece_payload["pieces_label"]
+            produced_pieces = previous_piece_payload["produced_pieces"]
+            total_pieces = previous_piece_payload["total_pieces"]
+            ocr_snapshot["pieces_label"] = pieces_label
+            ocr_snapshot["produced_pieces"] = produced_pieces if produced_pieces is not None else 0
+            ocr_snapshot["total_pieces"] = total_pieces
+            ocr_snapshot["last_valid_pieces_label"] = pieces_label
+            ocr_snapshot["last_valid_produced_pieces"] = produced_pieces
+            ocr_snapshot["last_valid_total_pieces"] = total_pieces
 
     ocr_snapshot["selected_program"] = selected_program or "Necitit"
     ocr_snapshot["active_program"] = active_program or "Necitit"
@@ -4042,12 +4114,16 @@ def analyze_abkant_modbus_live_snapshot(machine_key: str) -> dict | None:
         "pieces_label": pieces_label or "n/a",
         "produced_pieces": produced_pieces if produced_pieces is not None else 0,
         "total_pieces": total_pieces,
+        "last_valid_pieces_label": ocr_snapshot.get("last_valid_pieces_label") or "",
+        "last_valid_produced_pieces": ocr_snapshot.get("last_valid_produced_pieces"),
+        "last_valid_total_pieces": ocr_snapshot.get("last_valid_total_pieces"),
         "completion_percent": ocr_snapshot.get("completion_percent"),
         "completion_label": ocr_snapshot.get("completion_label") or format_completion_percent(ocr_snapshot.get("completion_percent")),
         "upper_tool": upper_tool or "n/a",
         "lower_tool": lower_tool or "n/a",
         "setup_signature": setup_signature or "",
         "setup_changed": bool(ocr_snapshot.get("setup_changed")),
+        "setup_screen_detected": bool(ocr_snapshot.get("setup_screen_detected")),
         "last_piece_progress_at": ocr_snapshot.get("last_piece_progress_at") or "",
         "last_piece_progress_age_seconds": ocr_snapshot.get("last_piece_progress_age_seconds"),
         "progress_signature": ocr_snapshot.get("progress_signature") or "",
@@ -7287,7 +7363,6 @@ def context_requires_stats_reset(
         )
         return bool(
             previous_context["program"] != current_context["program"]
-            or previous_context["setup_signature"] != current_context["setup_signature"]
             or counter_reset
             or machine_restarted
         )
@@ -7467,6 +7542,15 @@ def resolve_cycle_piece_payload(record: dict | None) -> dict:
     pieces_label = str(source.get("pieces_label") or source.get("material") or "").strip()
     produced_pieces = coerce_abkant_piece_count(source.get("produced_pieces"))
     total_pieces = coerce_abkant_piece_count(source.get("total_pieces"))
+    current_is_empty = (
+        (not pieces_label and produced_pieces is None and total_pieces is None)
+        or pieces_label.lower() == "n/a"
+        or (produced_pieces in (None, 0) and total_pieces is None)
+    )
+    if current_is_empty:
+        pieces_label = str(source.get("last_valid_pieces_label") or "").strip()
+        produced_pieces = coerce_abkant_piece_count(source.get("last_valid_produced_pieces"))
+        total_pieces = coerce_abkant_piece_count(source.get("last_valid_total_pieces"))
     if (produced_pieces is None or total_pieces is None) and pieces_label and "/" in pieces_label:
         parsed_label, parsed_produced, parsed_total = parse_abkant_pieces_text(pieces_label)
         pieces_label = pieces_label or parsed_label
@@ -7498,6 +7582,22 @@ def format_cycle_piece_line(record: dict | None) -> str:
     if pieces_label:
         return f"Piese efectuate: {pieces_label}"
     return ""
+
+
+def should_notify_abkant_cycle(record: dict) -> bool:
+    if ensure_machine_key(record.get("machine_key") or "abkant1modbus") != "abkant1modbus":
+        return True
+    selected_program = resolve_completed_cycle_selected_program(record) or normalize_context_token(record.get("selected_program"))
+    if not is_valid_abkant_program_name(selected_program):
+        return False
+    duration_seconds = int(record.get("machine_on_duration_seconds") or record.get("cycle_duration_seconds") or 0)
+    if duration_seconds < ABKANT_MIN_COMPLETED_CYCLE_SECONDS:
+        return False
+    pieces = resolve_cycle_piece_payload(record)
+    produced_pieces = pieces.get("produced_pieces")
+    if produced_pieces is None or produced_pieces <= 0:
+        return False
+    return True
 
 
 def find_open_completed_cycle_report_key(machine_group: str, selected_program: str) -> str | None:
@@ -7552,6 +7652,8 @@ def build_completed_cycle_telegram_message(record: dict) -> str:
 
 def enqueue_completed_cycle_telegram_report(record: dict) -> None:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_IDS or not TELEGRAM_REPORTS_ENABLED:
+        return
+    if not should_notify_abkant_cycle(record):
         return
     selected_program = resolve_completed_cycle_program_group(record)
     if not selected_program:
@@ -7973,6 +8075,9 @@ def finalize_pending_cycle(machine_key: str, current_snapshot: dict) -> None:
                 "operator_id": pending_cycle.get("operator_id"),
                 "operator_name": pending_cycle.get("operator_name"),
                 "pieces_label": pending_cycle.get("material") if machine_is_abkant(machine_key) else "",
+                "last_valid_pieces_label": (pending_cycle.get("snapshot_json") or {}).get("last_valid_pieces_label") if machine_is_abkant(machine_key) else "",
+                "last_valid_produced_pieces": (pending_cycle.get("snapshot_json") or {}).get("last_valid_produced_pieces") if machine_is_abkant(machine_key) else None,
+                "last_valid_total_pieces": (pending_cycle.get("snapshot_json") or {}).get("last_valid_total_pieces") if machine_is_abkant(machine_key) else None,
                 "telegram_selected_program": pending_cycle.get("telegram_selected_program"),
                 "selected_program": pending_cycle.get("telegram_selected_program") or pending_cycle.get("selected_program"),
                 "active_program": pending_cycle.get("active_program"),
@@ -8025,6 +8130,11 @@ def save_cycle_on_program_change(
     previous_program = resolve_snapshot_selected_program(previous_snapshot)
     current_program = resolve_snapshot_selected_program(current_snapshot)
     if not previous_program or not current_program or previous_program == current_program:
+        return
+    if machine_key == "abkant1modbus" and (
+        not is_valid_abkant_program_name(previous_program)
+        or not is_valid_abkant_program_name(current_program)
+    ):
         return
 
     if machine_key == "abkant" and (
@@ -8166,6 +8276,9 @@ def save_cycle_on_program_change(
                 "pieces_label": previous_snapshot.get("pieces_label") or previous_snapshot.get("material"),
                 "produced_pieces": previous_snapshot.get("produced_pieces"),
                 "total_pieces": previous_snapshot.get("total_pieces"),
+                "last_valid_pieces_label": previous_snapshot.get("last_valid_pieces_label"),
+                "last_valid_produced_pieces": previous_snapshot.get("last_valid_produced_pieces"),
+                "last_valid_total_pieces": previous_snapshot.get("last_valid_total_pieces"),
                 "telegram_selected_program": previous_program,
                 "selected_program": previous_program,
                 "active_program": previous_snapshot.get("active_program") or previous_program,
@@ -8333,6 +8446,9 @@ def save_abkant_ocr_completed_cycle(
                 "pieces_label": current_snapshot.get("pieces_label") or current_snapshot.get("material"),
                 "produced_pieces": current_snapshot.get("produced_pieces"),
                 "total_pieces": current_snapshot.get("total_pieces"),
+                "last_valid_pieces_label": current_snapshot.get("last_valid_pieces_label"),
+                "last_valid_produced_pieces": current_snapshot.get("last_valid_produced_pieces"),
+                "last_valid_total_pieces": current_snapshot.get("last_valid_total_pieces"),
                 "telegram_selected_program": selected_program,
                 "selected_program": selected_program,
                 "active_program": current_snapshot.get("active_program") or selected_program,

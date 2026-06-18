@@ -155,6 +155,7 @@ SNAPSHOT_FRESHNESS_SECONDS = max(int(os.getenv("SNAPSHOT_FRESHNESS_SECONDS", "3"
 ABKANT_IDLE_STAGNATION_SECONDS = max(int(os.getenv("ABKANT_IDLE_STAGNATION_SECONDS", "600")), 60)
 ABKANT_OCR_BENDING_GRACE_SECONDS = max(int(os.getenv("ABKANT_OCR_BENDING_GRACE_SECONDS", "180")), 30)
 ABKANT_MIN_COMPLETED_CYCLE_SECONDS = max(int(os.getenv("ABKANT_MIN_COMPLETED_CYCLE_SECONDS", "60")), 1)
+ABKANT_BEAM_MOVEMENT_THRESHOLD = max(read_env_float("ABKANT_BEAM_MOVEMENT_THRESHOLD", 0.100), 0.001)
 ABKANT_FEED_STALE_SECONDS = max(int(os.getenv("ABKANT_FEED_STALE_SECONDS", "120")), 15)
 MODBUS_TCP_RETRY_ATTEMPTS = max(int(os.getenv("MODBUS_TCP_RETRY_ATTEMPTS", "3")), 1)
 try:
@@ -857,12 +858,15 @@ ABKANT_OCR_ZONES = {
     "pieces": (340, 210, 200, 70),
     "actual": (660, 270, 200, 50),
     "setup_view": (95, 250, 840, 560),
-    "upper_tool": (150, 55, 430, 55),
-    "lower_tool": (150, 105, 430, 55),
+    "beam_y1": (685, 415, 190, 60),
+    "beam_y2": (685, 495, 190, 60),
+    "upper_tool": (870, 745, 360, 65),
+    "lower_tool": (870, 820, 360, 65),
 }
 ABKANT_PROGRAM_WHITELIST = "ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
 ABKANT_TOOL_WHITELIST = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/-_ "
 ABKANT_PIECES_WHITELIST = "0123456789/ "
+ABKANT_DECIMAL_WHITELIST = "0123456789.,- "
 
 ABKANT_MACHINE_KEYS = {"abkant", "abkant1modbus"}
 MODBUS_MACHINE_KEYS = {"laser1modbus", "laser2modbus"}
@@ -3469,6 +3473,17 @@ def parse_abkant_pieces_text(raw_text: str | None) -> tuple[str, int | None, int
     return label, produced, total
 
 
+def parse_abkant_decimal_text(raw_text: str | None) -> float | None:
+    cleaned = clean_ocr_text(raw_text or "").replace(",", ".")
+    match = re.search(r"-?\d+(?:\.\d+)?", cleaned)
+    if not match:
+        return None
+    try:
+        return float(match.group(0))
+    except (TypeError, ValueError):
+        return None
+
+
 def get_abkant_ocr_snapshot(machine_key: str) -> dict:
     endpoints = resolve_real_data_endpoint_candidates(machine_key)
     endpoint = endpoints[0] if endpoints else ""
@@ -3524,6 +3539,8 @@ def get_abkant_ocr_snapshot(machine_key: str) -> dict:
             ABKANT_PIECES_WHITELIST,
             psm=13,
         )
+    beam_y1_text = read_ocr_zone(prepared, ABKANT_OCR_ZONES["beam_y1"], ABKANT_DECIMAL_WHITELIST, psm=7)
+    beam_y2_text = read_ocr_zone(prepared, ABKANT_OCR_ZONES["beam_y2"], ABKANT_DECIMAL_WHITELIST, psm=7)
     upper_tool = normalize_abkant_tool_value(
         read_ocr_zone(prepared, ABKANT_OCR_ZONES["upper_tool"], ABKANT_TOOL_WHITELIST, psm=7)
     )
@@ -3533,13 +3550,25 @@ def get_abkant_ocr_snapshot(machine_key: str) -> dict:
 
     program = normalize_abkant_program_text(program_text)
     pieces_label, produced_pieces, total_pieces = parse_abkant_pieces_text(pieces_text)
+    beam_y1 = parse_abkant_decimal_text(beam_y1_text)
+    beam_y2 = parse_abkant_decimal_text(beam_y2_text)
     completion_percent = None
     if produced_pieces is not None and total_pieces is not None and total_pieces > 0:
         completion_percent = coerce_completion_percent(round((produced_pieces / total_pieces) * 100, 1))
     setup_signature = build_abkant_tool_signature_from_values(upper_tool, lower_tool)
     screen_mode_ok = "ctua" in (actual_text or "").lower()
     normalized_setup_text = normalize_person_name_for_match(setup_view_text)
-    setup_screen_detected = any(
+    production_screen_detected = any(
+        keyword in normalized_setup_text
+        for keyword in (
+            "beam y1",
+            "beam y2",
+            "required",
+            "correction",
+            "actual",
+        )
+    ) or "actual" in normalize_person_name_for_match(actual_text)
+    setup_screen_detected = (not production_screen_detected) and any(
         keyword in normalized_setup_text
         for keyword in (
             "tools upper",
@@ -3564,6 +3593,10 @@ def get_abkant_ocr_snapshot(machine_key: str) -> dict:
         "pieces_label": pieces_label or "n/a",
         "produced_pieces": produced_pieces if produced_pieces is not None else 0,
         "total_pieces": total_pieces,
+        "beam_y1": beam_y1,
+        "beam_y2": beam_y2,
+        "beam_y1_label": f"{beam_y1:.3f}" if beam_y1 is not None else "n/a",
+        "beam_y2_label": f"{beam_y2:.3f}" if beam_y2 is not None else "n/a",
         "completion_percent": completion_percent,
         "completion_label": format_completion_percent(completion_percent),
         "upper_tool": upper_tool or "n/a",
@@ -3571,6 +3604,7 @@ def get_abkant_ocr_snapshot(machine_key: str) -> dict:
         "setup_signature": setup_signature,
         "screen_mode_text": actual_text,
         "setup_view_text": setup_view_text,
+        "production_screen_detected": production_screen_detected,
         "setup_screen_detected": setup_screen_detected,
         "message": (
             f"OCR Abkant: program={program or 'necitit'}, piese={pieces_label or 'n/a'}, "
@@ -3713,9 +3747,21 @@ def derive_abkant_ocr_signal_state(
         and produced is not None
         and produced < previous_produced
     )
+    beam_y1 = ocr_snapshot.get("beam_y1")
+    beam_y2 = ocr_snapshot.get("beam_y2")
+    previous_beam_y1 = (previous_snapshot or {}).get("beam_y1")
+    previous_beam_y2 = (previous_snapshot or {}).get("beam_y2")
+    beam_moved = False
+    for current_beam, previous_beam in ((beam_y1, previous_beam_y1), (beam_y2, previous_beam_y2)):
+        try:
+            if current_beam is not None and previous_beam is not None and abs(float(current_beam) - float(previous_beam)) >= ABKANT_BEAM_MOVEMENT_THRESHOLD:
+                beam_moved = True
+                break
+        except (TypeError, ValueError):
+            continue
 
     last_progress_at = None
-    if progress_increased:
+    if progress_increased or beam_moved:
         last_progress_at = current_time
     elif same_cycle:
         last_progress_at = parse_optional_snapshot_timestamp(previous_snapshot, "last_piece_progress_at")
@@ -3736,24 +3782,20 @@ def derive_abkant_ocr_signal_state(
     )
     bending_active = bool(
         machine_on
-        and has_counter
+        and (has_counter or beam_y1 is not None or beam_y2 is not None)
         and last_progress_age_seconds is not None
         and last_progress_age_seconds <= ABKANT_OCR_BENDING_GRACE_SECONDS
     )
 
     previous_signature = resolve_abkant_tool_signature(previous_snapshot)
     tool_changed = bool(previous_signature and setup_signature and previous_signature != setup_signature)
-    old_setup_change = bool(current_signals.get("table_change", {}).get("active"))
     setup_screen_detected = bool(ocr_snapshot.get("setup_screen_detected"))
     setup_change = bool(
         machine_on
         and not bending_active
         and (
             setup_screen_detected
-            or
-            tool_changed
             or counter_reset
-            or (old_setup_change and not abkant_snapshot_is_completed(ocr_snapshot))
         )
     )
     idle = bool(machine_on and not bending_active and not setup_change)
@@ -3763,6 +3805,7 @@ def derive_abkant_ocr_signal_state(
     ocr_snapshot["progress_signature"] = get_abkant_progress_signature(ocr_snapshot)
     ocr_snapshot["setup_changed"] = tool_changed
     ocr_snapshot["counter_reset"] = counter_reset
+    ocr_snapshot["beam_moved"] = beam_moved
 
     if setup_change:
         ocr_snapshot["program_status"] = "Setup change"
@@ -4028,6 +4071,8 @@ def analyze_abkant_modbus_live_snapshot(machine_key: str) -> dict | None:
     pieces_label = ocr_snapshot.get("pieces_label") or ""
     produced_pieces = ocr_snapshot.get("produced_pieces")
     total_pieces = ocr_snapshot.get("total_pieces")
+    beam_y1 = ocr_snapshot.get("beam_y1")
+    beam_y2 = ocr_snapshot.get("beam_y2")
     upper_tool = ocr_snapshot.get("upper_tool") or "n/a"
     lower_tool = ocr_snapshot.get("lower_tool") or "n/a"
     setup_signature = ocr_snapshot.get("setup_signature") or ""
@@ -4114,6 +4159,10 @@ def analyze_abkant_modbus_live_snapshot(machine_key: str) -> dict | None:
         "pieces_label": pieces_label or "n/a",
         "produced_pieces": produced_pieces if produced_pieces is not None else 0,
         "total_pieces": total_pieces,
+        "beam_y1": beam_y1,
+        "beam_y2": beam_y2,
+        "beam_y1_label": ocr_snapshot.get("beam_y1_label") or "n/a",
+        "beam_y2_label": ocr_snapshot.get("beam_y2_label") or "n/a",
         "last_valid_pieces_label": ocr_snapshot.get("last_valid_pieces_label") or "",
         "last_valid_produced_pieces": ocr_snapshot.get("last_valid_produced_pieces"),
         "last_valid_total_pieces": ocr_snapshot.get("last_valid_total_pieces"),
@@ -4124,6 +4173,8 @@ def analyze_abkant_modbus_live_snapshot(machine_key: str) -> dict | None:
         "setup_signature": setup_signature or "",
         "setup_changed": bool(ocr_snapshot.get("setup_changed")),
         "setup_screen_detected": bool(ocr_snapshot.get("setup_screen_detected")),
+        "production_screen_detected": bool(ocr_snapshot.get("production_screen_detected")),
+        "beam_moved": bool(ocr_snapshot.get("beam_moved")),
         "last_piece_progress_at": ocr_snapshot.get("last_piece_progress_at") or "",
         "last_piece_progress_age_seconds": ocr_snapshot.get("last_piece_progress_age_seconds"),
         "progress_signature": ocr_snapshot.get("progress_signature") or "",
@@ -8757,6 +8808,9 @@ def build_feed_program_summary(
             "produced_pieces": produced_pieces if produced_pieces is not None else snapshot.get("produced_pieces"),
             "total_pieces": total_pieces,
             "program_status": snapshot.get("program_status") or "Necitit",
+            "beam_y1_label": snapshot.get("beam_y1_label") or "n/a",
+            "beam_y2_label": snapshot.get("beam_y2_label") or "n/a",
+            "beam_moved": bool(snapshot.get("beam_moved")),
             "current_machine_on_seconds": current_machine_on_seconds,
             "current_machine_on_label": format_seconds(current_machine_on_seconds),
             "idle_label": stats.get("idle_label") or "00:00:00",

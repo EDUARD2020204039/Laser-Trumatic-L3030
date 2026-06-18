@@ -1601,6 +1601,8 @@ function renderLiveExtraction(snapshot) {
             { slot: "produced", label: "Piese facute", value: snapshot.produced_pieces ?? 0 },
             { slot: "total", label: "Piese total", value: snapshot.total_pieces ?? "Necunoscut" },
             { slot: "progress", label: "Progres", value: snapshot.pieces_label || "n/a" },
+            { slot: "beam_y1", label: "Beam Y1", value: snapshot.beam_y1_label || "n/a" },
+            { slot: "beam_y2", label: "Beam Y2", value: snapshot.beam_y2_label || "n/a" },
             { slot: "machine_on", label: "Feed OCR activ", value: signals.machine_on ? "DA" : "NU" },
             { slot: "bending", label: "Indoire", value: signals.cutting_active ? "DA" : "NU" },
             { slot: "setup_change", label: "Setup change", value: signals.table_change ? "DA" : "NU" },
@@ -1787,7 +1789,7 @@ function renderFeedProgramSummary(summary) {
                 <article class="feed-program-card">
                     <span>Stari OCR</span>
                     <strong>${summary.cutting_label || "00:00:00"}</strong>
-                    <small>Setup: ${summary.table_change_label || "00:00:00"} | Idle: ${summary.idle_label || "00:00:00"}</small>
+                    <small>Setup: ${summary.table_change_label || "00:00:00"} | Idle: ${summary.idle_label || "00:00:00"} | Beam ${summary.beam_y1_label || "n/a"} / ${summary.beam_y2_label || "n/a"}</small>
                 </article>
             </div>
         `;

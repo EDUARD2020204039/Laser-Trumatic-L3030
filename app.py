@@ -2740,6 +2740,9 @@ def init_db() -> None:
                 machine_label TEXT NOT NULL,
                 selected_program TEXT NOT NULL,
                 operator_name TEXT,
+                pieces_label TEXT,
+                produced_pieces INTEGER,
+                total_pieces INTEGER,
                 records_count INTEGER NOT NULL DEFAULT 0,
                 total_machine_on_seconds INTEGER NOT NULL DEFAULT 0,
                 total_cycle_seconds INTEGER NOT NULL DEFAULT 0,
@@ -2794,6 +2797,12 @@ def init_db() -> None:
         }
         if "ready_at" not in telegram_cycle_queue_columns:
             connection.execute("ALTER TABLE telegram_cycle_report_queue ADD COLUMN ready_at TEXT")
+        if "pieces_label" not in telegram_cycle_queue_columns:
+            connection.execute("ALTER TABLE telegram_cycle_report_queue ADD COLUMN pieces_label TEXT")
+        if "produced_pieces" not in telegram_cycle_queue_columns:
+            connection.execute("ALTER TABLE telegram_cycle_report_queue ADD COLUMN produced_pieces INTEGER")
+        if "total_pieces" not in telegram_cycle_queue_columns:
+            connection.execute("ALTER TABLE telegram_cycle_report_queue ADD COLUMN total_pieces INTEGER")
 
         machine_runtime_columns = {
             row["name"]
@@ -3419,6 +3428,19 @@ def parse_abkant_pieces_text(raw_text: str | None) -> tuple[str, int | None, int
     cleaned = re.sub(r"[^0-9/]", "", cleaned)
     match = re.search(r"(\d*)/(\d*)", cleaned)
     if not match:
+        if cleaned.isdigit():
+            if len(cleaned) >= 3:
+                produced_candidate = parse_optional_int(cleaned[:-2])
+                total_candidate = parse_optional_int(cleaned[-2:])
+                if (
+                    produced_candidate is not None
+                    and total_candidate is not None
+                    and total_candidate > 0
+                    and produced_candidate <= total_candidate
+                ):
+                    return f"{produced_candidate}/{total_candidate}", produced_candidate, total_candidate
+            produced = parse_optional_int(cleaned)
+            return cleaned or "n/a", produced, None
         return cleaned or "n/a", None, None
 
     done_text, total_text = match.groups()
@@ -7440,6 +7462,44 @@ def resolve_completed_cycle_operator(record: dict) -> dict:
     }
 
 
+def resolve_cycle_piece_payload(record: dict | None) -> dict:
+    source = record or {}
+    pieces_label = str(source.get("pieces_label") or source.get("material") or "").strip()
+    produced_pieces = coerce_abkant_piece_count(source.get("produced_pieces"))
+    total_pieces = coerce_abkant_piece_count(source.get("total_pieces"))
+    if (produced_pieces is None or total_pieces is None) and pieces_label and "/" in pieces_label:
+        parsed_label, parsed_produced, parsed_total = parse_abkant_pieces_text(pieces_label)
+        pieces_label = pieces_label or parsed_label
+        if produced_pieces is None:
+            produced_pieces = parsed_produced
+        if total_pieces is None:
+            total_pieces = parsed_total
+    if not pieces_label:
+        if produced_pieces is not None and total_pieces is not None:
+            pieces_label = f"{produced_pieces}/{total_pieces}"
+        elif produced_pieces is not None:
+            pieces_label = str(produced_pieces)
+    return {
+        "pieces_label": pieces_label,
+        "produced_pieces": produced_pieces,
+        "total_pieces": total_pieces,
+    }
+
+
+def format_cycle_piece_line(record: dict | None) -> str:
+    pieces = resolve_cycle_piece_payload(record)
+    pieces_label = pieces["pieces_label"]
+    produced_pieces = pieces["produced_pieces"]
+    total_pieces = pieces["total_pieces"]
+    if produced_pieces is not None and total_pieces is not None:
+        return f"Piese efectuate: {produced_pieces}/{total_pieces}"
+    if produced_pieces is not None:
+        return f"Piese efectuate: {produced_pieces}"
+    if pieces_label:
+        return f"Piese efectuate: {pieces_label}"
+    return ""
+
+
 def find_open_completed_cycle_report_key(machine_group: str, selected_program: str) -> str | None:
     target_group = resolve_dosar_group(selected_program) or normalize_context_token(selected_program)
     with get_sqlite_connection() as connection:
@@ -7482,6 +7542,9 @@ def build_completed_cycle_telegram_message(record: dict) -> str:
         f"Operator: {operator_name}",
         f"Finalizat la: {completed_at_label}",
     ]
+    piece_line = format_cycle_piece_line(record)
+    if piece_line:
+        lines.insert(4, piece_line)
     if records_count > 1:
         lines.insert(4, f"Salvari adunate: {records_count}")
     return "\n".join(lines)
@@ -7498,6 +7561,10 @@ def enqueue_completed_cycle_telegram_report(record: dict) -> None:
     report_key = find_open_completed_cycle_report_key(machine_group, selected_program) or build_completed_cycle_report_key(record)
     resolved_operator = resolve_completed_cycle_operator(record)
     operator_name = resolved_operator["operator_name"]
+    piece_payload = resolve_cycle_piece_payload(record)
+    pieces_label = piece_payload["pieces_label"] or None
+    produced_pieces = piece_payload["produced_pieces"]
+    total_pieces = piece_payload["total_pieces"]
     machine_on_seconds = int(record.get("machine_on_duration_seconds") or record.get("cycle_duration_seconds") or 0)
     cycle_seconds = int(record.get("cycle_duration_seconds") or machine_on_seconds)
     completed_at = record.get("table_change_ended_at") or record.get("created_at") or now_local().isoformat(timespec="seconds")
@@ -7512,6 +7579,9 @@ def enqueue_completed_cycle_telegram_report(record: dict) -> None:
                 machine_label,
                 selected_program,
                 operator_name,
+                pieces_label,
+                produced_pieces,
+                total_pieces,
                 records_count,
                 total_machine_on_seconds,
                 total_cycle_seconds,
@@ -7521,10 +7591,18 @@ def enqueue_completed_cycle_telegram_report(record: dict) -> None:
                 ready_at,
                 sent_at
             )
-            VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, NULL, NULL)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, NULL, NULL)
             ON CONFLICT(report_key) DO UPDATE SET
                 machine_label = excluded.machine_label,
                 selected_program = excluded.selected_program,
+                pieces_label = COALESCE(excluded.pieces_label, telegram_cycle_report_queue.pieces_label),
+                produced_pieces = CASE
+                    WHEN excluded.produced_pieces IS NULL THEN telegram_cycle_report_queue.produced_pieces
+                    WHEN telegram_cycle_report_queue.produced_pieces IS NULL THEN excluded.produced_pieces
+                    WHEN excluded.produced_pieces > telegram_cycle_report_queue.produced_pieces THEN excluded.produced_pieces
+                    ELSE telegram_cycle_report_queue.produced_pieces
+                END,
+                total_pieces = COALESCE(excluded.total_pieces, telegram_cycle_report_queue.total_pieces),
                 operator_name = CASE
                     WHEN telegram_cycle_report_queue.operator_name IS NULL
                          OR telegram_cycle_report_queue.operator_name = ''
@@ -7550,6 +7628,9 @@ def enqueue_completed_cycle_telegram_report(record: dict) -> None:
                 machine_label,
                 selected_program,
                 operator_name,
+                pieces_label,
+                produced_pieces,
+                total_pieces,
                 machine_on_seconds,
                 cycle_seconds,
                 completed_at,
@@ -7589,6 +7670,9 @@ def build_queued_completed_cycle_record(row: sqlite3.Row) -> dict:
         "selected_program": row["selected_program"],
         "operator_name": row["operator_name"] or UNKNOWN_OPERATOR_LABEL,
         "records_count": row["records_count"],
+        "pieces_label": row["pieces_label"],
+        "produced_pieces": row["produced_pieces"],
+        "total_pieces": row["total_pieces"],
         "machine_on_duration_seconds": row["total_machine_on_seconds"],
         "cycle_duration_seconds": row["total_cycle_seconds"],
         "table_change_ended_at": row["last_completed_at"],
@@ -7888,6 +7972,7 @@ def finalize_pending_cycle(machine_key: str, current_snapshot: dict) -> None:
                 "workcenter_id": pending_cycle.get("workcenter_id"),
                 "operator_id": pending_cycle.get("operator_id"),
                 "operator_name": pending_cycle.get("operator_name"),
+                "pieces_label": pending_cycle.get("material") if machine_is_abkant(machine_key) else "",
                 "telegram_selected_program": pending_cycle.get("telegram_selected_program"),
                 "selected_program": pending_cycle.get("telegram_selected_program") or pending_cycle.get("selected_program"),
                 "active_program": pending_cycle.get("active_program"),
@@ -7983,7 +8068,8 @@ def save_cycle_on_program_change(
         and int(cycle_metrics["idle_duration_seconds"] or 0) <= 0
         and int(cycle_metrics["table_change_duration_seconds"] or 0) <= 0
     ):
-        return
+        if machine_key != "abkant1modbus":
+            return
 
     recent_cutoff_iso = datetime.fromtimestamp(change_detected_at.timestamp() - 45).isoformat(timespec="seconds")
     saved_cycle_record = None
@@ -8077,6 +8163,9 @@ def save_cycle_on_program_change(
                 "workcenter_id": machine_profile.get("workcenter_id"),
                 "operator_id": operator.get("employee_id"),
                 "operator_name": operator.get("full_name"),
+                "pieces_label": previous_snapshot.get("pieces_label") or previous_snapshot.get("material"),
+                "produced_pieces": previous_snapshot.get("produced_pieces"),
+                "total_pieces": previous_snapshot.get("total_pieces"),
                 "telegram_selected_program": previous_program,
                 "selected_program": previous_program,
                 "active_program": previous_snapshot.get("active_program") or previous_program,
@@ -8241,6 +8330,9 @@ def save_abkant_ocr_completed_cycle(
                 "workcenter_id": machine_profile.get("workcenter_id"),
                 "operator_id": operator.get("employee_id"),
                 "operator_name": operator.get("full_name"),
+                "pieces_label": current_snapshot.get("pieces_label") or current_snapshot.get("material"),
+                "produced_pieces": current_snapshot.get("produced_pieces"),
+                "total_pieces": current_snapshot.get("total_pieces"),
                 "telegram_selected_program": selected_program,
                 "selected_program": selected_program,
                 "active_program": current_snapshot.get("active_program") or selected_program,
@@ -8525,6 +8617,27 @@ def build_feed_program_summary(
     selected_program = resolve_snapshot_selected_program(snapshot)
     if not selected_program:
         return None
+
+    if machine_key == "abkant1modbus":
+        produced_pieces = coerce_abkant_piece_count(snapshot.get("produced_pieces"))
+        total_pieces = coerce_abkant_piece_count(snapshot.get("total_pieces"))
+        pieces_label = str(snapshot.get("pieces_label") or snapshot.get("material") or "n/a").strip() or "n/a"
+        current_machine_on_seconds = int(stats.get("machine_on_seconds") or 0)
+        return {
+            "summary_type": "abkant",
+            "machine_key": machine_key,
+            "machine_label": resolve_completed_cycle_machine_group(machine_key)[1],
+            "selected_program": selected_program,
+            "pieces_label": pieces_label,
+            "produced_pieces": produced_pieces if produced_pieces is not None else snapshot.get("produced_pieces"),
+            "total_pieces": total_pieces,
+            "program_status": snapshot.get("program_status") or "Necitit",
+            "current_machine_on_seconds": current_machine_on_seconds,
+            "current_machine_on_label": format_seconds(current_machine_on_seconds),
+            "idle_label": stats.get("idle_label") or "00:00:00",
+            "cutting_label": stats.get("cutting_label") or "00:00:00",
+            "table_change_label": stats.get("table_change_label") or "00:00:00",
+        }
 
     machine_group, machine_label = resolve_completed_cycle_machine_group(machine_key)
     queued_row = fetch_open_completed_cycle_report(machine_group, selected_program)
@@ -8874,15 +8987,26 @@ def sync_machine_events_from_live_snapshot(machine_key: str) -> dict | None:
     operator_snapshot = fetch_current_operator(machine_profile["workcenter_id"])
 
     if snapshot.get("available"):
-        note = (
-            f"selected={snapshot.get('selected_program')}; "
-            f"active={snapshot.get('active_program')}; "
-            f"material={snapshot.get('material')}; "
-            f"upper={snapshot.get('upper_tool', 'n/a')}; "
-            f"lower={snapshot.get('lower_tool', 'n/a')}; "
-            f"status={snapshot.get('program_status')}; "
-            f"completion={format_completion_percent(snapshot.get('completion_percent'))}"
+        note_parts = [
+            f"selected={snapshot.get('selected_program')}",
+            f"active={snapshot.get('active_program')}",
+            f"material={snapshot.get('material')}",
+        ]
+        if machine_is_abkant(machine_key):
+            note_parts.extend(
+                [
+                    f"upper={snapshot.get('upper_tool', 'n/a')}",
+                    f"lower={snapshot.get('lower_tool', 'n/a')}",
+                    f"piese={snapshot.get('pieces_label') or snapshot.get('material') or 'n/a'}",
+                ]
+            )
+        note_parts.extend(
+            [
+                f"status={snapshot.get('program_status')}",
+                f"completion={format_completion_percent(snapshot.get('completion_percent'))}",
+            ]
         )
+        note = "; ".join(note_parts)
     else:
         note = f"Auto-stop: snapshot indisponibil. Motiv: {snapshot.get('message') or 'necunoscut'}"
 

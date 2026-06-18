@@ -1598,14 +1598,10 @@ function renderLiveExtraction(snapshot) {
             { slot: "program", label: "Program curent", value: snapshot.active_program || "Necitit" },
             { slot: "upper_tool", label: "Upper", value: snapshot.upper_tool || "n/a" },
             { slot: "lower_tool", label: "Lower", value: snapshot.lower_tool || "n/a" },
-            { slot: "total", label: "Piese de indoit", value: snapshot.total_pieces ?? "Necunoscut" },
-            { slot: "produced", label: "Piese indoite", value: snapshot.produced_pieces ?? 0 },
+            { slot: "produced", label: "Piese facute", value: snapshot.produced_pieces ?? 0 },
+            { slot: "total", label: "Piese total", value: snapshot.total_pieces ?? "Necunoscut" },
             { slot: "progress", label: "Progres", value: snapshot.pieces_label || "n/a" },
-            { slot: "in1", label: "IN1", value: renderModbusInputValue(snapshot.modbus_inputs, "in1") },
-            { slot: "in2", label: "IN2", value: renderModbusInputValue(snapshot.modbus_inputs, "in2") },
-            { slot: "in3", label: "IN3", value: renderModbusInputValue(snapshot.modbus_inputs, "in3") },
-            { slot: "in4", label: "IN4", value: renderModbusInputValue(snapshot.modbus_inputs, "in4") },
-            { slot: "machine_on", label: "Modbus activ", value: signals.machine_on ? "DA" : "NU" },
+            { slot: "machine_on", label: "Feed OCR activ", value: signals.machine_on ? "DA" : "NU" },
             { slot: "bending", label: "Indoire", value: signals.cutting_active ? "DA" : "NU" },
             { slot: "setup_change", label: "Setup change", value: signals.table_change ? "DA" : "NU" },
             { slot: "idle", label: "Idle", value: signals.idle_abort || signals.idle ? "DA" : "NU" },
@@ -1764,6 +1760,37 @@ function renderFeedProgramSummary(summary) {
 
     if (!summary || !summary.selected_program) {
         container.innerHTML = `<p class="empty-state">Nu exista inca un dosar citit din feed.</p>`;
+        return;
+    }
+
+    if (summary.summary_type === "abkant") {
+        const totalPieces = summary.total_pieces !== null && summary.total_pieces !== undefined
+            ? summary.total_pieces
+            : "Necunoscut";
+        container.innerHTML = `
+            <div class="feed-program-summary-grid">
+                <article class="feed-program-card">
+                    <span>Dosar din OCR</span>
+                    <strong>${summary.selected_program}</strong>
+                    <small>Status: ${summary.program_status || "Necitit"}</small>
+                </article>
+                <article class="feed-program-card">
+                    <span>Piese facute</span>
+                    <strong>${summary.produced_pieces ?? 0}</strong>
+                    <small>Progres OCR: ${summary.pieces_label || "n/a"} / total ${totalPieces}</small>
+                </article>
+                <article class="feed-program-card">
+                    <span>Timp pe dosar</span>
+                    <strong>${summary.current_machine_on_label || "00:00:00"}</strong>
+                    <small>Se aduna cat timp feedul OCR ramane pe dosarul curent</small>
+                </article>
+                <article class="feed-program-card">
+                    <span>Stari OCR</span>
+                    <strong>${summary.cutting_label || "00:00:00"}</strong>
+                    <small>Setup: ${summary.table_change_label || "00:00:00"} | Idle: ${summary.idle_label || "00:00:00"}</small>
+                </article>
+            </div>
+        `;
         return;
     }
 

@@ -5700,8 +5700,9 @@ def fetch_operator_workcenter_checkins(
 def summarize_operator_records_for_telegram(records: list[dict]) -> list[dict]:
     operator_map: dict[str, dict] = {}
     for record in records:
-        operator_name = (record.get("operator_name") or UNKNOWN_OPERATOR_LABEL).strip() or UNKNOWN_OPERATOR_LABEL
-        employee_id = str(record.get("operator_id") or "").strip()
+        resolved_operator = resolve_completed_cycle_operator(record)
+        operator_name = (resolved_operator.get("operator_name") or UNKNOWN_OPERATOR_LABEL).strip() or UNKNOWN_OPERATOR_LABEL
+        employee_id = str(resolved_operator.get("operator_id") or record.get("operator_id") or "").strip()
         operator_id = employee_id or f"name:{operator_name}"
         operator_entry = operator_map.setdefault(
             operator_id,
@@ -5957,12 +5958,63 @@ def build_telegram_laser_period_report(period_key: str = "day", machine_keys: li
     )
 
 
-def build_telegram_abkant_period_report(period_key: str = "day") -> str:
-    return build_telegram_machine_period_report(
-        "Raport ABKANT1MODBUS",
-        period_key,
-        machine_keys=["abkant1modbus"],
+def build_telegram_abkant_live_period_report(period_key: str = "day") -> str:
+    machine_key = "abkant1modbus"
+    period_title, window_start, window_end = resolve_telegram_period_window(period_key)
+    try:
+        live_snapshot = sync_machine_events_from_live_snapshot(machine_key) or get_machine_runtime(machine_key).get("last_snapshot") or {}
+    except Exception as exc:
+        live_snapshot = {"available": False, "message": str(exc)}
+    window_end = now_local()
+
+    machine_on_seconds = calculate_active_seconds(machine_key, "machine_on", window_start, window_end)
+    bending_seconds = calculate_active_seconds(machine_key, "cutting_active", window_start, window_end)
+    setup_seconds = calculate_active_seconds(machine_key, "table_change", window_start, window_end)
+    idle_seconds = calculate_active_seconds(machine_key, "idle_abort", window_start, window_end)
+    if machine_on_seconds < bending_seconds + setup_seconds + idle_seconds:
+        machine_on_seconds = bending_seconds + setup_seconds + idle_seconds
+    efficiency_percent = calculate_runtime_efficiency_percent(
+        machine_on_seconds,
+        bending_seconds,
+        setup_seconds,
     )
+
+    records = fetch_saved_cycles_between_for_machines(window_start, window_end, [machine_key])
+    operator = resolve_completed_cycle_operator({"machine_key": machine_key, "operator_name": None})
+    selected_program = resolve_snapshot_selected_program(live_snapshot) or normalize_context_token(live_snapshot.get("active_program")) or "Necitit"
+    pieces_label = str(live_snapshot.get("pieces_label") or live_snapshot.get("material") or "n/a").strip() or "n/a"
+    status_label = str(live_snapshot.get("program_status") or "Necunoscut").strip() or "Necunoscut"
+    source_label = str(live_snapshot.get("source") or "necunoscut").strip() or "necunoscut"
+    message = str(live_snapshot.get("message") or "").strip()
+
+    lines = [
+        "Raport ABKANT1MODBUS",
+        f"Interval: {window_start.strftime('%d.%m.%Y %H:%M')} - {window_end.strftime('%d.%m.%Y %H:%M')}",
+        "",
+        period_title,
+        f"Program curent: {selected_program}",
+        f"Piese OCR: {pieces_label}",
+        f"Status OCR: {status_label}",
+        f"Operator: {operator['operator_name']}",
+        f"Sursa: {source_label}",
+        "",
+        "Timpi OCR:",
+        f"Randament: {efficiency_percent}%",
+        f"Indoire: {format_seconds(bending_seconds)}",
+        f"Setup change: {format_seconds(setup_seconds)}",
+        f"Idle: {format_seconds(idle_seconds)}",
+        f"ON: {format_seconds(machine_on_seconds)}",
+        f"Cicluri finalizate salvate: {len(records)}",
+    ]
+    if message:
+        lines.extend(["", f"Diagnostic: {message[:700]}"])
+    if records:
+        lines.extend(["", build_telegram_period_section("Cicluri finalizate", records)])
+    return "\n".join(lines)
+
+
+def build_telegram_abkant_period_report(period_key: str = "day") -> str:
+    return build_telegram_abkant_live_period_report(period_key)
 
 
 def build_telegram_laser_report(include_week: bool = True, machine_keys: list[str] | None = None) -> str:
@@ -6313,7 +6365,7 @@ def build_telegram_today_dosare_report(machine_keys: list[str] | None = None) ->
         entry["table_change_seconds"] += table_change_seconds
         entry["table_change_allowed_seconds"] += min(table_change_seconds, TELEGRAM_TABLE_CHANGE_FREE_SECONDS)
         entry["machines"].add(record.get("machine_label") or record.get("machine_key") or "")
-        entry["operators"].add((record.get("operator_name") or UNKNOWN_OPERATOR_LABEL).strip() or UNKNOWN_OPERATOR_LABEL)
+        entry["operators"].add(resolve_completed_cycle_operator(record)["operator_name"])
         if program_value and program_value != "Necitit":
             entry["programs"].add(program_value)
         record_start, record_end = get_record_timestamp_window(record)

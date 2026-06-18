@@ -7406,6 +7406,43 @@ def build_completed_cycle_report_key(record: dict) -> str:
     return f"completed-cycle:{machine_group}:{selected_program}:{completed_at.strftime('%Y%m%d%H%M%S')}"
 
 
+def is_missing_operator_name(operator_name: str | None) -> bool:
+    value = str(operator_name or "").strip()
+    return not value or value == UNKNOWN_OPERATOR_LABEL
+
+
+def resolve_completed_cycle_operator(record: dict) -> dict:
+    operator_name = str(record.get("operator_name") or "").strip()
+    operator_id = str(record.get("operator_id") or "").strip()
+    if not is_missing_operator_name(operator_name):
+        return {
+            "operator_id": operator_id,
+            "operator_name": operator_name,
+        }
+
+    workcenter_id = parse_optional_int(record.get("workcenter_id"))
+    if workcenter_id is None:
+        try:
+            workcenter_id = get_machine_profile(record.get("machine_key") or DEFAULT_MACHINE_KEY).get("workcenter_id")
+        except Exception:
+            workcenter_id = None
+
+    if workcenter_id is not None:
+        operator_snapshot = fetch_current_operator(workcenter_id)
+        operator = operator_snapshot.get("primary_operator") or {}
+        resolved_name = str(operator.get("full_name") or "").strip()
+        if resolved_name:
+            return {
+                "operator_id": str(operator.get("employee_id") or operator_id).strip(),
+                "operator_name": resolved_name,
+            }
+
+    return {
+        "operator_id": operator_id,
+        "operator_name": UNKNOWN_OPERATOR_LABEL,
+    }
+
+
 def find_open_completed_cycle_report_key(machine_group: str, selected_program: str) -> str | None:
     target_group = resolve_dosar_group(selected_program) or normalize_context_token(selected_program)
     with get_sqlite_connection() as connection:
@@ -7428,7 +7465,7 @@ def find_open_completed_cycle_report_key(machine_group: str, selected_program: s
 def build_completed_cycle_telegram_message(record: dict) -> str:
     machine_label = record.get("machine_label") or resolve_completed_cycle_machine_group(record.get("machine_key"))[1]
     dosar_name = resolve_completed_cycle_program_group(record) or resolve_completed_cycle_selected_program(record) or normalize_context_token(record.get("selected_program")) or "Necitit"
-    operator_name = record.get("operator_name") or UNKNOWN_OPERATOR_LABEL
+    operator_name = resolve_completed_cycle_operator(record)["operator_name"]
     duration_seconds = int(record.get("machine_on_duration_seconds") or record.get("cycle_duration_seconds") or 0)
     cycle_seconds = int(record.get("cycle_duration_seconds") or duration_seconds)
     efficiency_percent = calculate_runtime_efficiency_percent(duration_seconds, cycle_seconds, 0)
@@ -7462,7 +7499,8 @@ def enqueue_completed_cycle_telegram_report(record: dict) -> None:
 
     machine_group, machine_label = resolve_completed_cycle_machine_group(record.get("machine_key"))
     report_key = find_open_completed_cycle_report_key(machine_group, selected_program) or build_completed_cycle_report_key(record)
-    operator_name = record.get("operator_name") or UNKNOWN_OPERATOR_LABEL
+    resolved_operator = resolve_completed_cycle_operator(record)
+    operator_name = resolved_operator["operator_name"]
     machine_on_seconds = int(record.get("machine_on_duration_seconds") or record.get("cycle_duration_seconds") or 0)
     cycle_seconds = int(record.get("cycle_duration_seconds") or machine_on_seconds)
     completed_at = record.get("table_change_ended_at") or record.get("created_at") or now_local().isoformat(timespec="seconds")
@@ -7850,6 +7888,8 @@ def finalize_pending_cycle(machine_key: str, current_snapshot: dict) -> None:
             connection.commit()
             saved_cycle_record = {
                 "machine_key": machine_key,
+                "workcenter_id": pending_cycle.get("workcenter_id"),
+                "operator_id": pending_cycle.get("operator_id"),
                 "operator_name": pending_cycle.get("operator_name"),
                 "telegram_selected_program": pending_cycle.get("telegram_selected_program"),
                 "selected_program": pending_cycle.get("telegram_selected_program") or pending_cycle.get("selected_program"),
@@ -8037,6 +8077,8 @@ def save_cycle_on_program_change(
             connection.commit()
             saved_cycle_record = {
                 "machine_key": machine_key,
+                "workcenter_id": machine_profile.get("workcenter_id"),
+                "operator_id": operator.get("employee_id"),
                 "operator_name": operator.get("full_name"),
                 "telegram_selected_program": previous_program,
                 "selected_program": previous_program,
@@ -8199,6 +8241,8 @@ def save_abkant_ocr_completed_cycle(
             connection.commit()
             saved_cycle_record = {
                 "machine_key": machine_key,
+                "workcenter_id": machine_profile.get("workcenter_id"),
+                "operator_id": operator.get("employee_id"),
                 "operator_name": operator.get("full_name"),
                 "telegram_selected_program": selected_program,
                 "selected_program": selected_program,

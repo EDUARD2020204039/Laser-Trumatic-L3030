@@ -129,7 +129,7 @@ DEFAULT_ODBC_DRIVER = (
 APP_TITLE = "HABA Production Monitor"
 DASHBOARD_TITLE = "Laser TruMatic L3030"
 DEFAULT_MACHINE_KEY = "laser1modbus"
-HIDDEN_MACHINE_KEYS = {"laser1", "laser2"}
+HIDDEN_MACHINE_KEYS = {"laser1", "laser2", "abkant"}
 WORKSTATION_API_DEFINITIONS = {
     "laser1modbus": {
         "workstation_id": "laser_ws_1",
@@ -863,8 +863,8 @@ ABKANT_TOOL_WHITELIST = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/-_ "
 ABKANT_PIECES_WHITELIST = "0123456789/ "
 
 ABKANT_MACHINE_KEYS = {"abkant", "abkant1modbus"}
-MODBUS_MACHINE_KEYS = {"laser1modbus", "laser2modbus", "abkant1modbus"}
-MODBUS_MACHINE_ORDER = ("laser1modbus", "laser2modbus", "abkant1modbus")
+MODBUS_MACHINE_KEYS = {"laser1modbus", "laser2modbus"}
+MODBUS_MACHINE_ORDER = ("laser1modbus", "laser2modbus")
 MODBUS_TRANSPORT_CHOICES = ("tcp", "rtu")
 MODBUS_SIGNAL_TARGET_CHOICES = (
     "unused",
@@ -985,6 +985,8 @@ def machine_is_abkant(machine_key: str | None) -> bool:
 
 
 def machine_supports_idle_signal(machine_key: str) -> bool:
+    if ensure_machine_key(machine_key) == "abkant1modbus":
+        return True
     if not machine_uses_modbus(machine_key):
         return False
     config = get_machine_modbus_config(machine_key)
@@ -3935,47 +3937,6 @@ def analyze_laser_modbus_live_snapshot(machine_key: str) -> dict | None:
 
 
 def analyze_abkant_modbus_live_snapshot(machine_key: str) -> dict | None:
-    config = get_machine_modbus_config(machine_key)
-    raw_inputs: list[dict] = []
-    modbus_error = ""
-    modbus_connected = False
-    try:
-        if config.get("enabled"):
-            if config.get("transport") == "rtu":
-                inputs = read_modbus_rtu_bits(
-                    serial_port=config["serial_port"],
-                    baudrate=config["serial_baudrate"],
-                    unit_id=config["unit_id"],
-                    start_address=config["start_address"],
-                    count=4,
-                    bit_source=config["bit_source"],
-                    timeout_seconds=config["poll_timeout_seconds"],
-                    parity=config["serial_parity"],
-                    stopbits=config["serial_stopbits"],
-                )
-            else:
-                inputs = read_modbus_tcp_bits(
-                    host=config["host"],
-                    port=config["port"],
-                    unit_id=config["unit_id"],
-                    start_address=config["start_address"],
-                    count=4,
-                    bit_source=config["bit_source"],
-                    timeout_seconds=config["poll_timeout_seconds"],
-                )
-            _, raw_inputs = build_modbus_signal_state(config, inputs)
-            modbus_connected = True
-        else:
-            transport = config.get("transport", "tcp")
-            modbus_error = (
-                "Modbus RTU neconfigurat."
-                if transport == "rtu"
-                else "Modbus TCP neconfigurat."
-            )
-    except Exception as exc:
-        transport_label = "Modbus RTU" if config.get("transport") == "rtu" else "Modbus TCP"
-        modbus_error = f"Nu pot citi {transport_label} de la {config['endpoint']}. Motiv: {exc}"
-
     feed_url = resolve_machine_camera_feed_url(machine_key)
     ocr_snapshot = get_abkant_ocr_snapshot(machine_key)
     if not ocr_snapshot.get("available"):
@@ -3983,15 +3944,12 @@ def analyze_abkant_modbus_live_snapshot(machine_key: str) -> dict | None:
             "available": False,
             "connected": False,
             "source": "abkant-ocr",
-            "endpoint": config["endpoint"],
+            "endpoint": feed_url,
             "machine_mode": machine_key,
             "feed_endpoint": feed_url,
             "ocr_endpoint": ocr_snapshot.get("endpoint") or feed_url,
             "ocr_available": False,
             "ocr_message": ocr_snapshot.get("message") or "",
-            "modbus_endpoint": config["endpoint"],
-            "modbus_connected": modbus_connected,
-            "modbus_inputs": raw_inputs,
             "derived_signals": {
                 "machine_on": False,
                 "cutting_active": False,
@@ -3999,13 +3957,9 @@ def analyze_abkant_modbus_live_snapshot(machine_key: str) -> dict | None:
                 "idle_abort": False,
                 "idle": False,
             },
-            "message": (
-                f"OCR Abkant indisponibil: {ocr_snapshot.get('message') or 'necunoscut'}. "
-                f"{modbus_error or 'Modbus citit doar diagnostic pentru Abkant.'}"
-            ).strip(),
+            "message": f"OCR Abkant indisponibil: {ocr_snapshot.get('message') or 'necunoscut'}.",
         }
 
-    active_inputs = ", ".join(input_item["label"] for input_item in raw_inputs if input_item["active"]) or "niciunul"
     selected_program = normalize_context_token(ocr_snapshot.get("selected_program"))
     active_program = normalize_context_token(ocr_snapshot.get("active_program"))
     pieces_label = ocr_snapshot.get("pieces_label") or ""
@@ -4053,15 +4007,10 @@ def analyze_abkant_modbus_live_snapshot(machine_key: str) -> dict | None:
     )
 
     ocr_message = ocr_snapshot.get("message") or "OCR Abkant indisponibil."
-    modbus_status = (
-        f"Modbus diagnostic conectat la {config['endpoint']}; IN activ: {active_inputs}."
-        if modbus_connected
-        else (modbus_error or "Modbus diagnostic indisponibil.")
-    )
     return {
         "available": True,
         "connected": True,
-        "source": "abkant-ocr+modbus-diagnostic",
+        "source": "abkant-ocr",
         "captured_at": now_local().isoformat(timespec="seconds"),
         "machine_mode": machine_key,
         "selected_program": selected_program or "Necitit",
@@ -4081,20 +4030,16 @@ def analyze_abkant_modbus_live_snapshot(machine_key: str) -> dict | None:
         "last_piece_progress_age_seconds": ocr_snapshot.get("last_piece_progress_age_seconds"),
         "progress_signature": ocr_snapshot.get("progress_signature") or "",
         "counter_reset": bool(ocr_snapshot.get("counter_reset")),
-        "endpoint": config["endpoint"],
-        "modbus_endpoint": config["endpoint"],
-        "modbus_connected": modbus_connected,
-        "modbus_error": modbus_error,
+        "endpoint": feed_url,
         "feed_endpoint": feed_url,
         "ocr_endpoint": ocr_snapshot.get("endpoint") or feed_url,
         "ocr_available": True,
         "ocr_message": ocr_message,
-        "modbus_inputs": raw_inputs,
         "derived_signals": derived_signals,
         "message": (
             f"ABKANT1MODBUS citeste starea de indoire/idle/setup din OCR pe feedul {feed_url or 'neconfigurat'}. "
             f"Indoire ramane activa {format_seconds(ABKANT_OCR_BENDING_GRACE_SECONDS)} dupa fiecare crestere de piese. "
-            f"{modbus_status} {ocr_message}"
+            f"{ocr_message}"
         ),
     }
 
@@ -8339,7 +8284,7 @@ def fetch_current_signals(machine_key: str) -> dict[str, dict]:
                 "button_off_label": meta.get("button_off_label"),
                 "metric_label": meta.get("metric_label", meta["label"]),
                 "report_label": meta.get("report_label", meta["label"]),
-                "visible": signal_name != "idle_abort" or machine_uses_modbus(machine_key),
+                "visible": signal_name != "idle_abort" or machine_uses_modbus(machine_key) or machine_key == "abkant1modbus",
             }
     return current_signals
 
@@ -8891,7 +8836,7 @@ def sync_machine_events_from_live_snapshot(machine_key: str) -> dict | None:
         return snapshot
 
     if not snapshot.get("available"):
-        if machine_uses_modbus(machine_key):
+        if machine_uses_modbus(machine_key) or machine_key == "abkant1modbus":
             snapshot = {
                 **snapshot,
                 "derived_signals": {signal_name: False for signal_name in SIGNAL_DEFINITIONS},
@@ -9186,9 +9131,9 @@ def collect_live_machine_context(machine_key: str = DEFAULT_MACHINE_KEY) -> dict
             or snapshot_is_stale(live_extraction)
             or snapshot_differs_from_current_signals(live_extraction, current_signals)
         )
-        # Pentru utilajele Modbus fortam fallback-ul in request cand snapshotul lipseste/stale,
+        # Pentru utilajele live fortam fallback-ul in request cand snapshotul lipseste/stale,
         # ca sa nu depindem exclusiv de thread-ul de background (care poate lipsi in unele deployment-uri).
-        should_sync_in_request = REQUEST_LIVE_SYNC_ENABLED or machine_uses_modbus(machine_key)
+        should_sync_in_request = REQUEST_LIVE_SYNC_ENABLED or machine_uses_modbus(machine_key) or machine_key == "abkant1modbus"
         if needs_live_refresh and should_sync_in_request:
             live_extraction = sync_machine_events_from_live_snapshot(machine_key)
             current_signals = fetch_current_signals(machine_key)

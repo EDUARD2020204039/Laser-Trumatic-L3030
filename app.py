@@ -8,6 +8,7 @@ import socket
 import sqlite3
 import threading
 import time as time_module
+import unicodedata
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -152,6 +153,7 @@ REQUEST_LIVE_SYNC_ENABLED = os.getenv("REQUEST_LIVE_SYNC_ENABLED", "0") == "1"
 SAVED_RECORDS_PROMETHEUS_ENABLED = os.getenv("SAVED_RECORDS_PROMETHEUS_ENABLED", "0") == "1"
 SNAPSHOT_FRESHNESS_SECONDS = max(int(os.getenv("SNAPSHOT_FRESHNESS_SECONDS", "3")), 1)
 ABKANT_IDLE_STAGNATION_SECONDS = max(int(os.getenv("ABKANT_IDLE_STAGNATION_SECONDS", "600")), 60)
+ABKANT_OCR_BENDING_GRACE_SECONDS = max(int(os.getenv("ABKANT_OCR_BENDING_GRACE_SECONDS", "180")), 30)
 ABKANT_FEED_STALE_SECONDS = max(int(os.getenv("ABKANT_FEED_STALE_SECONDS", "120")), 15)
 MODBUS_TCP_RETRY_ATTEMPTS = max(int(os.getenv("MODBUS_TCP_RETRY_ATTEMPTS", "3")), 1)
 try:
@@ -215,6 +217,15 @@ TELEGRAM_COMPLETED_CYCLE_AGGREGATION_SECONDS = max(
     5,
 )
 UNKNOWN_OPERATOR_LABEL = "Fara operator la salvare"
+UNVALIDATED_OPERATOR_SUFFIX = "(nevalidat)"
+COMPANY_ATTENDANCE_FALLBACK_OPERATOR_NAMES = tuple(
+    item.strip()
+    for item in re.split(
+        r"[;|]+",
+        os.getenv("COMPANY_ATTENDANCE_FALLBACK_OPERATOR_NAMES", "TANASOIU Ionut;NICOLA Vasile Dorel") or "",
+    )
+    if item.strip()
+)
 SAVED_CYCLE_INSERT_PLACEHOLDERS = ", ".join(["?"] * 25)
 _operator_snapshot_cache: dict[int, dict] = {}
 _work_interval_cache: dict[tuple[int, str, str], dict] = {}
@@ -680,16 +691,16 @@ MACHINE_SIGNAL_OVERRIDES = {
     },
     "abkant1modbus": {
         "machine_on": {
-            "label": "Modbus activ",
-            "description": "Abkantul are cel putin un semnal Modbus activ sau bitul Machine ON este activ.",
-            "button_on_label": "Marcheaza Modbus inactiv",
-            "button_off_label": "Marcheaza Modbus activ",
-            "metric_label": "Modbus activ",
-            "report_label": "Modbus activ",
+            "label": "Feed OCR activ",
+            "description": "Feedul OCR Abkant raspunde si afiseaza program, piese sau setup.",
+            "button_on_label": "Marcheaza feed inactiv",
+            "button_off_label": "Marcheaza feed activ",
+            "metric_label": "Feed OCR activ",
+            "report_label": "Feed OCR activ",
         },
         "cutting_active": {
             "label": "Indoire",
-            "description": "Bitul Modbus mapat pe indoire este activ.",
+            "description": "OCR a detectat crestere de piese in ultimele 3 minute.",
             "button_on_label": "Opreste indoirea",
             "button_off_label": "Porneste indoirea",
             "metric_label": "Indoire",
@@ -697,7 +708,7 @@ MACHINE_SIGNAL_OVERRIDES = {
         },
         "table_change": {
             "label": "Setup change",
-            "description": "Bitul Modbus mapat pe schimbare setup este activ.",
+            "description": "OCR a detectat schimbare de Upper/Lower sau reset de piese.",
             "button_on_label": "Opreste schimbarea",
             "button_off_label": "Porneste schimbarea",
             "metric_label": "Setup change",
@@ -705,7 +716,7 @@ MACHINE_SIGNAL_OVERRIDES = {
         },
         "idle_abort": {
             "label": "Idle",
-            "description": "Bitul Modbus mapat pe idle este activ.",
+            "description": "Feedul este activ, dar OCR nu a mai vazut progres de indoire in fereastra configurata.",
             "button_on_label": "Opreste idle",
             "button_off_label": "Porneste idle",
             "metric_label": "Idle",
@@ -811,24 +822,24 @@ MACHINE_STATE_OVERRIDES = {
     },
     "abkant1modbus": {
         "off": {
-            "label": "Modbus indisponibil",
-            "description": "Dashboardul nu poate citi inca bitii Modbus de la Abkant.",
+            "label": "Feed OCR indisponibil",
+            "description": "Dashboardul nu poate citi feedul OCR Abkant.",
         },
         "ready": {
             "label": "Pregatit",
-            "description": "Abkantul este activ in Modbus, dar nu indoaie si nu schimba setup acum.",
+            "description": "Feedul OCR este activ, dar nu exista progres de indoire sau setup change acum.",
         },
         "idle": {
             "label": "Idle",
-            "description": "Bitul dedicat de idle este activ in Modbus.",
+            "description": "Feedul OCR este activ, dar progresul pieselor nu s-a modificat in ultimele 3 minute.",
         },
         "cutting": {
             "label": "In indoire",
-            "description": "Bitul de indoire este activ in Modbus.",
+            "description": "OCR a detectat crestere recenta de piese.",
         },
         "table_change": {
             "label": "Setup change",
-            "description": "Bitul de schimbare setup este activ in Modbus.",
+            "description": "OCR a detectat schimbare de setup sau reset de piese.",
         },
     }
 }
@@ -3478,6 +3489,9 @@ def get_abkant_ocr_snapshot(machine_key: str) -> dict:
 
     program = normalize_abkant_program_text(program_text)
     pieces_label, produced_pieces, total_pieces = parse_abkant_pieces_text(pieces_text)
+    completion_percent = None
+    if produced_pieces is not None and total_pieces is not None and total_pieces > 0:
+        completion_percent = coerce_completion_percent(round((produced_pieces / total_pieces) * 100, 1))
     setup_signature = build_abkant_tool_signature_from_values(upper_tool, lower_tool)
     screen_mode_ok = "ctua" in (actual_text or "").lower()
 
@@ -3494,6 +3508,8 @@ def get_abkant_ocr_snapshot(machine_key: str) -> dict:
         "pieces_label": pieces_label or "n/a",
         "produced_pieces": produced_pieces if produced_pieces is not None else 0,
         "total_pieces": total_pieces,
+        "completion_percent": completion_percent,
+        "completion_label": format_completion_percent(completion_percent),
         "upper_tool": upper_tool or "n/a",
         "lower_tool": lower_tool or "n/a",
         "setup_signature": setup_signature,
@@ -3544,6 +3560,165 @@ def build_modbus_grace_snapshot(machine_key: str, error_message: str) -> dict | 
         f"ca sa evit reseturile false la intreruperi scurte."
     )
     return snapshot
+
+
+def coerce_abkant_piece_count(value) -> int | None:
+    try:
+        return parse_optional_int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def abkant_snapshot_has_valid_counter(snapshot: dict | None) -> bool:
+    if not snapshot:
+        return False
+    produced = coerce_abkant_piece_count(snapshot.get("produced_pieces"))
+    total = coerce_abkant_piece_count(snapshot.get("total_pieces"))
+    return produced is not None and total is not None and total > 0
+
+
+def abkant_snapshot_is_completed(snapshot: dict | None) -> bool:
+    if not abkant_snapshot_has_valid_counter(snapshot):
+        return False
+    produced = coerce_abkant_piece_count(snapshot.get("produced_pieces"))
+    total = coerce_abkant_piece_count(snapshot.get("total_pieces"))
+    return produced is not None and total is not None and produced >= total
+
+
+def get_abkant_progress_signature(snapshot: dict | None) -> str:
+    if not abkant_snapshot_has_valid_counter(snapshot):
+        return ""
+    program = resolve_snapshot_selected_program(snapshot) or normalize_context_token((snapshot or {}).get("active_program"))
+    produced = coerce_abkant_piece_count((snapshot or {}).get("produced_pieces"))
+    total = coerce_abkant_piece_count((snapshot or {}).get("total_pieces"))
+    return f"{program}:{produced}/{total}"
+
+
+def get_abkant_cycle_identity(snapshot: dict | None) -> str:
+    if not snapshot:
+        return ""
+    program = resolve_snapshot_selected_program(snapshot) or normalize_context_token(snapshot.get("active_program"))
+    total = coerce_abkant_piece_count(snapshot.get("total_pieces"))
+    signature = resolve_abkant_tool_signature(snapshot)
+    return f"{program}:{total if total is not None else 'n/a'}:{signature}"
+
+
+def parse_optional_snapshot_timestamp(snapshot: dict | None, field_name: str) -> datetime | None:
+    value = str((snapshot or {}).get(field_name) or "").strip()
+    if not value:
+        return None
+    try:
+        return parse_timestamp(value)
+    except Exception:
+        return None
+
+
+def derive_abkant_ocr_signal_state(
+    machine_key: str,
+    ocr_snapshot: dict,
+    previous_snapshot: dict | None,
+    current_signals: dict[str, dict],
+) -> dict:
+    current_time = now_local()
+    if not ocr_snapshot.get("available"):
+        return {
+            "machine_on": False,
+            "cutting_active": False,
+            "table_change": False,
+            "idle_abort": False,
+            "idle": False,
+        }
+
+    active_program = normalize_context_token(ocr_snapshot.get("active_program"))
+    selected_program = normalize_context_token(ocr_snapshot.get("selected_program"))
+    setup_signature = resolve_abkant_tool_signature(ocr_snapshot)
+    produced = coerce_abkant_piece_count(ocr_snapshot.get("produced_pieces"))
+    total = coerce_abkant_piece_count(ocr_snapshot.get("total_pieces"))
+    has_counter = produced is not None and total is not None and total > 0
+    machine_on = bool(active_program or selected_program or setup_signature or has_counter)
+
+    previous_identity = get_abkant_cycle_identity(previous_snapshot)
+    current_identity = get_abkant_cycle_identity(ocr_snapshot)
+    same_cycle = bool(previous_identity and current_identity and previous_identity == current_identity)
+    previous_produced = coerce_abkant_piece_count((previous_snapshot or {}).get("produced_pieces"))
+    previous_total = coerce_abkant_piece_count((previous_snapshot or {}).get("total_pieces"))
+    progress_increased = bool(
+        same_cycle
+        and has_counter
+        and previous_produced is not None
+        and previous_total == total
+        and produced is not None
+        and produced > previous_produced
+    )
+    counter_reset = bool(
+        previous_produced is not None
+        and produced is not None
+        and produced < previous_produced
+    )
+
+    last_progress_at = None
+    if progress_increased:
+        last_progress_at = current_time
+    elif same_cycle:
+        last_progress_at = parse_optional_snapshot_timestamp(previous_snapshot, "last_piece_progress_at")
+
+    if last_progress_at is None and has_counter and produced and not abkant_snapshot_is_completed(ocr_snapshot):
+        last_progress_at = current_time
+
+    if last_progress_at is None and current_signals.get("cutting_active", {}).get("active"):
+        try:
+            last_progress_at = parse_timestamp(current_signals["cutting_active"]["changed_at"])
+        except Exception:
+            last_progress_at = None
+
+    last_progress_age_seconds = (
+        max(int((current_time - last_progress_at).total_seconds()), 0)
+        if last_progress_at
+        else None
+    )
+    bending_active = bool(
+        machine_on
+        and has_counter
+        and last_progress_age_seconds is not None
+        and last_progress_age_seconds <= ABKANT_OCR_BENDING_GRACE_SECONDS
+    )
+
+    previous_signature = resolve_abkant_tool_signature(previous_snapshot)
+    tool_changed = bool(previous_signature and setup_signature and previous_signature != setup_signature)
+    old_setup_change = bool(current_signals.get("table_change", {}).get("active"))
+    setup_change = bool(
+        machine_on
+        and not bending_active
+        and (
+            tool_changed
+            or counter_reset
+            or (old_setup_change and not abkant_snapshot_is_completed(ocr_snapshot))
+        )
+    )
+    idle = bool(machine_on and not bending_active and not setup_change)
+
+    ocr_snapshot["last_piece_progress_at"] = last_progress_at.isoformat(timespec="seconds") if last_progress_at else ""
+    ocr_snapshot["last_piece_progress_age_seconds"] = last_progress_age_seconds
+    ocr_snapshot["progress_signature"] = get_abkant_progress_signature(ocr_snapshot)
+    ocr_snapshot["setup_changed"] = tool_changed
+    ocr_snapshot["counter_reset"] = counter_reset
+
+    if setup_change:
+        ocr_snapshot["program_status"] = "Setup change"
+    elif bending_active:
+        ocr_snapshot["program_status"] = "Indoire activa"
+    elif idle:
+        ocr_snapshot["program_status"] = "Idle"
+    elif machine_on:
+        ocr_snapshot["program_status"] = "Pregatit"
+
+    return {
+        "machine_on": machine_on,
+        "cutting_active": bending_active,
+        "table_change": setup_change,
+        "idle_abort": idle,
+        "idle": idle,
+    }
 
 
 def analyze_laser_modbus_live_snapshot(machine_key: str) -> dict | None:
@@ -3761,122 +3936,98 @@ def analyze_laser_modbus_live_snapshot(machine_key: str) -> dict | None:
 
 def analyze_abkant_modbus_live_snapshot(machine_key: str) -> dict | None:
     config = get_machine_modbus_config(machine_key)
-    if not config.get("enabled"):
-        transport = config.get("transport", "tcp")
-        transport_hint = (
-            "Configureaza portul serial, baud rate-ul si maparea IN1..IN4 pentru Modbus RTU."
-            if transport == "rtu"
-            else "Configureaza hostul, portul si maparea IN1..IN4 pentru Modbus TCP."
-        )
-        return {
-            "available": False,
-            "connected": False,
-            "source": "modbus",
-            "endpoint": "",
-            "machine_mode": machine_key,
-            "message": transport_hint,
-        }
-
+    raw_inputs: list[dict] = []
+    modbus_error = ""
+    modbus_connected = False
     try:
-        if config.get("transport") == "rtu":
-            inputs = read_modbus_rtu_bits(
-                serial_port=config["serial_port"],
-                baudrate=config["serial_baudrate"],
-                unit_id=config["unit_id"],
-                start_address=config["start_address"],
-                count=4,
-                bit_source=config["bit_source"],
-                timeout_seconds=config["poll_timeout_seconds"],
-                parity=config["serial_parity"],
-                stopbits=config["serial_stopbits"],
-            )
+        if config.get("enabled"):
+            if config.get("transport") == "rtu":
+                inputs = read_modbus_rtu_bits(
+                    serial_port=config["serial_port"],
+                    baudrate=config["serial_baudrate"],
+                    unit_id=config["unit_id"],
+                    start_address=config["start_address"],
+                    count=4,
+                    bit_source=config["bit_source"],
+                    timeout_seconds=config["poll_timeout_seconds"],
+                    parity=config["serial_parity"],
+                    stopbits=config["serial_stopbits"],
+                )
+            else:
+                inputs = read_modbus_tcp_bits(
+                    host=config["host"],
+                    port=config["port"],
+                    unit_id=config["unit_id"],
+                    start_address=config["start_address"],
+                    count=4,
+                    bit_source=config["bit_source"],
+                    timeout_seconds=config["poll_timeout_seconds"],
+                )
+            _, raw_inputs = build_modbus_signal_state(config, inputs)
+            modbus_connected = True
         else:
-            inputs = read_modbus_tcp_bits(
-                host=config["host"],
-                port=config["port"],
-                unit_id=config["unit_id"],
-                start_address=config["start_address"],
-                count=4,
-                bit_source=config["bit_source"],
-                timeout_seconds=config["poll_timeout_seconds"],
+            transport = config.get("transport", "tcp")
+            modbus_error = (
+                "Modbus RTU neconfigurat."
+                if transport == "rtu"
+                else "Modbus TCP neconfigurat."
             )
     except Exception as exc:
         transport_label = "Modbus RTU" if config.get("transport") == "rtu" else "Modbus TCP"
-        error_message = f"Nu pot citi {transport_label} de la {config['endpoint']}. Motiv: {exc}"
-        ocr_snapshot = get_abkant_ocr_snapshot(machine_key)
-        if ocr_snapshot.get("available"):
-            return {
-                **ocr_snapshot,
-                "available": True,
-                "connected": False,
-                "source": "abkant-ocr+modbus-error",
-                "machine_mode": machine_key,
-                "program_status": "OCR activ / Modbus indisponibil",
-                "endpoint": config["endpoint"],
-                "modbus_endpoint": config["endpoint"],
-                "ocr_endpoint": ocr_snapshot.get("endpoint") or resolve_machine_camera_feed_url(machine_key),
-                "ocr_available": True,
-                "ocr_message": ocr_snapshot.get("message") or "",
-                "modbus_inputs": [],
-                "derived_signals": {
-                    "machine_on": False,
-                    "cutting_active": False,
-                    "table_change": False,
-                    "idle_abort": False,
-                    "idle": False,
-                },
-                "message": f"{error_message}. {ocr_snapshot.get('message') or ''}".strip(),
-            }
+        modbus_error = f"Nu pot citi {transport_label} de la {config['endpoint']}. Motiv: {exc}"
+
+    feed_url = resolve_machine_camera_feed_url(machine_key)
+    ocr_snapshot = get_abkant_ocr_snapshot(machine_key)
+    if not ocr_snapshot.get("available"):
         return {
             "available": False,
             "connected": False,
-            "source": "modbus",
+            "source": "abkant-ocr",
             "endpoint": config["endpoint"],
             "machine_mode": machine_key,
-            "message": error_message,
+            "feed_endpoint": feed_url,
+            "ocr_endpoint": ocr_snapshot.get("endpoint") or feed_url,
+            "ocr_available": False,
+            "ocr_message": ocr_snapshot.get("message") or "",
+            "modbus_endpoint": config["endpoint"],
+            "modbus_connected": modbus_connected,
+            "modbus_inputs": raw_inputs,
+            "derived_signals": {
+                "machine_on": False,
+                "cutting_active": False,
+                "table_change": False,
+                "idle_abort": False,
+                "idle": False,
+            },
+            "message": (
+                f"OCR Abkant indisponibil: {ocr_snapshot.get('message') or 'necunoscut'}. "
+                f"{modbus_error or 'Modbus citit doar diagnostic pentru Abkant.'}"
+            ).strip(),
         }
 
-    derived_signals, raw_inputs = build_modbus_signal_state(config, inputs)
-    idle = bool(
-        derived_signals["idle_abort"]
-        or (
-            derived_signals["machine_on"]
-            and not derived_signals["cutting_active"]
-            and not derived_signals["table_change"]
-        )
-    )
-    if derived_signals["cutting_active"]:
-        program_status = "Indoire activa"
-    elif derived_signals["table_change"]:
-        program_status = "Setup change"
-    elif idle:
-        program_status = "Idle"
-    elif derived_signals["machine_on"]:
-        program_status = "Pregatit"
-    else:
-        program_status = "Modbus fara semnale active"
-
     active_inputs = ", ".join(input_item["label"] for input_item in raw_inputs if input_item["active"]) or "niciunul"
-    feed_url = resolve_machine_camera_feed_url(machine_key)
-    ocr_snapshot = get_abkant_ocr_snapshot(machine_key)
-    selected_program = normalize_context_token(ocr_snapshot.get("selected_program")) if ocr_snapshot.get("available") else ""
-    active_program = normalize_context_token(ocr_snapshot.get("active_program")) if ocr_snapshot.get("available") else ""
-    pieces_label = ocr_snapshot.get("pieces_label") if ocr_snapshot.get("available") else ""
-    produced_pieces = ocr_snapshot.get("produced_pieces") if ocr_snapshot.get("available") else 0
-    total_pieces = ocr_snapshot.get("total_pieces") if ocr_snapshot.get("available") else None
-    upper_tool = ocr_snapshot.get("upper_tool") if ocr_snapshot.get("available") else "n/a"
-    lower_tool = ocr_snapshot.get("lower_tool") if ocr_snapshot.get("available") else "n/a"
-    setup_signature = ocr_snapshot.get("setup_signature") if ocr_snapshot.get("available") else ""
+    selected_program = normalize_context_token(ocr_snapshot.get("selected_program"))
+    active_program = normalize_context_token(ocr_snapshot.get("active_program"))
+    pieces_label = ocr_snapshot.get("pieces_label") or ""
+    produced_pieces = ocr_snapshot.get("produced_pieces")
+    total_pieces = ocr_snapshot.get("total_pieces")
+    upper_tool = ocr_snapshot.get("upper_tool") or "n/a"
+    lower_tool = ocr_snapshot.get("lower_tool") or "n/a"
+    setup_signature = ocr_snapshot.get("setup_signature") or ""
 
-    if derived_signals["machine_on"] and not (selected_program or active_program):
+    try:
+        runtime = get_machine_runtime(machine_key)
+        previous_snapshot = runtime.get("last_snapshot") or {}
+        current_signals = fetch_current_signals(machine_key)
+    except Exception:
+        previous_snapshot = {}
+        current_signals = {signal_name: {"active": False, "changed_at": None} for signal_name in SIGNAL_DEFINITIONS}
+
+    if not (selected_program or active_program):
         try:
-            runtime = get_machine_runtime(machine_key)
-            previous_snapshot = runtime.get("last_snapshot") or {}
             pending_cycle = runtime.get("pending_cycle") or {}
         except Exception:
-            previous_snapshot = {}
             pending_cycle = {}
-
         fallback_program = (
             normalize_context_token(resolve_snapshot_program(previous_snapshot))
             or normalize_context_token(pending_cycle.get("selected_program"))
@@ -3891,40 +4042,59 @@ def analyze_abkant_modbus_live_snapshot(machine_key: str) -> dict | None:
     elif active_program and not selected_program:
         selected_program = active_program
 
+    ocr_snapshot["selected_program"] = selected_program or "Necitit"
+    ocr_snapshot["active_program"] = active_program or "Necitit"
+    ocr_snapshot["material"] = pieces_label or "n/a"
+    derived_signals = derive_abkant_ocr_signal_state(
+        machine_key,
+        ocr_snapshot,
+        previous_snapshot,
+        current_signals,
+    )
+
     ocr_message = ocr_snapshot.get("message") or "OCR Abkant indisponibil."
+    modbus_status = (
+        f"Modbus diagnostic conectat la {config['endpoint']}; IN activ: {active_inputs}."
+        if modbus_connected
+        else (modbus_error or "Modbus diagnostic indisponibil.")
+    )
     return {
         "available": True,
         "connected": True,
-        "source": "modbus+abkant-ocr",
+        "source": "abkant-ocr+modbus-diagnostic",
         "captured_at": now_local().isoformat(timespec="seconds"),
         "machine_mode": machine_key,
         "selected_program": selected_program or "Necitit",
         "active_program": active_program or "Necitit",
-        "material": pieces_label or "n/a",
-        "program_status": program_status,
+        "material": ocr_snapshot.get("material") or "n/a",
+        "program_status": ocr_snapshot.get("program_status") or "Necitit",
         "pieces_label": pieces_label or "n/a",
         "produced_pieces": produced_pieces if produced_pieces is not None else 0,
         "total_pieces": total_pieces,
+        "completion_percent": ocr_snapshot.get("completion_percent"),
+        "completion_label": ocr_snapshot.get("completion_label") or format_completion_percent(ocr_snapshot.get("completion_percent")),
         "upper_tool": upper_tool or "n/a",
         "lower_tool": lower_tool or "n/a",
         "setup_signature": setup_signature or "",
+        "setup_changed": bool(ocr_snapshot.get("setup_changed")),
+        "last_piece_progress_at": ocr_snapshot.get("last_piece_progress_at") or "",
+        "last_piece_progress_age_seconds": ocr_snapshot.get("last_piece_progress_age_seconds"),
+        "progress_signature": ocr_snapshot.get("progress_signature") or "",
+        "counter_reset": bool(ocr_snapshot.get("counter_reset")),
         "endpoint": config["endpoint"],
         "modbus_endpoint": config["endpoint"],
+        "modbus_connected": modbus_connected,
+        "modbus_error": modbus_error,
         "feed_endpoint": feed_url,
         "ocr_endpoint": ocr_snapshot.get("endpoint") or feed_url,
-        "ocr_available": bool(ocr_snapshot.get("available")),
+        "ocr_available": True,
         "ocr_message": ocr_message,
         "modbus_inputs": raw_inputs,
-        "derived_signals": {
-            "machine_on": derived_signals["machine_on"],
-            "cutting_active": derived_signals["cutting_active"],
-            "table_change": derived_signals["table_change"],
-            "idle_abort": derived_signals["idle_abort"],
-            "idle": idle,
-        },
+        "derived_signals": derived_signals,
         "message": (
-            f"ABKANT1MODBUS citeste bitii din {config['endpoint']} si OCR din feedul {feed_url or 'neconfigurat'}. "
-            f"IN activ: {active_inputs}. {ocr_message}"
+            f"ABKANT1MODBUS citeste starea de indoire/idle/setup din OCR pe feedul {feed_url or 'neconfigurat'}. "
+            f"Indoire ramane activa {format_seconds(ABKANT_OCR_BENDING_GRACE_SECONDS)} dupa fiecare crestere de piese. "
+            f"{modbus_status} {ocr_message}"
         ),
     }
 
@@ -3944,6 +4114,65 @@ def get_pontaj_connection():
         "Encrypt=no;"
     )
     return pyodbc.connect(connection_string, timeout=settings["timeout"])
+
+
+def normalize_person_name_for_match(value: str | None) -> str:
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = "".join(character for character in text if not unicodedata.combining(character))
+    text = re.sub(r"[^a-z0-9]+", " ", text.lower())
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def titlecase_employee_name(value: str | None) -> str:
+    words = re.split(r"\s+", str(value or "").strip())
+    return " ".join(word[:1].upper() + word[1:].lower() for word in words if word)
+
+
+def format_company_attendance_operator_name(family_name: str | None, given_names: str | None) -> str:
+    rendered = " ".join(
+        item
+        for item in (
+            titlecase_employee_name(given_names),
+            titlecase_employee_name(family_name),
+        )
+        if item
+    ).strip()
+    return rendered or UNKNOWN_OPERATOR_LABEL
+
+
+def company_attendance_fallback_rank(family_name: str | None, given_names: str | None) -> int | None:
+    if not COMPANY_ATTENDANCE_FALLBACK_OPERATOR_NAMES:
+        return None
+
+    employee_variants = {
+        normalize_person_name_for_match(f"{family_name or ''} {given_names or ''}"),
+        normalize_person_name_for_match(f"{given_names or ''} {family_name or ''}"),
+    }
+    for index, candidate_name in enumerate(COMPANY_ATTENDANCE_FALLBACK_OPERATOR_NAMES):
+        candidate_tokens = normalize_person_name_for_match(candidate_name).split()
+        if candidate_tokens and any(all(token in variant.split() for token in candidate_tokens) for variant in employee_variants):
+            return index
+    return None
+
+
+def build_unvalidated_company_operator(row) -> dict | None:
+    rank = company_attendance_fallback_rank(row[1], row[2])
+    if rank is None:
+        return None
+    check_in = None
+    if row[3] is not None and row[4] is not None:
+        check_in = f"{row[3]} {row[4]}"
+    full_name = f"{format_company_attendance_operator_name(row[1], row[2])}{UNVALIDATED_OPERATOR_SUFFIX}"
+    return {
+        "employee_id": str(row[0]),
+        "full_name": full_name,
+        "check_in": check_in,
+        "is_active": True,
+        "is_unvalidated": True,
+        "attendance_scope": "company",
+        "last_seen": check_in,
+        "_fallback_rank": rank,
+    }
 
 
 def fetch_current_operator(workcenter_id: int | None) -> dict:
@@ -4002,6 +4231,23 @@ def fetch_current_operator(workcenter_id: int | None) -> dict:
                 (workcenter_id,),
             )
             related_rows = cursor.fetchall()
+
+            cursor.execute(
+                """
+                SELECT
+                    A.ID,
+                    A.Nume,
+                    A.Prenume,
+                    P.Data,
+                    P.OraCheckIn
+                FROM PontajZilnic P
+                INNER JOIN Angajati A ON P.ID = A.ID
+                WHERE P.OraCheckOut IS NULL
+                  AND P.Data >= DATEADD(day, -1, CAST(GETDATE() AS date))
+                ORDER BY P.Data DESC, P.OraCheckIn DESC
+                """
+            )
+            company_active_rows = cursor.fetchall()
             cursor.close()
     except Exception as exc:  # pragma: no cover - depends on networked SQL Server
         payload["status"] = "error"
@@ -4042,9 +4288,24 @@ def fetch_current_operator(workcenter_id: int | None) -> dict:
             }
         )
 
+    company_fallback_operators = []
+    for row in company_active_rows:
+        operator = build_unvalidated_company_operator(row)
+        if not operator:
+            continue
+        company_fallback_operators.append(operator)
+    company_fallback_operators.sort(
+        key=lambda item: (
+            int(item.get("_fallback_rank") or 0),
+            str(item.get("check_in") or ""),
+        )
+    )
+    for operator in company_fallback_operators:
+        operator.pop("_fallback_rank", None)
+
     merged_operators: list[dict] = []
     seen_employee_ids: set[str] = set()
-    for operator in active_operators + related_operators:
+    for operator in active_operators + company_fallback_operators + related_operators:
         employee_id = operator["employee_id"]
         if employee_id in seen_employee_ids:
             continue
@@ -4054,8 +4315,13 @@ def fetch_current_operator(workcenter_id: int | None) -> dict:
     payload["status"] = "connected"
     payload["message"] = "Pontaj online."
     payload["operators"] = merged_operators
-    payload["primary_operator"] = active_operators[0] if active_operators else None
-    if not active_operators and merged_operators:
+    payload["primary_operator"] = active_operators[0] if active_operators else (company_fallback_operators[0] if company_fallback_operators else None)
+    if not active_operators and company_fallback_operators:
+        payload["message"] = (
+            "Nu exista operator activ pe acest workcenter. "
+            "Folosesc pontajul general din firma pentru operator nevalidat."
+        )
+    elif not active_operators and merged_operators:
         payload["message"] = "Nu exista operator activ pe acest workcenter. Afisez operatorii asociati istoric."
     elif not merged_operators:
         payload["message"] = "Nu exista operatori cunoscuti pentru acest workcenter."
@@ -5287,6 +5553,8 @@ def resolve_telegram_report_machine_keys() -> list[str]:
 def resolve_telegram_command_machine_keys(command: str) -> list[str] | None:
     command_machine_map = {
         "/raportzi": ["laser1modbus", "laser2modbus"],
+        "/raportzilaser": ["laser1modbus", "laser2modbus"],
+        "/raportziabkant": ["abkant1modbus"],
         "/raportzilb": ["laser1modbus"],
         "/raportzila": ["laser2modbus"],
     }
@@ -5625,18 +5893,25 @@ def build_telegram_short_machine_summary(machine_key: str, records: list[dict]) 
     )
 
 
-def build_telegram_laser_summary_report() -> str:
+def build_telegram_machine_summary_report(title: str, machine_keys: list[str]) -> str:
     now = now_local()
-    machine_keys = ["laser1modbus", "laser2modbus"]
     today_start = datetime.combine(date.today(), time.min)
     lines = [
-        "Raport zi lasere",
+        title,
         f"Pana la: {now.strftime('%d.%m.%Y %H:%M')}",
     ]
     for machine_key in machine_keys:
         machine_records = fetch_saved_cycles_between_for_machines(today_start, now, [machine_key])
         lines.extend(["", build_telegram_short_machine_summary(machine_key, machine_records)])
     return "\n".join(lines)
+
+
+def build_telegram_laser_summary_report() -> str:
+    return build_telegram_machine_summary_report("Raport zi lasere", ["laser1modbus", "laser2modbus"])
+
+
+def build_telegram_abkant_summary_report() -> str:
+    return build_telegram_machine_summary_report("Raport zi abkant", ["abkant1modbus"])
 
 
 def resolve_telegram_period_window(period_key: str, now: datetime | None = None) -> tuple[str, datetime, datetime]:
@@ -5651,7 +5926,11 @@ def resolve_telegram_period_window(period_key: str, now: datetime | None = None)
     return "Ziua curenta", today_start, resolved_now
 
 
-def build_telegram_laser_period_report(period_key: str = "day", machine_keys: list[str] | None = None) -> str:
+def build_telegram_machine_period_report(
+    title: str,
+    period_key: str = "day",
+    machine_keys: list[str] | None = None,
+) -> str:
     period_title, window_start, window_end = resolve_telegram_period_window(period_key)
     machine_keys = machine_keys or resolve_telegram_report_machine_keys()
     machine_labels = [
@@ -5660,7 +5939,7 @@ def build_telegram_laser_period_report(period_key: str = "day", machine_keys: li
     ]
     records = fetch_saved_cycles_between_for_machines(window_start, window_end, machine_keys)
     lines = [
-        "Raport Laser TruMatic L3030",
+        title,
         f"Masini: {', '.join(machine_labels)}",
         f"Interval: {window_start.strftime('%d.%m.%Y %H:%M')} - {window_end.strftime('%d.%m.%Y %H:%M')}",
         "",
@@ -5668,6 +5947,22 @@ def build_telegram_laser_period_report(period_key: str = "day", machine_keys: li
     ]
 
     return "\n".join(lines)
+
+
+def build_telegram_laser_period_report(period_key: str = "day", machine_keys: list[str] | None = None) -> str:
+    return build_telegram_machine_period_report(
+        "Raport Laser TruMatic L3030",
+        period_key,
+        machine_keys=machine_keys,
+    )
+
+
+def build_telegram_abkant_period_report(period_key: str = "day") -> str:
+    return build_telegram_machine_period_report(
+        "Raport ABKANT1MODBUS",
+        period_key,
+        machine_keys=["abkant1modbus"],
+    )
 
 
 def build_telegram_laser_report(include_week: bool = True, machine_keys: list[str] | None = None) -> str:
@@ -6108,8 +6403,12 @@ def configure_telegram_bot_commands() -> None:
             "commands": json.dumps(
                 [
                     {
-                        "command": "raportzi",
-                        "description": "Raport randament combinat pentru ziua curenta",
+                        "command": "raportzilaser",
+                        "description": "Raport randament combinat lasere pentru ziua curenta",
+                    },
+                    {
+                        "command": "raportziabkant",
+                        "description": "Raport zi ABKANT1MODBUS",
                     },
                     {
                         "command": "raportzilb",
@@ -6154,7 +6453,7 @@ def build_telegram_reply_keyboard() -> str:
     return json.dumps(
         {
             "keyboard": [
-                [{"text": "/raportzi"}],
+                [{"text": "/raportzilaser"}, {"text": "/raportziabkant"}],
                 [{"text": "/raportziLB"}, {"text": "/raportziLA"}],
                 [{"text": "/dosare_azi"}, {"text": "/randament_dosar"}],
             ],
@@ -6179,7 +6478,8 @@ def build_telegram_help_text() -> str:
     return "\n".join(
         [
             "Comenzi disponibile:",
-            "/raportzi - sumar scurt pe LASER1MODBUS si LASER2MODBUS: randament si operatori",
+            "/raportzilaser - sumar scurt pe LASER1MODBUS si LASER2MODBUS: randament si operatori",
+            "/raportziabkant - raport detaliat zi pentru ABKANT1MODBUS",
             "/raportziLB - raport detaliat zi doar pentru LASER1MODBUS / Laser Belgia",
             "/raportziLA - raport detaliat zi doar pentru LASER2MODBUS / Laser A",
             "/dosare_azi - lista dosarelor salvate azi cu timp, operator si randament",
@@ -6334,7 +6634,7 @@ def handle_telegram_command(message: dict) -> None:
     command_parts = text.split(maxsplit=1)
     command = command_parts[0].split("@", 1)[0].lower()
     command_argument = command_parts[1].strip() if len(command_parts) > 1 else ""
-    if command not in {"/raportzi", "/raportzilb", "/raportzila", "/dosare_azi", "/randament_dosar", "/dosar", "/formule", "/meniu", "/menu", "/chatid", "/id", "/start", "/help"}:
+    if command not in {"/raportzi", "/raportzilaser", "/raportziabkant", "/raportzilb", "/raportzila", "/dosare_azi", "/randament_dosar", "/dosar", "/formule", "/meniu", "/menu", "/chatid", "/id", "/start", "/help"}:
         return
 
     if command in {"/chatid", "/id"}:
@@ -6368,11 +6668,18 @@ def handle_telegram_command(message: dict) -> None:
         )
         return
 
-    if command in {"/raportzi", "/raportzilb", "/raportzila"}:
-        if command == "/raportzi":
+    if command in {"/raportzi", "/raportzilaser", "/raportziabkant", "/raportzilb", "/raportzila"}:
+        if command in {"/raportzi", "/raportzilaser"}:
             send_telegram_message(
                 chat_id,
                 build_telegram_laser_summary_report(),
+                reply_markup=build_telegram_reply_keyboard(),
+            )
+            return
+        if command == "/raportziabkant":
+            send_telegram_message(
+                chat_id,
+                build_telegram_abkant_period_report("day"),
                 reply_markup=build_telegram_reply_keyboard(),
             )
             return
@@ -6951,6 +7258,20 @@ def context_requires_stats_reset(
     previous_signals = (previous_snapshot or {}).get("derived_signals") or {}
     current_signals = (current_snapshot or {}).get("derived_signals") or {}
     machine_restarted = not bool(previous_signals.get("machine_on")) and bool(current_signals.get("machine_on"))
+    if machine_key == "abkant1modbus":
+        previous_produced = coerce_abkant_piece_count((previous_snapshot or {}).get("produced_pieces"))
+        current_produced = coerce_abkant_piece_count((current_snapshot or {}).get("produced_pieces"))
+        counter_reset = bool(
+            previous_produced is not None
+            and current_produced is not None
+            and current_produced < previous_produced
+        )
+        return bool(
+            previous_context["program"] != current_context["program"]
+            or previous_context["setup_signature"] != current_context["setup_signature"]
+            or counter_reset
+            or machine_restarted
+        )
     if machine_uses_modbus(machine_key):
         return previous_context["program"] != current_context["program"]
     if machine_key == "laser1":
@@ -7584,7 +7905,7 @@ def save_cycle_on_program_change(
     if not previous_program or not current_program or previous_program == current_program:
         return
 
-    if machine_is_abkant(machine_key) and (
+    if machine_key == "abkant" and (
         resolve_abkant_tool_signature(previous_snapshot)
         or resolve_abkant_tool_signature(current_snapshot)
     ):
@@ -7730,6 +8051,170 @@ def save_cycle_on_program_change(
 
     if saved_cycle_record:
         send_completed_cycle_telegram_report(saved_cycle_record)
+
+
+def save_abkant_ocr_completed_cycle(
+    machine_key: str,
+    machine_profile: dict,
+    previous_snapshot: dict | None,
+    current_snapshot: dict,
+    operator_snapshot: dict,
+    previous_stats_anchor: dict | None = None,
+) -> bool:
+    if machine_key != "abkant1modbus" or not abkant_snapshot_is_completed(current_snapshot):
+        return False
+
+    selected_program = resolve_snapshot_selected_program(current_snapshot)
+    if not selected_program:
+        return False
+
+    if (
+        abkant_snapshot_is_completed(previous_snapshot)
+        and get_abkant_progress_signature(previous_snapshot) == get_abkant_progress_signature(current_snapshot)
+        and str((previous_snapshot or {}).get("cycle_completed_saved_at") or "").strip()
+    ):
+        current_snapshot["cycle_completed_saved_at"] = previous_snapshot.get("cycle_completed_saved_at")
+        return False
+
+    completed_at = now_local()
+    cycle_window_start_raw = ""
+    if isinstance(previous_stats_anchor, dict):
+        anchor_candidate = str(previous_stats_anchor.get("started_at") or "").strip()
+        if anchor_candidate:
+            try:
+                anchor_started_at = parse_timestamp(anchor_candidate)
+                if anchor_started_at <= completed_at:
+                    cycle_window_start_raw = anchor_started_at.isoformat(timespec="seconds")
+            except Exception:
+                cycle_window_start_raw = ""
+    if not cycle_window_start_raw:
+        cycle_window_start_raw = (
+            str((previous_snapshot or {}).get("last_piece_progress_at") or "").strip()
+            or str(current_snapshot.get("last_piece_progress_at") or "").strip()
+            or completed_at.isoformat(timespec="seconds")
+        )
+
+    metrics = calculate_saved_cycle_metrics(
+        machine_key=machine_key,
+        cutting_started_at=cycle_window_start_raw,
+        table_change_started_at=completed_at.isoformat(timespec="seconds"),
+        table_change_ended_at=completed_at.isoformat(timespec="seconds"),
+        fallback_cutting_seconds=0,
+        fallback_table_change_seconds=0,
+    )
+    if (
+        int(metrics["machine_on_duration_seconds"] or 0) <= 0
+        and int(metrics["cutting_duration_seconds"] or 0) <= 0
+        and int(metrics["idle_duration_seconds"] or 0) <= 0
+        and int(metrics["table_change_duration_seconds"] or 0) <= 0
+    ):
+        metrics["machine_on_duration_seconds"] = max(int((completed_at - parse_timestamp(cycle_window_start_raw)).total_seconds()), 0)
+
+    operator = operator_snapshot.get("primary_operator") or {}
+    saved_cycle_record = None
+    with get_sqlite_connection() as connection:
+        duplicate = connection.execute(
+            """
+            SELECT id
+            FROM saved_cycles
+            WHERE machine_key = ?
+              AND selected_program = ?
+              AND table_change_ended_at >= ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (
+                machine_key,
+                selected_program,
+                cycle_window_start_raw,
+            ),
+        ).fetchone()
+        if duplicate is None:
+            connection.execute(
+                f"""
+                INSERT INTO saved_cycles (
+                    machine_key,
+                    workcenter_id,
+                    operator_id,
+                    operator_name,
+                    selected_program,
+                    active_program,
+                    material,
+                    program_status,
+                    upper_tool,
+                    lower_tool,
+                    setup_signature,
+                    setup_changed,
+                    cutting_started_at,
+                    table_change_started_at,
+                    table_change_ended_at,
+                    table_change_duration_seconds,
+                    cycle_duration_seconds,
+                    machine_on_duration_seconds,
+                    idle_duration_seconds,
+                    efficiency_percent,
+                    completion_percent,
+                    estimated_completion_at,
+                    source,
+                    snapshot_json,
+                    created_at
+                )
+                VALUES ({SAVED_CYCLE_INSERT_PLACEHOLDERS})
+                """,
+                (
+                    machine_key,
+                    machine_profile.get("workcenter_id"),
+                    operator.get("employee_id"),
+                    operator.get("full_name"),
+                    selected_program,
+                    current_snapshot.get("active_program") or selected_program,
+                    current_snapshot.get("material"),
+                    f"{current_snapshot.get('program_status') or 'OCR Abkant'} -> dosar finalizat",
+                    current_snapshot.get("upper_tool"),
+                    current_snapshot.get("lower_tool"),
+                    resolve_abkant_tool_signature(current_snapshot),
+                    1 if current_snapshot.get("setup_changed") else 0,
+                    cycle_window_start_raw,
+                    completed_at.isoformat(timespec="seconds"),
+                    completed_at.isoformat(timespec="seconds"),
+                    metrics["table_change_duration_seconds"],
+                    metrics["cutting_duration_seconds"],
+                    metrics["machine_on_duration_seconds"],
+                    metrics["idle_duration_seconds"],
+                    metrics["efficiency_percent"],
+                    coerce_completion_percent(current_snapshot.get("completion_percent")) or 100,
+                    current_snapshot.get("estimated_completion_at"),
+                    current_snapshot.get("source", "abkant-ocr"),
+                    json.dumps(
+                        {
+                            "pending_snapshot": previous_snapshot,
+                            "resume_snapshot": current_snapshot,
+                            "close_reason": "abkant_ocr_completed",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    completed_at.isoformat(timespec="seconds"),
+                ),
+            )
+            connection.commit()
+            saved_cycle_record = {
+                "machine_key": machine_key,
+                "operator_name": operator.get("full_name"),
+                "telegram_selected_program": selected_program,
+                "selected_program": selected_program,
+                "active_program": current_snapshot.get("active_program") or selected_program,
+                "machine_on_duration_seconds": metrics["machine_on_duration_seconds"],
+                "cycle_duration_seconds": metrics["cutting_duration_seconds"],
+                "efficiency_percent": metrics["efficiency_percent"],
+                "completion_percent": current_snapshot.get("completion_percent"),
+                "table_change_ended_at": completed_at.isoformat(timespec="seconds"),
+                "created_at": completed_at.isoformat(timespec="seconds"),
+            }
+
+    current_snapshot["cycle_completed_saved_at"] = completed_at.isoformat(timespec="seconds")
+    if saved_cycle_record:
+        send_completed_cycle_telegram_report(saved_cycle_record)
+    return bool(saved_cycle_record)
 
 
 def fetch_current_signals(machine_key: str) -> dict[str, dict]:
@@ -8371,11 +8856,22 @@ def sync_machine_events_from_live_snapshot(machine_key: str) -> dict | None:
             runtime.get("stats_anchor"),
         )
 
+    saved_abkant_completion = False
+    if machine_key == "abkant1modbus" and snapshot.get("available"):
+        saved_abkant_completion = save_abkant_ocr_completed_cycle(
+            machine_key,
+            machine_profile,
+            previous_snapshot,
+            snapshot,
+            operator_snapshot,
+            runtime.get("stats_anchor"),
+        )
+
     old_table_change = bool(current_signals["table_change"]["active"])
     new_table_change = bool(derived_signals.get("table_change", False))
-    if new_table_change and not old_table_change:
+    if machine_key != "abkant1modbus" and new_table_change and not old_table_change:
         open_pending_cycle(machine_key, machine_profile, snapshot, operator_snapshot, current_signals)
-    elif old_table_change and not new_table_change:
+    elif machine_key != "abkant1modbus" and old_table_change and not new_table_change:
         finalize_pending_cycle(machine_key, snapshot)
 
     for signal_name in SIGNAL_DEFINITIONS:
@@ -8392,6 +8888,9 @@ def sync_machine_events_from_live_snapshot(machine_key: str) -> dict | None:
             operator_snapshot=operator_snapshot,
         )
         current_signals[signal_name]["active"] = new_value
+
+    if saved_abkant_completion or (machine_key == "abkant1modbus" and snapshot.get("cycle_completed_saved_at")):
+        save_machine_runtime(machine_key, snapshot, runtime.get("pending_cycle"), stats_anchor=stats_anchor)
 
     return snapshot
 

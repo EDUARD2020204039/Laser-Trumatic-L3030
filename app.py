@@ -7585,7 +7585,12 @@ def format_cycle_piece_line(record: dict | None) -> str:
 
 
 def should_notify_abkant_cycle(record: dict) -> bool:
-    if ensure_machine_key(record.get("machine_key") or "abkant1modbus") != "abkant1modbus":
+    try:
+        record_machine_key = ensure_machine_key(record.get("machine_key") or "abkant1modbus")
+    except ValueError:
+        record_machine_key = str(record.get("machine_key") or "").strip().lower()
+    machine_label = str(record.get("machine_label") or "").strip().lower()
+    if record_machine_key not in ABKANT_MACHINE_KEYS and "abkant" not in machine_label:
         return True
     selected_program = resolve_completed_cycle_selected_program(record) or normalize_context_token(record.get("selected_program"))
     if not is_valid_abkant_program_name(selected_program):
@@ -7865,7 +7870,11 @@ def send_due_completed_cycle_telegram_reports() -> None:
         report_key = row["report_key"]
         if not try_mark_completed_cycle_report_sending(report_key, marker):
             continue
-        message = build_completed_cycle_telegram_message(build_queued_completed_cycle_record(row))
+        queued_record = build_queued_completed_cycle_record(row)
+        if not should_notify_abkant_cycle(queued_record):
+            mark_completed_cycle_report_sent(report_key)
+            continue
+        message = build_completed_cycle_telegram_message(queued_record)
         try:
             for chat_id in TELEGRAM_CHAT_IDS:
                 send_telegram_message(chat_id, message)

@@ -287,7 +287,7 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
         }
         loadDashboard(state.selectedMachineKey);
-    }, 3000);
+    }, 1000);
     window.setInterval(() => {
         if (state.environmentFetchInFlight) {
             return;
@@ -1123,13 +1123,28 @@ function renderMachineSelector(machines) {
             data-view="saved_modbus"
             type="button"
         >
-            <small>Arhiva</small>
+            <small>Rapoarte</small>
             <strong>DATE SALVATE MODBUS</strong>
-            <span>Ciclurile LASER1MODBUS sau LASER2MODBUS, cu medie pe zi, saptamana completa si luna completa.</span>
+            <span>Ciclurile LASER1MODBUS, LASER2MODBUS si ABKANT1MODBUS, cu medie pe zi, saptamana completa si luna completa.</span>
         </button>
     `;
 
-    selector.innerHTML = `${machineButtons}${savedModbusButton}`;
+    selector.innerHTML = `
+        <div class="machine-menu-group">
+            <div class="machine-menu-title">
+                <small>Live utilaje</small>
+                <span>Status si comenzi manuale</span>
+            </div>
+            <div class="machine-menu-actions">${machineButtons}</div>
+        </div>
+        <div class="machine-menu-group">
+            <div class="machine-menu-title">
+                <small>Rapoarte</small>
+                <span>Istoric si randamente salvate</span>
+            </div>
+            <div class="machine-menu-actions">${savedModbusButton}</div>
+        </div>
+    `;
 }
 
 function renderMachineState(machine, machineState) {
@@ -1640,28 +1655,47 @@ function renderLiveExtraction(snapshot) {
         ];
     }
 
-    const layoutKey = `${currentMachineKey}:live`;
+    const isAbkantLive = isAbkantMachine(currentMachineKey);
+    const layoutKey = `${currentMachineKey}:live:${isAbkantLive ? "abkant" : "standard"}`;
     if (state.liveExtractionLayoutKey !== layoutKey) {
-        const rows = [];
-        for (let index = 0; index < cells.length; index += 2) {
-            rows.push(cells.slice(index, index + 2));
-        }
-
-        container.innerHTML = `
-            <div class="live-screen live-screen-static">
-                ${rows.map((row) => `
-                    <div class="live-screen-row">
-                        ${row.map((cell) => `
-                            <div class="live-cell">
+        if (isAbkantLive) {
+            const abkantWideSlots = new Set(["program", "status", "progress"]);
+            const abkantSignalSlots = new Set(["machine_on", "bending", "setup_change", "idle"]);
+            container.innerHTML = `
+                <div class="live-screen live-screen-static live-screen-abkant">
+                    <div class="abkant-live-grid">
+                        ${cells.map((cell) => `
+                            <div class="live-cell ${abkantWideSlots.has(cell.slot) ? "is-wide" : ""} ${abkantSignalSlots.has(cell.slot) ? "is-signal" : ""}">
                                 <span>${cell.label}</span>
                                 <strong data-live-slot="${cell.slot}">--</strong>
                             </div>
                         `).join("")}
                     </div>
-                `).join("")}
-            </div>
-            <p class="feedback-text live-extraction-feedback"></p>
-        `;
+                </div>
+                <p class="feedback-text live-extraction-feedback"></p>
+            `;
+        } else {
+            const rows = [];
+            for (let index = 0; index < cells.length; index += 2) {
+                rows.push(cells.slice(index, index + 2));
+            }
+
+            container.innerHTML = `
+                <div class="live-screen live-screen-static">
+                    ${rows.map((row) => `
+                        <div class="live-screen-row">
+                            ${row.map((cell) => `
+                                <div class="live-cell">
+                                    <span>${cell.label}</span>
+                                    <strong data-live-slot="${cell.slot}">--</strong>
+                                </div>
+                            `).join("")}
+                        </div>
+                    `).join("")}
+                </div>
+                <p class="feedback-text live-extraction-feedback"></p>
+            `;
+        }
         state.liveExtractionLayoutKey = layoutKey;
     }
 

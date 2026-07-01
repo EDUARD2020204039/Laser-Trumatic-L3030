@@ -78,6 +78,13 @@ def resolve_app_version_label() -> str:
         value = os.getenv(env_name, "").strip()
         if value:
             return value
+    version_file = BASE_DIR / "VERSION"
+    try:
+        value = version_file.read_text(encoding="utf-8").strip()
+        if value:
+            return value
+    except OSError:
+        pass
     return f"build-{get_static_asset_version('app.js')}"
 
 
@@ -148,7 +155,7 @@ MANUAL_SOURCE_PREFIX = "manual"
 OCR_AVAILABLE = cv2 is not None and np is not None and pytesseract is not None
 CV_IMAGE_AVAILABLE = cv2 is not None and np is not None
 BACKGROUND_SYNC_ENABLED = os.getenv("BACKGROUND_SYNC_ENABLED", "1") != "0"
-BACKGROUND_SYNC_INTERVAL_SECONDS = max(int(os.getenv("BACKGROUND_SYNC_INTERVAL_SECONDS", "3")), 1)
+BACKGROUND_SYNC_INTERVAL_SECONDS = max(int(os.getenv("BACKGROUND_SYNC_INTERVAL_SECONDS", "1")), 1)
 REQUEST_LIVE_SYNC_ENABLED = os.getenv("REQUEST_LIVE_SYNC_ENABLED", "0") == "1"
 SAVED_RECORDS_PROMETHEUS_ENABLED = os.getenv("SAVED_RECORDS_PROMETHEUS_ENABLED", "0") == "1"
 SNAPSHOT_FRESHNESS_SECONDS = max(int(os.getenv("SNAPSHOT_FRESHNESS_SECONDS", "3")), 1)
@@ -183,6 +190,7 @@ TABLE_SHEET_LAPLACIAN_VAR_THRESHOLD = min(max(read_env_float("TABLE_SHEET_LAPLAC
 _background_sync_started = False
 _telegram_bot_started = False
 _telegram_pending_actions: dict[str, dict] = {}
+_telegram_notifications_silent = False
 RUNTIME_VALUE_UNCHANGED = object()
 PROMETHEUS_BASE_URL = (os.getenv("PROMETHEUS_BASE_URL", "http://localhost:9090") or "http://localhost:9090").rstrip("/")
 ESP32_DHT_URL = (os.getenv("ESP32_DHT_URL", "") or "").strip()
@@ -205,10 +213,16 @@ TELEGRAM_ALLOWED_CHAT_IDS = tuple(
 TELEGRAM_REPORTS_ENABLED = os.getenv("TELEGRAM_REPORTS_ENABLED", "1") != "0"
 TELEGRAM_POLLING_ENABLED = os.getenv("TELEGRAM_POLLING_ENABLED", "1") != "0"
 TELEGRAM_COMMANDS_ENABLED = os.getenv("TELEGRAM_COMMANDS_ENABLED", "1") != "0"
+TELEGRAM_COMPLETED_CYCLE_REPORTS_ENABLED = os.getenv("TELEGRAM_COMPLETED_CYCLE_REPORTS_ENABLED", "0") == "1"
+TELEGRAM_NOTIFICATION_MODE = (os.getenv("TELEGRAM_NOTIFICATION_MODE", "active") or "active").strip().lower()
 TELEGRAM_REPORT_TIME = (os.getenv("TELEGRAM_REPORT_TIME", "23:30") or "23:30").strip()
 TELEGRAM_REPORT_MACHINE_KEYS = tuple(
     machine_key.strip()
-    for machine_key in re.split(r"[,;\s]+", os.getenv("TELEGRAM_REPORT_MACHINE_KEYS", DEFAULT_MACHINE_KEY) or DEFAULT_MACHINE_KEY)
+    for machine_key in re.split(
+        r"[,;\s]+",
+        os.getenv("TELEGRAM_REPORT_MACHINE_KEYS", "laser1modbus,laser2modbus,abkant1modbus")
+        or "laser1modbus,laser2modbus,abkant1modbus",
+    )
     if machine_key.strip()
 )
 TELEGRAM_REPORT_TOP_LIMIT = max(int(os.getenv("TELEGRAM_REPORT_TOP_LIMIT", "10") or "10"), 1)
@@ -218,6 +232,7 @@ TELEGRAM_COMPLETED_CYCLE_AGGREGATION_SECONDS = max(
     int(os.getenv("TELEGRAM_COMPLETED_CYCLE_AGGREGATION_SECONDS", "60") or "60"),
     5,
 )
+_telegram_notifications_silent = TELEGRAM_NOTIFICATION_MODE == "silent"
 UNKNOWN_OPERATOR_LABEL = "Fara operator la salvare"
 UNVALIDATED_OPERATOR_SUFFIX = "(nevalidat)"
 COMPANY_ATTENDANCE_FALLBACK_OPERATOR_NAMES = tuple(
@@ -6002,11 +6017,11 @@ def build_telegram_machine_summary_report(title: str, machine_keys: list[str]) -
 
 
 def build_telegram_laser_summary_report() -> str:
-    return build_telegram_machine_summary_report("Raport zi lasere", ["laser1modbus", "laser2modbus"])
+    return build_telegram_machine_summary_report("RaportZiLaser", ["laser1modbus", "laser2modbus"])
 
 
 def build_telegram_abkant_summary_report() -> str:
-    return build_telegram_machine_summary_report("Raport zi abkant", ["abkant1modbus"])
+    return build_telegram_machine_summary_report("RaportZiAbkant", ["abkant1modbus"])
 
 
 def resolve_telegram_period_window(period_key: str, now: datetime | None = None) -> tuple[str, datetime, datetime]:
@@ -6046,7 +6061,7 @@ def build_telegram_machine_period_report(
 
 def build_telegram_laser_period_report(period_key: str = "day", machine_keys: list[str] | None = None) -> str:
     return build_telegram_machine_period_report(
-        "Raport Laser TruMatic L3030",
+        "RaportZiLaser",
         period_key,
         machine_keys=machine_keys,
     )
@@ -6082,7 +6097,7 @@ def build_telegram_abkant_live_period_report(period_key: str = "day") -> str:
     message = str(live_snapshot.get("message") or "").strip()
 
     lines = [
-        "Raport ABKANT1MODBUS",
+        "RaportZiAbkant",
         f"Interval: {window_start.strftime('%d.%m.%Y %H:%M')} - {window_end.strftime('%d.%m.%Y %H:%M')}",
         "",
         period_title,
@@ -6581,6 +6596,14 @@ def configure_telegram_bot_commands() -> None:
                         "description": "Afiseaza butoanele botului",
                     },
                     {
+                        "command": "notificari_active",
+                        "description": "Trimite mesajele cu notificare activa",
+                    },
+                    {
+                        "command": "notificari_silent",
+                        "description": "Trimite mesajele in modul silent",
+                    },
+                    {
                         "command": "chatid",
                         "description": "Afiseaza ID-ul chatului Telegram",
                     },
@@ -6595,14 +6618,28 @@ def configure_telegram_bot_commands() -> None:
     )
 
 
-def build_telegram_reply_keyboard() -> str:
+def build_telegram_reply_keyboard(menu: str = "main") -> str:
+    if menu == "reports":
+        keyboard = [
+            [{"text": "/RaportZiLaser"}, {"text": "/RaportZiAbkant"}],
+            [{"text": "/RaportZiLB"}, {"text": "/RaportZiLA"}],
+            [{"text": "/DosareAzi"}, {"text": "/RandamentDosar"}],
+            [{"text": "/Meniu"}],
+        ]
+    elif menu == "settings":
+        keyboard = [
+            [{"text": "/NotificariActive"}, {"text": "/NotificariSilent"}],
+            [{"text": "/Formule"}, {"text": "/ChatID"}],
+            [{"text": "/Meniu"}],
+        ]
+    else:
+        keyboard = [
+            [{"text": "/MeniuRapoarte"}, {"text": "/MeniuSetari"}],
+            [{"text": "/RaportZiLaser"}, {"text": "/RaportZiAbkant"}],
+        ]
     return json.dumps(
         {
-            "keyboard": [
-                [{"text": "/raportzilaser"}, {"text": "/raportziabkant"}],
-                [{"text": "/raportziLB"}, {"text": "/raportziLA"}],
-                [{"text": "/dosare_azi"}, {"text": "/randament_dosar"}],
-            ],
+            "keyboard": keyboard,
             "resize_keyboard": True,
             "one_time_keyboard": False,
             "is_persistent": True,
@@ -6621,18 +6658,22 @@ def build_telegram_dosar_force_reply() -> str:
 
 
 def build_telegram_help_text() -> str:
+    notification_mode = "silent" if _telegram_notifications_silent else "active"
     return "\n".join(
         [
             "Comenzi disponibile:",
-            "/raportzilaser - sumar scurt pe LASER1MODBUS si LASER2MODBUS: randament si operatori",
-            "/raportziabkant - raport detaliat zi pentru ABKANT1MODBUS",
-            "/raportziLB - raport detaliat zi doar pentru LASER1MODBUS / Laser Belgia",
-            "/raportziLA - raport detaliat zi doar pentru LASER2MODBUS / Laser A",
-            "/dosare_azi - lista dosarelor salvate azi cu timp, operator si randament",
-            "/randament_dosar 34158 - cauta dosarul in istoricul salvat si calculeaza randamentul lui",
-            "/formule - explica formulele si de unde vin timpii",
-            "/chatid - afiseaza ID-ul chatului pentru autorizare",
-            "/meniu - retrimite tastatura rapida",
+            "/RaportZiLaser - sumar scurt pe LASER1MODBUS si LASER2MODBUS: randament si operatori",
+            "/RaportZiAbkant - raport detaliat zi pentru ABKANT1MODBUS",
+            "/RaportZiLB - raport detaliat zi doar pentru LASER1MODBUS / Laser Belgia",
+            "/RaportZiLA - raport detaliat zi doar pentru LASER2MODBUS / Laser A",
+            "/DosareAzi - lista dosarelor salvate azi cu timp, operator si randament",
+            "/RandamentDosar 34158 - cauta dosarul in istoricul salvat si calculeaza randamentul lui",
+            "/Formule - explica formulele si de unde vin timpii",
+            "/NotificariActive - mesajele Telegram vin normal",
+            "/NotificariSilent - mesajele Telegram vin fara sunet",
+            "/ChatID - afiseaza ID-ul chatului pentru autorizare",
+            "/Meniu - retrimite tastatura rapida",
+            f"Mod notificari curent: {notification_mode}",
         ]
     )
 
@@ -6695,6 +6736,7 @@ def send_telegram_message(chat_id: str, text: str, reply_markup: str | None = No
             "chat_id": chat_id,
             "text": chunk,
             "disable_web_page_preview": "true",
+            "disable_notification": "true" if _telegram_notifications_silent else "false",
         }
         if reply_markup:
             payload["reply_markup"] = reply_markup
@@ -6704,9 +6746,10 @@ def send_telegram_message(chat_id: str, text: str, reply_markup: str | None = No
 def send_telegram_report_to_configured_chats(period_key: str = "day") -> None:
     if not TELEGRAM_CHAT_IDS:
         return
-    report_text = build_telegram_laser_period_report(
+    report_text = build_telegram_machine_period_report(
+        "RaportToateUtilajele",
         period_key,
-        machine_keys=["laser1modbus", "laser2modbus"],
+        machine_keys=resolve_telegram_report_machine_keys(),
     )
     for chat_id in TELEGRAM_CHAT_IDS:
         send_telegram_message(chat_id, report_text)
@@ -6720,8 +6763,6 @@ def resolve_due_telegram_report_periods(current_dt: datetime) -> list[str]:
     periods = ["day"]
     if current_dt.weekday() == 6:
         periods.append("week")
-    if is_last_day_of_month(current_dt):
-        periods.append("month")
     return periods
 
 
@@ -6742,6 +6783,22 @@ def get_telegram_pending_key(message: dict, chat_id: str) -> str:
 def telegram_message_replies_to_dosar_prompt(message: dict) -> bool:
     reply_text = str((message.get("reply_to_message") or {}).get("text") or "").strip().lower()
     return "ce numar de dosar" in reply_text or "numar de dosar" in reply_text
+
+
+def normalize_telegram_command(command: str) -> str:
+    command_aliases = {
+        "/randamentdosar": "/randament_dosar",
+        "/dosareazi": "/dosare_azi",
+        "/notificariactive": "/notificari_active",
+        "/notificarisilent": "/notificari_silent",
+    }
+    return command_aliases.get(command, command)
+
+
+def set_telegram_notification_mode(silent: bool) -> str:
+    global _telegram_notifications_silent
+    _telegram_notifications_silent = silent
+    return "silent" if silent else "active"
 
 
 def handle_telegram_command(message: dict) -> None:
@@ -6778,9 +6835,29 @@ def handle_telegram_command(message: dict) -> None:
         _telegram_pending_actions.pop(chat_id, None)
 
     command_parts = text.split(maxsplit=1)
-    command = command_parts[0].split("@", 1)[0].lower()
+    command = normalize_telegram_command(command_parts[0].split("@", 1)[0].lower())
     command_argument = command_parts[1].strip() if len(command_parts) > 1 else ""
-    if command not in {"/raportzi", "/raportzilaser", "/raportziabkant", "/raportzilb", "/raportzila", "/dosare_azi", "/randament_dosar", "/dosar", "/formule", "/meniu", "/menu", "/chatid", "/id", "/start", "/help"}:
+    if command not in {
+        "/raportzi",
+        "/raportzilaser",
+        "/raportziabkant",
+        "/raportzilb",
+        "/raportzila",
+        "/dosare_azi",
+        "/randament_dosar",
+        "/dosar",
+        "/formule",
+        "/meniu",
+        "/menu",
+        "/meniurapoarte",
+        "/meniusetari",
+        "/notificari_active",
+        "/notificari_silent",
+        "/chatid",
+        "/id",
+        "/start",
+        "/help",
+    }:
         return
 
     if command in {"/chatid", "/id"}:
@@ -6803,6 +6880,22 @@ def handle_telegram_command(message: dict) -> None:
         )
         return
 
+    if command == "/meniurapoarte":
+        send_telegram_message(
+            chat_id,
+            "Rapoarte:",
+            reply_markup=build_telegram_reply_keyboard("reports"),
+        )
+        return
+
+    if command == "/meniusetari":
+        send_telegram_message(
+            chat_id,
+            "Setari:",
+            reply_markup=build_telegram_reply_keyboard("settings"),
+        )
+        return
+
     if not telegram_chat_is_allowed(chat_id):
         print(f"Telegram unauthorized chat_id={chat_id}")
         send_telegram_message(
@@ -6811,6 +6904,15 @@ def handle_telegram_command(message: dict) -> None:
             f"Chat ID: {chat_id}\n"
             "Adauga acest ID in TELEGRAM_CHAT_IDS sau TELEGRAM_ALLOWED_CHAT_IDS.",
             reply_markup=build_telegram_reply_keyboard(),
+        )
+        return
+
+    if command in {"/notificari_active", "/notificari_silent"}:
+        notification_mode = set_telegram_notification_mode(command == "/notificari_silent")
+        send_telegram_message(
+            chat_id,
+            f"Notificari Telegram: {notification_mode}.",
+            reply_markup=build_telegram_reply_keyboard("settings"),
         )
         return
 
@@ -6945,6 +7047,7 @@ def ensure_telegram_bot_started() -> None:
             name="telegram-scheduled-report",
             daemon=True,
         ).start()
+    if TELEGRAM_REPORTS_ENABLED and TELEGRAM_CHAT_IDS and TELEGRAM_COMPLETED_CYCLE_REPORTS_ENABLED:
         threading.Thread(
             target=telegram_completed_cycle_report_loop,
             name="telegram-completed-cycle-report",
@@ -7707,7 +7810,12 @@ def build_completed_cycle_telegram_message(record: dict) -> str:
 
 
 def enqueue_completed_cycle_telegram_report(record: dict) -> None:
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_IDS or not TELEGRAM_REPORTS_ENABLED:
+    if (
+        not TELEGRAM_BOT_TOKEN
+        or not TELEGRAM_CHAT_IDS
+        or not TELEGRAM_REPORTS_ENABLED
+        or not TELEGRAM_COMPLETED_CYCLE_REPORTS_ENABLED
+    ):
         return
     if not should_notify_abkant_cycle(record):
         return
@@ -7914,7 +8022,12 @@ def reset_completed_cycle_report_send_marker(report_key: str, marker: str) -> No
 
 
 def send_due_completed_cycle_telegram_reports() -> None:
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_IDS or not TELEGRAM_REPORTS_ENABLED:
+    if (
+        not TELEGRAM_BOT_TOKEN
+        or not TELEGRAM_CHAT_IDS
+        or not TELEGRAM_REPORTS_ENABLED
+        or not TELEGRAM_COMPLETED_CYCLE_REPORTS_ENABLED
+    ):
         return
     for row in fetch_due_completed_cycle_reports():
         marker = f"sending:{now_local().isoformat(timespec='seconds')}"
@@ -9654,7 +9767,21 @@ def index():
 
 @app.route("/health")
 def health():
-    return jsonify({"status": "ok", "timestamp": now_local().isoformat(timespec="seconds")})
+    current_time = now_local()
+    return jsonify(
+        {
+            "status": "ok",
+            "heartbeat": "ok",
+            "heartbeat_interval_seconds": BACKGROUND_SYNC_INTERVAL_SECONDS,
+            "background_sync_enabled": BACKGROUND_SYNC_ENABLED,
+            "timestamp": current_time.isoformat(timespec="seconds"),
+        }
+    )
+
+
+@app.route("/api/service-heartbeat")
+def service_heartbeat():
+    return health()
 
 
 @app.route("/api/machines")

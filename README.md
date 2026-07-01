@@ -73,7 +73,9 @@ Aplicatia porneste implicit pe `http://localhost:3030`.
 - `TELEGRAM_CHAT_IDS` lista de chat-uri care primesc raportul automat, separate prin virgula/spatiu
 - `TELEGRAM_ALLOWED_CHAT_IDS` optional, limiteaza cine poate folosi comenzile `/raportzilaser` si `/raportziabkant`; daca lipseste, se foloseste `TELEGRAM_CHAT_IDS`
 - `TELEGRAM_REPORT_TIME=23:30` ora locala la care se trimite raportul automat de seara
-- `TELEGRAM_REPORT_MACHINE_KEYS=laser1modbus` masinile incluse in raport; poti pune mai multe cu virgula
+- `TELEGRAM_REPORT_MACHINE_KEYS=laser1modbus,laser2modbus,abkant1modbus` masinile incluse in raportul automat; implicit raman toate cele trei utilaje
+- `TELEGRAM_NOTIFICATION_MODE=active` controleaza sunetul mesajelor trimise de bot; foloseste `silent` pentru mesaje fara sunet
+- `TELEGRAM_COMPLETED_CYCLE_REPORTS_ENABLED=0` tine oprite notificarile automate de tip dosar/ciclu finalizat; comenzile manuale si raportul de noapte raman active
 - `TELEGRAM_REPORT_TOP_LIMIT=10` cati operatori apar in topul de randament
 - `TELEGRAM_DOSAR_LOOKBACK_DAYS=730` cite zile cauta comanda `/randament_dosar 34158` in istoricul Prometheus
 - `TELEGRAM_TABLE_CHANGE_FREE_SECONDS=90` pragul gratuit pentru `Table change`; ce depaseste pragul scade randamentul Telegram

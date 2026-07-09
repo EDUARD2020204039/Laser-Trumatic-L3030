@@ -9687,7 +9687,12 @@ def build_workstation_status_payload(machine_key: str = DEFAULT_MACHINE_KEY) -> 
 
 def parse_api_limit(value: str | None, default: int = 10, maximum: int = 50) -> int:
     try:
-        limit = int((value or "").strip() or default)
+        if isinstance(value, str):
+            limit = int(value.strip() or default)
+        elif value is None:
+            limit = default
+        else:
+            limit = int(value)
     except (TypeError, ValueError):
         limit = default
     return min(max(limit, 1), maximum)
@@ -9712,6 +9717,14 @@ def hermes_admin_denied_response():
             "message": "Hermes admin API cere HERMES_API_TOKEN. Trimite header Authorization: Bearer <token>.",
         }
     ), 401
+
+
+def get_hermes_request_value(name: str, default=None):
+    if request.method == "POST":
+        data = request.get_json(silent=True) or {}
+        if name in data:
+            return data.get(name)
+    return request.args.get(name, default)
 
 
 def sqlite_value_to_json(value):
@@ -10373,10 +10386,16 @@ def hermes_endpoints():
                 },
                 {
                     "name": "Snapshot complet site pentru Hermes",
-                    "method": "GET",
+                    "method": "GET sau POST",
                     "url": "/api/hermes/site/full-snapshot?include_db_rows=1&db_limit=25",
                     "auth": "Authorization: Bearer <HERMES_API_TOKEN>, daca tokenul este setat",
                     "returns": "harta site, masini, dashboarduri, observatii live, Telegram, baza SQLite, mediu si rapoarte",
+                },
+                {
+                    "name": "Ping Hermes",
+                    "method": "GET",
+                    "url": "/api/hermes/ping",
+                    "returns": "marker JSON clar ca requestul a ajuns in aplicatia Flask corecta",
                 },
                 {
                     "name": "Dump SQLite",
@@ -10415,6 +10434,25 @@ def hermes_endpoints():
     )
 
 
+@app.route("/api/hermes/ping")
+def hermes_ping():
+    return jsonify(
+        {
+            "success": True,
+            "service": APP_TITLE,
+            "endpoint": "hermes",
+            "message": "Hermes API este servit de aplicatia Flask Laser TruMatic L3030.",
+            "version": resolve_app_version_label(),
+            "timestamp": now_local().isoformat(timespec="seconds"),
+            "request": {
+                "path": request.path,
+                "method": request.method,
+                "host": request.host,
+            },
+        }
+    )
+
+
 @app.route("/api/hermes/laser/observe")
 def hermes_laser_observe():
     machine_key = (
@@ -10438,14 +10476,22 @@ def hermes_laser_cycles():
         return jsonify({"success": False, "message": str(exc)}), 400
 
 
-@app.route("/api/hermes/site/full-snapshot")
+@app.route("/api/hermes/site/full-snapshot", methods=["GET", "POST"])
+@app.route("/api/hermes/site/full-snapshot/", methods=["GET", "POST"])
+@app.route("/api/hermes/full-snapshot", methods=["GET", "POST"])
+@app.route("/api/hermes/full-snapshot/", methods=["GET", "POST"])
 def hermes_site_full_snapshot():
     if not hermes_admin_authorized():
         return hermes_admin_denied_response()
 
-    include_db_rows = to_bool(request.args.get("include_db_rows", "0"))
-    include_telegram_reports = to_bool(request.args.get("include_telegram_reports", request.args.get("include_reports", "0")))
-    db_limit = parse_api_limit(request.args.get("db_limit"), default=25, maximum=500)
+    include_db_rows = to_bool(get_hermes_request_value("include_db_rows", "0"))
+    include_telegram_reports = to_bool(
+        get_hermes_request_value(
+            "include_telegram_reports",
+            get_hermes_request_value("include_reports", "0"),
+        )
+    )
+    db_limit = parse_api_limit(get_hermes_request_value("db_limit"), default=25, maximum=500)
     return jsonify(
         build_hermes_full_snapshot_payload(
             include_db_rows=include_db_rows,
@@ -10492,6 +10538,51 @@ def hermes_telegram_status():
             "telegram": build_hermes_telegram_payload(include_reports=include_reports),
         }
     )
+
+
+@app.errorhandler(400)
+def hermes_bad_request(error):
+    if request.path.startswith("/api/hermes/"):
+        return jsonify(
+            {
+                "success": False,
+                "message": "Bad request primit de aplicatia Flask Hermes API.",
+                "path": request.path,
+                "method": request.method,
+                "error": str(error),
+            }
+        ), 400
+    return error
+
+
+@app.errorhandler(404)
+def hermes_not_found(error):
+    if request.path.startswith("/api/hermes/"):
+        return jsonify(
+            {
+                "success": False,
+                "message": "Ruta Hermes nu exista in aceasta instanta Flask. Verifica daca serverul live are commitul nou si a fost restartat.",
+                "path": request.path,
+                "method": request.method,
+                "known_probe": "/api/hermes/ping",
+            }
+        ), 404
+    return error
+
+
+@app.errorhandler(405)
+def hermes_method_not_allowed(error):
+    if request.path.startswith("/api/hermes/"):
+        return jsonify(
+            {
+                "success": False,
+                "message": "Metoda HTTP nu este acceptata pentru ruta Hermes.",
+                "path": request.path,
+                "method": request.method,
+                "error": str(error),
+            }
+        ), 405
+    return error
 
 
 @app.route("/api/environment")

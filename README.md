@@ -396,6 +396,27 @@ Endpoint admin pentru ca Hermes sa vada aproape tot ce vede aplicatia:
 
 `GET /api/hermes/site/full-snapshot?include_db_rows=1&db_limit=25&include_telegram_reports=1`
 
+Pe domeniul public:
+
+`GET https://habaproduction.habaresearch.eu/api/hermes/site/full-snapshot?include_db_rows=1&db_limit=25&include_telegram_reports=1`
+
+Accepta si `POST` cu JSON:
+
+```json
+{
+  "include_db_rows": true,
+  "db_limit": 25,
+  "include_telegram_reports": true
+}
+```
+
+Aliasuri acceptate:
+
+- `/api/hermes/site/full-snapshot`
+- `/api/hermes/site/full-snapshot/`
+- `/api/hermes/full-snapshot`
+- `/api/hermes/full-snapshot/`
+
 Include:
 
 - harta rutelor site-ului
@@ -425,3 +446,13 @@ Authorization: Bearer un-token-lung-aici
 ```
 
 Daca `HERMES_API_TOKEN` lipseste, endpointurile admin raspund fara token, dar payload-ul include un warning.
+
+Verificare rapida ca requestul ajunge in aplicatia Flask corecta:
+
+`GET /api/hermes/ping`
+
+Pe domeniul public:
+
+`GET https://habaproduction.habaresearch.eu/api/hermes/ping`
+
+Trebuie sa intoarca JSON cu `service: HABA Production Monitor`. Daca primesti HTML, `Bad Request` sau alt text, requestul loveste alt server/proxy/container, nu aplicatia actualizata.

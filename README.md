@@ -400,13 +400,18 @@ Pe domeniul public:
 
 `GET https://habaproduction.habaresearch.eu/api/hermes/site/full-snapshot?include_db_rows=1&db_limit=25&include_telegram_reports=1`
 
+Implicit, endpointul raspunde in modul rapid `cached`, ca monitorul sa nu intre in timeout. Pentru varianta grea, care forteaza detalii live si query-uri MODBUS/Prometheus:
+
+`GET /api/hermes/site/full-snapshot?full=1&include_db_rows=1&db_limit=25&include_telegram_reports=1`
+
 Accepta si `POST` cu JSON:
 
 ```json
 {
   "include_db_rows": true,
   "db_limit": 25,
-  "include_telegram_reports": true
+  "include_telegram_reports": true,
+  "full": false
 }
 ```
 

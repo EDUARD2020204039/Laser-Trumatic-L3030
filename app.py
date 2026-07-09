@@ -9858,25 +9858,122 @@ def build_hermes_site_map_payload() -> list[dict]:
     return routes
 
 
+def get_cached_operator_snapshot(workcenter_id: int | None) -> dict:
+    if workcenter_id is None:
+        return {
+            "status": "pending",
+            "message": "WorkCenter ID lipseste.",
+            "workcenter_id": workcenter_id,
+            "operators": [],
+            "primary_operator": None,
+        }
+
+    cached_snapshot = _operator_snapshot_cache.get(workcenter_id)
+    if cached_snapshot:
+        payload = cached_snapshot.get("payload") or {}
+        if payload:
+            return json.loads(json.dumps(payload, ensure_ascii=False))
+
+    return {
+        "status": "cache_miss",
+        "message": "Nu exista inca operator in cache; background sync il va completa.",
+        "workcenter_id": workcenter_id,
+        "operators": [],
+        "primary_operator": None,
+    }
+
+
+def collect_cached_machine_context(machine_key: str = DEFAULT_MACHINE_KEY) -> dict:
+    machine_key = ensure_machine_key(machine_key)
+    if machine_key in HIDDEN_MACHINE_KEYS:
+        machine_key = DEFAULT_MACHINE_KEY
+
+    machine_profile = get_machine_profile(machine_key)
+    runtime = get_machine_runtime(machine_key)
+    live_extraction = runtime.get("last_snapshot") or {}
+    current_signals = fetch_current_signals(machine_key)
+    operator_snapshot = get_cached_operator_snapshot(machine_profile["workcenter_id"])
+    current_state = derive_machine_state(machine_key, current_signals)
+    if machine_uses_modbus(machine_key):
+        current_state = derive_modbus_machine_state_from_snapshot(machine_key, live_extraction, current_state)
+    stats_today = build_today_stats(machine_key, live_extraction)
+    return {
+        "machine_key": machine_key,
+        "machine_profile": machine_profile,
+        "live_extraction": live_extraction,
+        "current_signals": current_signals,
+        "operator_snapshot": operator_snapshot,
+        "current_state": current_state,
+        "stats_today": stats_today,
+    }
+
+
+def build_hermes_cached_dashboard_payload(machine_key: str = DEFAULT_MACHINE_KEY) -> dict:
+    context = collect_cached_machine_context(machine_key)
+    machine_key = context["machine_key"]
+    machine_profile = context["machine_profile"]
+    return {
+        "app_title": APP_TITLE,
+        "dashboard_title": DASHBOARD_TITLE,
+        "selected_machine_key": machine_key,
+        "machine": machine_profile,
+        "machines": get_machine_profiles(),
+        "workcenter_id": machine_profile["workcenter_id"],
+        "current_state": context["current_state"],
+        "current_signals": context["current_signals"],
+        "stats_today": context["stats_today"],
+        "operator_snapshot": context["operator_snapshot"],
+        "real_data_source": get_real_data_settings(machine_profile),
+        "machine_feeds": build_machine_feeds(machine_key),
+        "feed_program_summary": build_feed_program_summary(
+            machine_key,
+            context["live_extraction"],
+            context["stats_today"],
+        ),
+        "live_extraction": context["live_extraction"],
+        "recent_events": fetch_recent_events(machine_key, limit=8),
+        "updated_at": now_local().isoformat(timespec="seconds"),
+        "snapshot_mode": "cached",
+    }
+
+
+def build_hermes_cached_observation_payload(machine_key: str = DEFAULT_MACHINE_KEY) -> dict:
+    context = collect_cached_machine_context(machine_key)
+    payload = build_hermes_observation_payload_from_context(context)
+    payload["snapshot_mode"] = "cached"
+    return payload
+
+
 def build_hermes_full_snapshot_payload(
     include_db_rows: bool = False,
     db_limit: int = 25,
     include_telegram_reports: bool = False,
+    live_details: bool = False,
 ) -> dict:
     machine_profiles = get_machine_profiles()
     machine_keys = [machine["key"] for machine in machine_profiles]
-    dashboard_by_machine = {
-        machine_key: capture_hermes_section(lambda selected_key=machine_key: build_dashboard_payload(selected_key))
-        for machine_key in machine_keys
-    }
-    observation_by_machine = {
-        machine_key: capture_hermes_section(lambda selected_key=machine_key: build_hermes_observation_payload(selected_key))
-        for machine_key in machine_keys
-    }
+    dashboard_builder = build_dashboard_payload if live_details else build_hermes_cached_dashboard_payload
+    observation_builder = build_hermes_observation_payload if live_details else build_hermes_cached_observation_payload
+    dashboard_by_machine = {}
+    observation_by_machine = {}
+    with ThreadPoolExecutor(max_workers=min(max(len(machine_keys), 1), 4)) as executor:
+        dashboard_futures = {
+            machine_key: executor.submit(capture_hermes_section, lambda selected_key=machine_key: dashboard_builder(selected_key))
+            for machine_key in machine_keys
+        }
+        observation_futures = {
+            machine_key: executor.submit(capture_hermes_section, lambda selected_key=machine_key: observation_builder(selected_key))
+            for machine_key in machine_keys
+        }
+        for machine_key, future in dashboard_futures.items():
+            dashboard_by_machine[machine_key] = future.result()
+        for machine_key, future in observation_futures.items():
+            observation_by_machine[machine_key] = future.result()
 
     return {
         "success": True,
         "timestamp": now_local().isoformat(timespec="seconds"),
+        "snapshot_mode": "live" if live_details else "cached",
         "auth": {
             "token_required": bool(HERMES_API_TOKEN),
             "warning": None if HERMES_API_TOKEN else "HERMES_API_TOKEN nu este setat; endpointul admin este neprotejat.",
@@ -9897,7 +9994,18 @@ def build_hermes_full_snapshot_payload(
         "dashboards": dashboard_by_machine,
         "observations": observation_by_machine,
         "saved_cycles": capture_hermes_section(lambda: build_hermes_cycles_payload(machine_key="all", limit=50)),
-        "saved_records_modbus": capture_hermes_section(lambda: build_saved_modbus_payload(period="day", machine_key="all")),
+        "saved_records_modbus": (
+            capture_hermes_section(lambda: build_saved_modbus_payload(period="day", machine_key="all"))
+            if live_details
+            else {
+                "success": True,
+                "data": {
+                    "snapshot_mode": "cached",
+                    "message": "Omite query-ul MODBUS/Prometheus in modul rapid. Foloseste full=1 pentru detalii.",
+                    "records": [],
+                },
+            }
+        ),
         "environment": capture_hermes_section(fetch_esp32_environment_snapshot),
         "telegram": capture_hermes_section(lambda: build_hermes_telegram_payload(include_reports=include_telegram_reports)),
         "database": capture_hermes_section(
@@ -10075,8 +10183,7 @@ def build_hermes_current_job_payload(context: dict) -> dict:
     }
 
 
-def build_hermes_observation_payload(machine_key: str = DEFAULT_MACHINE_KEY) -> dict:
-    context = collect_live_machine_context(machine_key)
+def build_hermes_observation_payload_from_context(context: dict) -> dict:
     resolved_machine_key = context["machine_key"]
     machine_profile = context["machine_profile"]
     current_signals = context["current_signals"]
@@ -10120,6 +10227,10 @@ def build_hermes_observation_payload(machine_key: str = DEFAULT_MACHINE_KEY) -> 
         "recent_events": fetch_recent_events(resolved_machine_key, limit=8),
         "raw_live_snapshot": live_snapshot,
     }
+
+
+def build_hermes_observation_payload(machine_key: str = DEFAULT_MACHINE_KEY) -> dict:
+    return build_hermes_observation_payload_from_context(collect_live_machine_context(machine_key))
 
 
 def build_hermes_cycle_record(record: dict) -> dict:
@@ -10491,12 +10602,19 @@ def hermes_site_full_snapshot():
             get_hermes_request_value("include_reports", "0"),
         )
     )
+    live_details = to_bool(
+        get_hermes_request_value(
+            "live_details",
+            get_hermes_request_value("full", "0"),
+        )
+    )
     db_limit = parse_api_limit(get_hermes_request_value("db_limit"), default=25, maximum=500)
     return jsonify(
         build_hermes_full_snapshot_payload(
             include_db_rows=include_db_rows,
             db_limit=db_limit,
             include_telegram_reports=include_telegram_reports,
+            live_details=live_details,
         )
     )
 

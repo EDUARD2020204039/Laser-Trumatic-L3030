@@ -366,3 +366,62 @@ Practic, butoanele manuale sint doar simulatorul pentru semnalele care vor veni 
 ```
 
 `GET /api/dashboard` intoarce tot ce are nevoie frontend-ul pentru refresh.
+
+### API pentru agent Hermes
+
+Lista de endpoint-uri si exemple:
+
+`GET /api/hermes/endpoints`
+
+Observatie live pentru laser, cu raspuns direct la "taie acum?" si "de ce nu taie?":
+
+`GET /api/hermes/laser/observe?machine=laser1modbus`
+
+Campuri utile din raspuns:
+
+- `state.cutting_now`, `state.attention_level`, `state.status_text`
+- `why_not_cutting[]` cu `code`, `severity`, `message`
+- `current_job.dosar_id`, `current_job.selected_program`, `current_job.completion_percent`
+- `operator.operator_name`, `operator.operator_id`, `operator.is_active`
+- `feed.feeds[]`, `feed.available`, `feed.connected`, `feed.message`
+- `signals.machine_on`, `signals.cutting_active`, `signals.table_change`, `signals.idle_abort`
+
+Ultimele dosare/cicluri finalizate, ca sa vezi ce dosar a fost taiat si de cine:
+
+`GET /api/hermes/laser/cycles?machine=laser1modbus&limit=10`
+
+Poti folosi `machine=laser2modbus`, `machine=abkant1modbus` sau `machine=all`. `limit` este intre 1 si 50.
+
+Endpoint admin pentru ca Hermes sa vada aproape tot ce vede aplicatia:
+
+`GET /api/hermes/site/full-snapshot?include_db_rows=1&db_limit=25&include_telegram_reports=1`
+
+Include:
+
+- harta rutelor site-ului
+- toate masinile, dashboardurile si observatiile live
+- status Telegram, comenzi, formule si preview de rapoarte
+- baza SQLite: schema pentru tabele si, daca `include_db_rows=1`, randuri din tabele
+- environment snapshot, saved cycles si saved records MODBUS
+
+Dump direct din SQLite:
+
+`GET /api/hermes/database/dump?table=all&limit=100`
+
+Status Telegram separat:
+
+`GET /api/hermes/telegram/status?include_reports=1`
+
+Pentru protectie, seteaza in `.env`:
+
+```env
+HERMES_API_TOKEN=un-token-lung-aici
+```
+
+Si cheama endpointurile admin cu:
+
+```http
+Authorization: Bearer un-token-lung-aici
+```
+
+Daca `HERMES_API_TOKEN` lipseste, endpointurile admin raspund fara token, dar payload-ul include un warning.

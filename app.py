@@ -233,6 +233,7 @@ TELEGRAM_COMPLETED_CYCLE_AGGREGATION_SECONDS = max(
     5,
 )
 _telegram_notifications_silent = TELEGRAM_NOTIFICATION_MODE == "silent"
+HERMES_API_TOKEN = (os.getenv("HERMES_API_TOKEN", "") or "").strip()
 UNKNOWN_OPERATOR_LABEL = "Fara operator la salvare"
 UNVALIDATED_OPERATOR_SUFFIX = "(nevalidat)"
 COMPANY_ATTENDANCE_FALLBACK_OPERATOR_NAMES = tuple(
@@ -9684,6 +9685,476 @@ def build_workstation_status_payload(machine_key: str = DEFAULT_MACHINE_KEY) -> 
     }
 
 
+def parse_api_limit(value: str | None, default: int = 10, maximum: int = 50) -> int:
+    try:
+        limit = int((value or "").strip() or default)
+    except (TypeError, ValueError):
+        limit = default
+    return min(max(limit, 1), maximum)
+
+
+def hermes_admin_authorized() -> bool:
+    if not HERMES_API_TOKEN:
+        return True
+
+    auth_header = request.headers.get("Authorization", "")
+    bearer_prefix = "Bearer "
+    if auth_header.startswith(bearer_prefix) and auth_header[len(bearer_prefix):].strip() == HERMES_API_TOKEN:
+        return True
+
+    return (request.args.get("token") or "").strip() == HERMES_API_TOKEN
+
+
+def hermes_admin_denied_response():
+    return jsonify(
+        {
+            "success": False,
+            "message": "Hermes admin API cere HERMES_API_TOKEN. Trimite header Authorization: Bearer <token>.",
+        }
+    ), 401
+
+
+def sqlite_value_to_json(value):
+    if isinstance(value, bytes):
+        return value.hex()
+    return value
+
+
+def sqlite_row_to_dict(row: sqlite3.Row) -> dict:
+    return {key: sqlite_value_to_json(row[key]) for key in row.keys()}
+
+
+def fetch_sqlite_table_names() -> list[str]:
+    with get_sqlite_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+            ORDER BY name ASC
+            """
+        ).fetchall()
+    return [str(row["name"]) for row in rows]
+
+
+def fetch_sqlite_table_schema(table_name: str) -> list[dict]:
+    with get_sqlite_connection() as connection:
+        rows = connection.execute(f"PRAGMA table_info({quote_sqlite_identifier(table_name)})").fetchall()
+    return [sqlite_row_to_dict(row) for row in rows]
+
+
+def quote_sqlite_identifier(identifier: str) -> str:
+    return '"' + str(identifier).replace('"', '""') + '"'
+
+
+def fetch_sqlite_table_rows(table_name: str, limit: int = 100) -> list[dict]:
+    if table_name not in fetch_sqlite_table_names():
+        raise ValueError(f"Tabel SQLite necunoscut: {table_name}")
+
+    with get_sqlite_connection() as connection:
+        rows = connection.execute(
+            f"SELECT * FROM {quote_sqlite_identifier(table_name)} LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [sqlite_row_to_dict(row) for row in rows]
+
+
+def build_sqlite_database_payload(limit: int = 50, include_rows: bool = True, table_name: str | None = None) -> dict:
+    tables = fetch_sqlite_table_names()
+    selected_tables = tables
+    if table_name and table_name != "all":
+        if table_name not in tables:
+            raise ValueError(f"Tabel SQLite necunoscut: {table_name}")
+        selected_tables = [table_name]
+
+    payload_tables = []
+    with get_sqlite_connection() as connection:
+        for selected_table in selected_tables:
+            count_row = connection.execute(
+                f"SELECT COUNT(*) AS total FROM {quote_sqlite_identifier(selected_table)}"
+            ).fetchone()
+            table_payload = {
+                "name": selected_table,
+                "rows_total": int(count_row["total"] or 0) if count_row else 0,
+                "schema": fetch_sqlite_table_schema(selected_table),
+            }
+            if include_rows:
+                rows = connection.execute(
+                    f"SELECT * FROM {quote_sqlite_identifier(selected_table)} LIMIT ?",
+                    (limit,),
+                ).fetchall()
+                table_payload["rows"] = [sqlite_row_to_dict(row) for row in rows]
+                table_payload["rows_returned"] = len(table_payload["rows"])
+                table_payload["limit"] = limit
+            payload_tables.append(table_payload)
+
+    return {
+        "sqlite_path": str(SQLITE_PATH),
+        "tables_count": len(payload_tables),
+        "tables": payload_tables,
+    }
+
+
+def build_hermes_telegram_payload(include_reports: bool = False) -> dict:
+    payload = {
+        "configured": bool(TELEGRAM_BOT_TOKEN),
+        "token_configured": bool(TELEGRAM_BOT_TOKEN),
+        "bot_started": _telegram_bot_started,
+        "reports_enabled": TELEGRAM_REPORTS_ENABLED,
+        "polling_enabled": TELEGRAM_POLLING_ENABLED,
+        "commands_enabled": TELEGRAM_COMMANDS_ENABLED,
+        "completed_cycle_reports_enabled": TELEGRAM_COMPLETED_CYCLE_REPORTS_ENABLED,
+        "notification_mode": "silent" if _telegram_notifications_silent else "active",
+        "report_time": TELEGRAM_REPORT_TIME,
+        "report_machine_keys": list(resolve_telegram_report_machine_keys()),
+        "chat_ids_configured": len(TELEGRAM_CHAT_IDS),
+        "allowed_chat_ids_configured": len(TELEGRAM_ALLOWED_CHAT_IDS),
+        "pending_actions_count": len(_telegram_pending_actions),
+        "commands_help": build_telegram_help_text(),
+        "formula_text": build_telegram_formula_text(),
+    }
+    if include_reports:
+        payload["report_previews"] = {
+            "laser_today": build_telegram_laser_period_report("day", machine_keys=["laser1modbus", "laser2modbus"]),
+            "abkant_today": build_telegram_abkant_period_report("day"),
+            "today_dosare": build_telegram_today_dosare_report(),
+        }
+    return payload
+
+
+def capture_hermes_section(builder) -> dict:
+    try:
+        return {"success": True, "data": builder()}
+    except Exception as exc:
+        return {
+            "success": False,
+            "error": f"{exc.__class__.__name__}: {exc}",
+        }
+
+
+def build_hermes_site_map_payload() -> list[dict]:
+    routes = []
+    for rule in sorted(app.url_map.iter_rules(), key=lambda item: str(item)):
+        routes.append(
+            {
+                "rule": str(rule),
+                "endpoint": rule.endpoint,
+                "methods": sorted(method for method in rule.methods if method not in {"HEAD", "OPTIONS"}),
+            }
+        )
+    return routes
+
+
+def build_hermes_full_snapshot_payload(
+    include_db_rows: bool = False,
+    db_limit: int = 25,
+    include_telegram_reports: bool = False,
+) -> dict:
+    machine_profiles = get_machine_profiles()
+    machine_keys = [machine["key"] for machine in machine_profiles]
+    dashboard_by_machine = {
+        machine_key: capture_hermes_section(lambda selected_key=machine_key: build_dashboard_payload(selected_key))
+        for machine_key in machine_keys
+    }
+    observation_by_machine = {
+        machine_key: capture_hermes_section(lambda selected_key=machine_key: build_hermes_observation_payload(selected_key))
+        for machine_key in machine_keys
+    }
+
+    return {
+        "success": True,
+        "timestamp": now_local().isoformat(timespec="seconds"),
+        "auth": {
+            "token_required": bool(HERMES_API_TOKEN),
+            "warning": None if HERMES_API_TOKEN else "HERMES_API_TOKEN nu este setat; endpointul admin este neprotejat.",
+        },
+        "app": {
+            "title": APP_TITLE,
+            "dashboard_title": DASHBOARD_TITLE,
+            "version": resolve_app_version_label(),
+            "sqlite_path": str(SQLITE_PATH),
+            "data_dir": str(DATA_DIR),
+            "background_sync_enabled": BACKGROUND_SYNC_ENABLED,
+            "background_sync_started": _background_sync_started,
+            "background_sync_interval_seconds": BACKGROUND_SYNC_INTERVAL_SECONDS,
+            "request_live_sync_enabled": REQUEST_LIVE_SYNC_ENABLED,
+        },
+        "site_map": build_hermes_site_map_payload(),
+        "machines": machine_profiles,
+        "dashboards": dashboard_by_machine,
+        "observations": observation_by_machine,
+        "saved_cycles": capture_hermes_section(lambda: build_hermes_cycles_payload(machine_key="all", limit=50)),
+        "saved_records_modbus": capture_hermes_section(lambda: build_saved_modbus_payload(period="day", machine_key="all")),
+        "environment": capture_hermes_section(fetch_esp32_environment_snapshot),
+        "telegram": capture_hermes_section(lambda: build_hermes_telegram_payload(include_reports=include_telegram_reports)),
+        "database": capture_hermes_section(
+            lambda: build_sqlite_database_payload(limit=db_limit, include_rows=include_db_rows)
+        ),
+    }
+
+
+def build_hermes_operator_payload(operator_snapshot: dict) -> dict:
+    primary_operator = operator_snapshot.get("primary_operator") or {}
+    return {
+        "status": operator_snapshot.get("status"),
+        "message": operator_snapshot.get("message"),
+        "workcenter_id": operator_snapshot.get("workcenter_id"),
+        "operator_id": primary_operator.get("employee_id"),
+        "operator_name": primary_operator.get("full_name"),
+        "check_in": primary_operator.get("check_in"),
+        "is_active": bool(primary_operator.get("is_active")) if primary_operator else False,
+        "all_operators": operator_snapshot.get("operators") or [],
+    }
+
+
+def build_hermes_not_cutting_reasons(context: dict) -> list[dict]:
+    live_snapshot = context.get("live_extraction") if isinstance(context.get("live_extraction"), dict) else {}
+    current_signals = context.get("current_signals") or {}
+    operator_snapshot = context.get("operator_snapshot") or {}
+    machine_key = context["machine_key"]
+    current_state = context.get("current_state") or {}
+
+    if bool(current_signals.get("cutting_active", {}).get("active")):
+        return []
+
+    reasons: list[dict] = []
+
+    if not live_snapshot:
+        reasons.append(
+            {
+                "code": "no_live_snapshot",
+                "severity": "error",
+                "message": "Nu exista snapshot live pentru utilaj.",
+            }
+        )
+    else:
+        if snapshot_is_stale(live_snapshot, max_age_seconds=max(SNAPSHOT_FRESHNESS_SECONDS * 2, 5)):
+            reasons.append(
+                {
+                    "code": "stale_live_snapshot",
+                    "severity": "warning",
+                    "message": "Snapshotul live este vechi; feedul sau pollerul poate fi blocat.",
+                    "captured_at": live_snapshot.get("captured_at"),
+                }
+            )
+        if live_snapshot.get("available") is False or live_snapshot.get("connected") is False:
+            reasons.append(
+                {
+                    "code": "live_source_unavailable",
+                    "severity": "error",
+                    "message": live_snapshot.get("message") or "Sursa live nu raspunde.",
+                }
+            )
+
+    if not bool(current_signals.get("machine_on", {}).get("active")):
+        reasons.append(
+            {
+                "code": "machine_off",
+                "severity": "error" if machine_uses_modbus(machine_key) else "warning",
+                "message": "Machine ON este 0, deci utilajul nu poate fi in taiere.",
+            }
+        )
+
+    if bool(current_signals.get("table_change", {}).get("active")):
+        reasons.append(
+            {
+                "code": "table_change_active",
+                "severity": "info",
+                "message": "Utilajul este in schimb de masa sau pregatire ciclu.",
+            }
+        )
+
+    if bool(current_signals.get("idle_abort", {}).get("active")):
+        reasons.append(
+            {
+                "code": "idle_or_aborted",
+                "severity": "warning",
+                "message": "Semnalul Idle / Aborted este activ.",
+            }
+        )
+
+    selected_program = resolve_snapshot_selected_program(live_snapshot)
+    if not selected_program:
+        reasons.append(
+            {
+                "code": "no_program_detected",
+                "severity": "warning",
+                "message": "Nu este citit niciun program/dosar din feed.",
+            }
+        )
+
+    if not operator_snapshot.get("primary_operator"):
+        reasons.append(
+            {
+                "code": "no_active_operator",
+                "severity": "warning",
+                "message": operator_snapshot.get("message") or "Nu exista operator activ pe workcenter.",
+            }
+        )
+
+    if (
+        bool(current_signals.get("machine_on", {}).get("active"))
+        and not bool(current_signals.get("table_change", {}).get("active"))
+        and not bool(current_signals.get("idle_abort", {}).get("active"))
+    ):
+        reasons.append(
+            {
+                "code": "ready_without_cutting_signal",
+                "severity": "info",
+                "message": current_state.get("description") or "Masina este pornita, dar Cutting este 0.",
+            }
+        )
+
+    return reasons
+
+
+def build_hermes_attention_level(cutting_active: bool, reasons: list[dict]) -> str:
+    if cutting_active:
+        return "ok"
+    severities = {reason.get("severity") for reason in reasons}
+    if "error" in severities:
+        return "critical"
+    if "warning" in severities:
+        return "warning"
+    return "info"
+
+
+def build_hermes_status_text(context: dict, reasons: list[dict]) -> str:
+    current_state = context.get("current_state") or {}
+    live_snapshot = context.get("live_extraction") if isinstance(context.get("live_extraction"), dict) else {}
+    current_signals = context.get("current_signals") or {}
+    operator = build_hermes_operator_payload(context.get("operator_snapshot") or {})
+    selected_program = resolve_snapshot_selected_program(live_snapshot)
+    dosar_id = extract_dosar_id(selected_program)
+    operator_name = operator.get("operator_name") or "operator necunoscut"
+    dosar_label = dosar_id or selected_program or "dosar necitit"
+
+    if bool(current_signals.get("cutting_active", {}).get("active")):
+        return f"Taie acum {dosar_label}, operator {operator_name}."
+
+    first_reason = reasons[0]["message"] if reasons else current_state.get("description")
+    return f"Nu taie acum: {first_reason or 'nu exista semnal Cutting activ.'}"
+
+
+def build_hermes_current_job_payload(context: dict) -> dict:
+    live_snapshot = context.get("live_extraction") if isinstance(context.get("live_extraction"), dict) else {}
+    stats_today = context.get("stats_today") or {}
+    current_signals = context.get("current_signals") or {}
+    selected_program = normalize_api_text(resolve_snapshot_selected_program(live_snapshot))
+    active_program = normalize_api_text(live_snapshot.get("active_program"))
+    completion_percent = coerce_completion_percent(live_snapshot.get("completion_percent"))
+    current_time = now_local()
+
+    return {
+        "selected_program": selected_program,
+        "active_program": active_program,
+        "dosar_id": extract_dosar_id(selected_program),
+        "material": normalize_api_text(live_snapshot.get("material")),
+        "program_status": normalize_api_text(live_snapshot.get("program_status")),
+        "completion_percent": completion_percent,
+        "completion_label": format_completion_percent(completion_percent),
+        "estimated_finish_at": stats_today.get("estimated_completion_at"),
+        "estimated_remaining_seconds": stats_today.get("estimated_remaining_seconds"),
+        "estimated_remaining_label": stats_today.get("estimated_remaining_label"),
+        "machine_on_elapsed_seconds": calculate_signal_elapsed_seconds(current_signals.get("machine_on"), current_time),
+        "cutting_elapsed_seconds": calculate_signal_elapsed_seconds(current_signals.get("cutting_active"), current_time),
+        "table_change_elapsed_seconds": calculate_signal_elapsed_seconds(current_signals.get("table_change"), current_time),
+    }
+
+
+def build_hermes_observation_payload(machine_key: str = DEFAULT_MACHINE_KEY) -> dict:
+    context = collect_live_machine_context(machine_key)
+    resolved_machine_key = context["machine_key"]
+    machine_profile = context["machine_profile"]
+    current_signals = context["current_signals"]
+    live_snapshot = context["live_extraction"] if isinstance(context["live_extraction"], dict) else {}
+    current_state = context["current_state"]
+    cutting_active = bool(current_signals.get("cutting_active", {}).get("active"))
+    reasons = build_hermes_not_cutting_reasons(context)
+    attention_level = build_hermes_attention_level(cutting_active, reasons)
+
+    return {
+        "success": True,
+        "timestamp": now_local().isoformat(timespec="seconds"),
+        "machine": {
+            "machine_key": resolved_machine_key,
+            "machine_label": machine_profile.get("label"),
+            "workcenter_id": machine_profile.get("workcenter_id"),
+            "real_data_source": get_real_data_settings(machine_profile),
+        },
+        "state": {
+            "key": current_state.get("key"),
+            "label": current_state.get("label"),
+            "description": current_state.get("description"),
+            "cutting_now": cutting_active,
+            "attention_level": attention_level,
+            "needs_attention": attention_level in {"warning", "critical"},
+            "status_text": build_hermes_status_text(context, reasons),
+        },
+        "why_not_cutting": reasons,
+        "current_job": build_hermes_current_job_payload(context),
+        "operator": build_hermes_operator_payload(context["operator_snapshot"]),
+        "feed": {
+            "available": live_snapshot.get("available"),
+            "connected": live_snapshot.get("connected"),
+            "captured_at": live_snapshot.get("captured_at"),
+            "source": live_snapshot.get("source"),
+            "message": live_snapshot.get("message"),
+            "feeds": build_machine_feeds(resolved_machine_key),
+        },
+        "signals": current_signals,
+        "stats_today": context["stats_today"],
+        "recent_events": fetch_recent_events(resolved_machine_key, limit=8),
+        "raw_live_snapshot": live_snapshot,
+    }
+
+
+def build_hermes_cycle_record(record: dict) -> dict:
+    selected_program = normalize_api_text(record.get("selected_program"))
+    return {
+        "id": record.get("id"),
+        "machine_key": record.get("machine_key"),
+        "machine_label": record.get("machine_label"),
+        "dosar_id": extract_dosar_id(selected_program),
+        "selected_program": selected_program,
+        "active_program": normalize_api_text(record.get("active_program")),
+        "operator_id": record.get("operator_id"),
+        "operator_name": record.get("operator_name"),
+        "material": normalize_api_text(record.get("material")),
+        "program_status": normalize_api_text(record.get("program_status")),
+        "cutting_started_at": record.get("cutting_started_at"),
+        "completed_at": record.get("table_change_ended_at") or record.get("created_at"),
+        "cycle_duration_seconds": record.get("cycle_duration_seconds"),
+        "cycle_duration_label": record.get("cycle_duration_label"),
+        "machine_on_duration_seconds": record.get("machine_on_duration_seconds"),
+        "table_change_duration_seconds": record.get("table_change_duration_seconds"),
+        "efficiency_percent": record.get("efficiency_percent"),
+        "completion_percent": record.get("completion_percent"),
+        "completion_label": record.get("completion_label"),
+        "close_reason": record.get("close_reason"),
+        "close_reason_label": record.get("close_reason_label"),
+        "source": record.get("source"),
+    }
+
+
+def build_hermes_cycles_payload(machine_key: str | None = DEFAULT_MACHINE_KEY, limit: int = 10) -> dict:
+    resolved_machine_key = None
+    if machine_key and machine_key.strip().lower() != "all":
+        resolved_machine_key = ensure_machine_key(machine_key)
+        if resolved_machine_key in HIDDEN_MACHINE_KEYS:
+            resolved_machine_key = DEFAULT_MACHINE_KEY
+
+    records = fetch_saved_cycles_all(machine_key=resolved_machine_key, limit=limit)
+    return {
+        "success": True,
+        "timestamp": now_local().isoformat(timespec="seconds"),
+        "machine_key": resolved_machine_key or "all",
+        "limit": limit,
+        "records_count": len(records),
+        "records": [build_hermes_cycle_record(record) for record in records],
+    }
+
+
 def build_dashboard_payload(machine_key: str = DEFAULT_MACHINE_KEY) -> dict:
     context = collect_live_machine_context(machine_key)
     machine_key = context["machine_key"]
@@ -9862,6 +10333,165 @@ def laser_workstation_status():
     except ValueError as exc:
         return jsonify({"success": False, "message": str(exc)}), 400
     return jsonify(payload)
+
+
+@app.route("/api/hermes/endpoints")
+def hermes_endpoints():
+    base_machine = request.args.get("machine", DEFAULT_MACHINE_KEY)
+    try:
+        machine_key = ensure_machine_key(base_machine)
+        if machine_key in HIDDEN_MACHINE_KEYS:
+            machine_key = DEFAULT_MACHINE_KEY
+    except ValueError:
+        machine_key = DEFAULT_MACHINE_KEY
+
+    return jsonify(
+        {
+            "success": True,
+            "timestamp": now_local().isoformat(timespec="seconds"),
+            "description": "Endpointuri compacte pentru agentul Hermes: observatie live, cauze pentru netaiere, feed, dosar si operator.",
+            "machines": [
+                {
+                    "machine_key": machine["key"],
+                    "machine_label": machine["label"],
+                    "workcenter_id": machine["workcenter_id"],
+                }
+                for machine in get_machine_profiles()
+            ],
+            "endpoints": [
+                {
+                    "name": "Observatie live utilaj",
+                    "method": "GET",
+                    "url": f"/api/hermes/laser/observe?machine={machine_key}",
+                    "returns": "stare curenta, de ce nu taie, feed, dosar, operator, semnale si evenimente recente",
+                },
+                {
+                    "name": "Ultimele cicluri finalizate",
+                    "method": "GET",
+                    "url": f"/api/hermes/laser/cycles?machine={machine_key}&limit=10",
+                    "returns": "ultimele dosare taiate, operatorul, durata, randamentul si motivul inchiderii",
+                },
+                {
+                    "name": "Snapshot complet site pentru Hermes",
+                    "method": "GET",
+                    "url": "/api/hermes/site/full-snapshot?include_db_rows=1&db_limit=25",
+                    "auth": "Authorization: Bearer <HERMES_API_TOKEN>, daca tokenul este setat",
+                    "returns": "harta site, masini, dashboarduri, observatii live, Telegram, baza SQLite, mediu si rapoarte",
+                },
+                {
+                    "name": "Dump SQLite",
+                    "method": "GET",
+                    "url": "/api/hermes/database/dump?table=all&limit=100",
+                    "auth": "Authorization: Bearer <HERMES_API_TOKEN>, daca tokenul este setat",
+                    "returns": "schema si randuri din SQLite pentru toate tabelele sau un tabel anume",
+                },
+                {
+                    "name": "Status Telegram",
+                    "method": "GET",
+                    "url": "/api/hermes/telegram/status?include_reports=1",
+                    "auth": "Authorization: Bearer <HERMES_API_TOKEN>, daca tokenul este setat",
+                    "returns": "configurare Telegram, status bot, comenzi, formule si preview rapoarte",
+                },
+                {
+                    "name": "Status brut workstation",
+                    "method": "GET",
+                    "url": f"/api/laser/workstation/status?machine={machine_key}",
+                    "returns": "payload tehnic existent pentru integrari PLC/agent",
+                },
+                {
+                    "name": "Dashboard complet",
+                    "method": "GET",
+                    "url": f"/api/dashboard?machine={machine_key}",
+                    "returns": "payload complet folosit de UI",
+                },
+                {
+                    "name": "Feed camera proxy",
+                    "method": "GET",
+                    "url": f"/api/camera-feed/{machine_key}",
+                    "returns": "imagine camera, daca feedul configurat are nevoie de proxy/autentificare",
+                },
+            ],
+        }
+    )
+
+
+@app.route("/api/hermes/laser/observe")
+def hermes_laser_observe():
+    machine_key = (
+        request.args.get("machine")
+        or request.args.get("machine_key")
+        or DEFAULT_MACHINE_KEY
+    )
+    try:
+        return jsonify(build_hermes_observation_payload(machine_key))
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 400
+
+
+@app.route("/api/hermes/laser/cycles")
+def hermes_laser_cycles():
+    machine_key = request.args.get("machine", DEFAULT_MACHINE_KEY)
+    limit = parse_api_limit(request.args.get("limit"), default=10, maximum=50)
+    try:
+        return jsonify(build_hermes_cycles_payload(machine_key=machine_key, limit=limit))
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 400
+
+
+@app.route("/api/hermes/site/full-snapshot")
+def hermes_site_full_snapshot():
+    if not hermes_admin_authorized():
+        return hermes_admin_denied_response()
+
+    include_db_rows = to_bool(request.args.get("include_db_rows", "0"))
+    include_telegram_reports = to_bool(request.args.get("include_telegram_reports", request.args.get("include_reports", "0")))
+    db_limit = parse_api_limit(request.args.get("db_limit"), default=25, maximum=500)
+    return jsonify(
+        build_hermes_full_snapshot_payload(
+            include_db_rows=include_db_rows,
+            db_limit=db_limit,
+            include_telegram_reports=include_telegram_reports,
+        )
+    )
+
+
+@app.route("/api/hermes/database/dump")
+def hermes_database_dump():
+    if not hermes_admin_authorized():
+        return hermes_admin_denied_response()
+
+    table_name = (request.args.get("table") or "all").strip()
+    include_rows = to_bool(request.args.get("include_rows", "1"))
+    limit = parse_api_limit(request.args.get("limit"), default=100, maximum=1000)
+    try:
+        return jsonify(
+            {
+                "success": True,
+                "timestamp": now_local().isoformat(timespec="seconds"),
+                "database": build_sqlite_database_payload(
+                    limit=limit,
+                    include_rows=include_rows,
+                    table_name=table_name,
+                ),
+            }
+        )
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 400
+
+
+@app.route("/api/hermes/telegram/status")
+def hermes_telegram_status():
+    if not hermes_admin_authorized():
+        return hermes_admin_denied_response()
+
+    include_reports = to_bool(request.args.get("include_reports", "0"))
+    return jsonify(
+        {
+            "success": True,
+            "timestamp": now_local().isoformat(timespec="seconds"),
+            "telegram": build_hermes_telegram_payload(include_reports=include_reports),
+        }
+    )
 
 
 @app.route("/api/environment")

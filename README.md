@@ -274,14 +274,14 @@ docker run -d \
   -e PONTAJ_LASER2_WORKCENTER_ID=2 \
   -e PONTAJ_LASER2MODBUS_WORKCENTER_ID=1 \
   -e PONTAJ_ABKANT_WORKCENTER_ID=3 \
-  -e LASER2MODBUS_MODBUS_HOST='192.168.2.138' \
+  -e LASER2MODBUS_MODBUS_HOST='<modbus-host>' \
   -e LASER2MODBUS_MODBUS_PORT=502 \
   -e LASER2MODBUS_MODBUS_UNIT_ID=1 \
   -e LASER2MODBUS_MODBUS_IN1_SIGNAL='machine_on' \
-  -e PONTAJ_SQL_SERVER=192.168.2.6 \
-  -e PONTAJ_SQL_DATABASE=Metal \
-  -e PONTAJ_SQL_USERNAME=bogdan \
-  -e PONTAJ_SQL_PASSWORD='HELPAN123$' \
+  -e PONTAJ_SQL_SERVER='<sql-host>' \
+  -e PONTAJ_SQL_DATABASE='<sql-database>' \
+  -e PONTAJ_SQL_USERNAME='<sql-user>' \
+  -e PONTAJ_SQL_PASSWORD='<sql-password>' \
   -e PONTAJ_SQL_DRIVER='ODBC Driver 18 for SQL Server' \
   -v /mnt/user/appdata/lasertrumaticl3030:/data \
   lasertrumaticl3030:latest

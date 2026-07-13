@@ -13,6 +13,7 @@ import imutils
 import time
 import pytesseract
 import logging
+import os
 import os.path
 from os import path
 logging.basicConfig( level=logging.INFO, filename='/var/log/oee.log',format='%(asctime)s - %(filename)s - %(message)s')
@@ -21,10 +22,10 @@ import psycopg2
 from termcolor import colored
 
 conn = psycopg2.connect(
-   host="192.168.2.130",
-   database="oee_helpan",
-   user="postgres",
-   password="postgres")
+   host=os.getenv("ABKANT_PG_HOST", ""),
+   database=os.getenv("ABKANT_PG_DATABASE", ""),
+   user=os.getenv("ABKANT_PG_USER", ""),
+   password=os.getenv("ABKANT_PG_PASSWORD", ""))
 
 from Server import Server
 BDICT = {}

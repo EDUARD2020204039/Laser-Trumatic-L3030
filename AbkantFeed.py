@@ -72,15 +72,15 @@ ActualPunct=Punct(660, 270, 200, inaltime=50)
 UpperToolPunct=Punct(150,55,430,inaltime=55)
 LowerToolPunct=Punct(150,105,430,inaltime=55)
 #print(NumeProgramPunct.PunctX)
-my_token="1260858483:AAFmQBXz1Fsg_JqESNmIv9OtcmozFQ7WUbg"
-my_chat_id="-1001284842892"
+my_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+my_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
 # Connect to our bot
 bot = telegram.Bot(my_token)
 chat_id=my_chat_id
 client = mqtt.Client()
-client.username_pw_set(username="bogdan",password="HELPAN123$")
+client.username_pw_set(username=os.getenv("MQTT_USER", ""), password=os.getenv("MQTT_PASS", ""))
 try:
-    client.connect("192.168.2.1", 1883, 60)
+    client.connect(os.getenv("MQTT_HOST", "localhost"), int(os.getenv("MQTT_PORT", "1883")), 60)
 except:
      logging.info("Nu merge MQTT")
 

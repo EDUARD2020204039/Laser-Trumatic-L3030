@@ -4,3 +4,8 @@ __pycache__/
 .venv/
 data/*.db
 data/device_access_inventory.local.json
+*.py[cod]
+*.pyo
+*.db
+*.sqlite
+*.sqlite3
